@@ -1,0 +1,90 @@
+[gd_scene format=3 uid="uid://df7k3m8px4n1v"]
+
+[ext_resource type="Script" uid="uid://ddjrh6d8bdm5s" path="res://player/player.gd" id="1_player"]
+[ext_resource type="Script" uid="uid://ccpsogfrceiep" path="res://player/reticle.gd" id="2_reticle"]
+[ext_resource type="Script" uid="uid://chupltx3cj73h" path="res://player/player_camera.gd" id="3_camera"]
+[ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="4_blinn"]
+[ext_resource type="Script" path="res://addons/procedural_terrain_grass/terrain_grass_interactor_3d.gd" id="5_interactor"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
+radius = 0.4
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_player"]
+radius = 0.4
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_shadow_proxy"]
+resource_name = "Player RT Shadow Proxy"
+shader = ExtResource("4_blinn")
+shader_parameter/ambient_light = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/diffuse_color = Color(0.18, 0.2, 0.22, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/vertex_color_enabled = false
+shader_parameter/shininess = 8.0
+shader_parameter/direct_specular_intensity = 0.0
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 0.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_ceiling"]
+radius = 0.38
+
+[node name="Player" type="CharacterBody3D" unique_id=962605641]
+collision_layer = 2
+script = ExtResource("1_player")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=492160344]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+shape = SubResource("CapsuleShape3D_player")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." groups=["retro_rt_managed"] unique_id=595671229]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+cast_shadow = 3
+material_override = SubResource("ShaderMaterial_shadow_proxy")
+mesh = SubResource("CapsuleMesh_player")
+
+[node name="GrassInteractor" type="Node3D" parent="." unique_id=1021939964]
+script = ExtResource("5_interactor")
+radius = 0.65
+strength = 1.0
+priority = 100
+
+[node name="CeilingCheck" type="ShapeCast3D" parent="." unique_id=1800615128]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
+shape = SubResource("SphereShape3D_ceiling")
+target_position = Vector3(0, 0.8, 0)
+
+[node name="ViewRoot" type="Node3D" parent="." unique_id=1021939960]
+script = ExtResource("3_camera")
+
+[node name="Head" type="Node3D" parent="ViewRoot" unique_id=809130836]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.7, 0)
+
+[node name="BobPivot" type="Node3D" parent="ViewRoot/Head" unique_id=1021939961]
+
+[node name="LandingPivot" type="Node3D" parent="ViewRoot/Head/BobPivot" unique_id=1021939962]
+
+[node name="TiltPivot" type="Node3D" parent="ViewRoot/Head/BobPivot/LandingPivot" unique_id=1021939963]
+
+[node name="Camera3D" type="Camera3D" parent="ViewRoot/Head/BobPivot/LandingPivot/TiltPivot" unique_id=1675410025]
+
+[node name="ReticleUI" type="CanvasLayer" parent="." unique_id=1533967813]
+
+[node name="Reticle" type="Control" parent="ReticleUI" unique_id=21533724]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("2_reticle")

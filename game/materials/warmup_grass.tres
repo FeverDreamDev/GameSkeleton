@@ -1,0 +1,30 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="1_x1jol"]
+
+[resource]
+resource_name = "Runtime Grass Shell Warmup"
+render_priority = 0
+shader = ExtResource("1_x1jol")
+shader_parameter/grass_interactors = null
+shader_parameter/u_base_color = Color(0.11, 0.24, 0.06, 1)
+shader_parameter/u_tip_color = Color(0.32, 0.52, 0.12, 1)
+shader_parameter/u_density = 16.0
+shader_parameter/u_max_height = 0.6
+shader_parameter/u_root_offset = null
+shader_parameter/u_wind_direction = null
+shader_parameter/u_wind_speed = null
+shader_parameter/u_wind_strength = null
+shader_parameter/u_wind_enabled = null
+shader_parameter/u_interaction_enabled = null
+shader_parameter/u_color_noise_enabled = null
+shader_parameter/u_color_noise_strength = null
+shader_parameter/u_color_noise_seed = null
+shader_parameter/u_color_noise_patch_size = null
+shader_parameter/u_color_noise_low_tint = null
+shader_parameter/u_color_noise_high_tint = null
+shader_parameter/u_color_noise_detail_strength = null
+shader_parameter/u_system_origin_xz = null
+shader_parameter/u_interaction_push_scale = null
+shader_parameter/u_flatten_response = null
+shader_parameter/u_min_flatten = null

@@ -1,0 +1,216 @@
+[gd_scene format=3 uid="uid://c5ermipm7bbhl"]
+
+[ext_resource type="Script" uid="uid://vketncwlidxi" path="res://addons/retro_rt/examples/RTExample.gd" id="1_myinc"]
+[ext_resource type="Shader" uid="uid://bfhmjth5ltdrv" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="2_njov2"]
+[ext_resource type="Script" uid="uid://oqtwkbndq1c8" path="res://addons/retro_rt/scripts/RTSceneManager.gd" id="3_rtmanager"]
+[ext_resource type="PackedScene" uid="uid://gvbxt8q3bucs" path="res://addons/retro_rt/examples/RTExampleUi.tscn" id="4_epu7u"]
+
+[sub_resource type="Environment" id="Environment_njov2"]
+background_mode = 1
+background_color = Color(0.18, 0.18, 0.2, 1)
+ssao_radius = 0.8
+ssao_intensity = 16.0
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_myinc"]
+render_priority = 0
+shader = ExtResource("2_njov2")
+shader_parameter/ambient_light = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/diffuse_color = Color(0.25, 0.5, 0.2, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(1, 1, 1, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 256.0
+shader_parameter/direct_specular_intensity = 1.0
+shader_parameter/mirror_enabled = true
+shader_parameter/reflection_strength = 0.11999999731776
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+
+[sub_resource type="TorusMesh" id="TorusMesh_yf5fn"]
+material = SubResource("ShaderMaterial_myinc")
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_8tn2x"]
+render_priority = 0
+shader = ExtResource("2_njov2")
+shader_parameter/ambient_light = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/diffuse_color = Color(0.25, 0.5, 0.2, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(1, 1, 1, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 256.0
+shader_parameter/direct_specular_intensity = 1.0
+shader_parameter/mirror_enabled = true
+shader_parameter/reflection_strength = 0.42999999038864
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_2au82"]
+material = SubResource("ShaderMaterial_8tn2x")
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_standard_cyl"]
+render_priority = 0
+shader = ExtResource("2_njov2")
+shader_parameter/ambient_light = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/diffuse_color = Color(0.040980395, 0.24588236, 0.55, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.040441178, 0.13264707, 0.2695, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 25.43
+shader_parameter/direct_specular_intensity = 1.0
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 1.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_standard_torus"]
+render_priority = 0
+shader = ExtResource("2_njov2")
+shader_parameter/ambient_light = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/diffuse_color = Color(0.023529412, 0.17254902, 0.011764706, 1)
+shader_parameter/emission_color = Color(0.01290196, 0.05529412, 0.009215686, 1)
+shader_parameter/specular_color = Color(0.04, 0.04, 0.04, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 39.32
+shader_parameter/direct_specular_intensity = 1.0
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 1.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_njov2"]
+render_priority = 0
+shader = ExtResource("2_njov2")
+shader_parameter/ambient_light = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/diffuse_color = Color(0.53669, 0.23773721, 9.62615e-08, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(1, 1, 1, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 256.0
+shader_parameter/direct_specular_intensity = 1.0
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 1.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_rvu7i"]
+material = SubResource("ShaderMaterial_njov2")
+size = Vector2(20, 20)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_2au82"]
+render_priority = 0
+shader = ExtResource("2_njov2")
+shader_parameter/ambient_light = Color(0.1, 0.1, 0.1, 1)
+shader_parameter/diffuse_color = Color(0.68163747, 0.30919838, 0, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(1, 1, 1, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 256.0
+shader_parameter/direct_specular_intensity = 1.0
+shader_parameter/mirror_enabled = true
+shader_parameter/reflection_strength = 1.0
+shader_parameter/reflection_shadows_enabled = true
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_8tn2x"]
+material = SubResource("ShaderMaterial_2au82")
+size = Vector2(20, 20)
+
+[node name="RTExample" type="Node" unique_id=1156343053]
+script = ExtResource("1_myinc")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=2132270366]
+transform = Transform3D(-0.8660255, -0.43301284, 0.25000003, 0.43301278, -0.39951915, 0.80801266, -0.24999991, 0.8080126, 0.53349376, 0, 0, 3)
+light_energy = 0.4
+shadow_enabled = true
+shadow_blur = 1.813
+directional_shadow_split_1 = 0.005
+directional_shadow_split_2 = 0.01
+directional_shadow_split_3 = 0.1
+directional_shadow_fade_start = 1.0
+directional_shadow_max_distance = 512.0
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1648433198]
+environment = SubResource("Environment_njov2")
+
+[node name="Doughnut" type="MeshInstance3D" parent="." unique_id=467012297 groups=["retro_rt_managed"]]
+transform = Transform3D(1, 0, 0, 0, -2.9802322e-08, -1.0000001, 0, 1.0000001, -2.9802322e-08, 1.2, 1.0703621, 0)
+mesh = SubResource("TorusMesh_yf5fn")
+
+[node name="Cylinder" type="MeshInstance3D" parent="." unique_id=789294784 groups=["retro_rt_managed"]]
+transform = Transform3D(1, 0, 0, 0, -0.96592575, 0.2588193, 0, -0.2588193, -0.96592575, 1.0750983, 0.370362, -1.7882056)
+mesh = SubResource("CylinderMesh_2au82")
+
+[node name="Cylinder2" type="MeshInstance3D" parent="." unique_id=1286785334 groups=["retro_rt_managed"]]
+transform = Transform3D(1, 0, 0, 0, 0.7071068, 0.7071068, 0, -0.7071068, 0.7071068, -1.0999999, 0.370362, -1.6000001)
+material_override = SubResource("ShaderMaterial_standard_cyl")
+mesh = SubResource("CylinderMesh_2au82")
+
+[node name="Doughnut2" type="MeshInstance3D" parent="." unique_id=409388863 groups=["retro_rt_managed"]]
+transform = Transform3D(1, 0, 0, 0, -2.9802322e-08, -1.0000001, 0, 1.0000001, -2.9802322e-08, -1.3, 1.0703621, 0)
+material_override = SubResource("ShaderMaterial_standard_torus")
+mesh = SubResource("TorusMesh_yf5fn")
+
+[node name="Floor" type="MeshInstance3D" parent="." unique_id=1119896177 groups=["retro_rt_managed"]]
+transform = Transform3D(1, 0, 0, 0, 1.0000001, 0, 0, 0, 1.0000001, 0, 0, 0)
+mesh = SubResource("PlaneMesh_rvu7i")
+
+[node name="Floor2" type="MeshInstance3D" parent="." unique_id=1368098508 groups=["retro_rt_managed"]]
+transform = Transform3D(1, 0, 0, 0, -4.3711392e-08, -1.0000001, 0, 1.0000001, -4.3711392e-08, 0.05346501, 0.007815361, -2.9954557)
+mesh = SubResource("PlaneMesh_8tn2x")
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=5847196]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.1, 1, 2)
+fov = 67.71292
+
+[node name="RTSceneManager" type="Node" parent="." unique_id=984336111]
+process_priority = 100000
+script = ExtResource("3_rtmanager")
+post_cas_enabled = true
+post_posterize_enabled = true
+
+[node name="SpotLight3D" type="SpotLight3D" parent="." unique_id=1225847900]
+transform = Transform3D(1, 0, 0, 0, 0.8660254, 0.5, 0, -0.5, 0.8660254, 2, 2, 1.3601315)
+
+[node name="RTExampleUi" parent="." unique_id=828068187 instance=ExtResource("4_epu7u")]

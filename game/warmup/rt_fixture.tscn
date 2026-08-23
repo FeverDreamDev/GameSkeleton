@@ -1,0 +1,46 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="1_blinn"]
+
+[sub_resource type="Environment" id="Environment_fixture"]
+background_mode = 1
+background_color = Color(0.035, 0.04, 0.05, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.12, 0.13, 0.15, 1)
+ambient_light_energy = 0.35
+reflected_light_source = 2
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_fixture"]
+resource_name = "RT Warmup BlinnPhong"
+shader = ExtResource("1_blinn")
+shader_parameter/ambient_light = Color(0.08, 0.08, 0.08, 1)
+shader_parameter/diffuse_color = Color(0.45, 0.55, 0.7, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.25, 0.25, 0.25, 1)
+shader_parameter/shininess = 24.0
+shader_parameter/direct_specular_intensity = 0.35
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 0.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/vertex_color_enabled = false
+
+[sub_resource type="BoxMesh" id="BoxMesh_fixture"]
+material = SubResource("ShaderMaterial_fixture")
+size = Vector3(1.5, 1.5, 1.5)
+
+[node name="RTWarmupFixture" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_fixture")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 4)
+current = true
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-52, -28, 0)
+light_energy = 0.75
+shadow_enabled = true
+
+[node name="WarmupCube" type="MeshInstance3D" parent="." groups=["retro_rt_managed"]]
+mesh = SubResource("BoxMesh_fixture")

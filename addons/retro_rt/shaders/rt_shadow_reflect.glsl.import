@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://ckj23bvxrffbf"
+path="res://.godot/imported/rt_shadow_reflect.glsl-13abebe3ee1abd7fb67c7fb3c09ce2e4.res"
+
+[deps]
+
+source_file="res://addons/retro_rt/shaders/rt_shadow_reflect.glsl"
+dest_files=["res://.godot/imported/rt_shadow_reflect.glsl-13abebe3ee1abd7fb67c7fb3c09ce2e4.res"]
+
+[params]
+

@@ -1,0 +1,27 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+[ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="1_blinn"]
+
+[resource]
+resource_name = "Terrain Test Reflector Blinn-Phong"
+render_priority = 0
+shader = ExtResource("1_blinn")
+shader_parameter/ambient_light = Color(0.025, 0.03, 0.04, 1)
+shader_parameter/diffuse_color = Color(0.12, 0.16, 0.22, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.95, 0.98, 1, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/vertex_color_enabled = false
+shader_parameter/shininess = 96.0
+shader_parameter/direct_specular_intensity = 1.0
+shader_parameter/mirror_enabled = true
+shader_parameter/reflection_strength = 0.72
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false

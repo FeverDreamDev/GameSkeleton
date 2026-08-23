@@ -1,0 +1,42 @@
+[gd_scene format=3 uid="uid://gvbxt8q3bucs"]
+
+[ext_resource type="Script" uid="uid://d2yn1yxvffdaf" path="res://addons/retro_rt/examples/RTExampleUi.gd" id="1_01irj"]
+
+[node name="RTExampleUi" type="Control" unique_id=828068187]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_01irj")
+
+[node name="MarginContainer" type="MarginContainer" parent="." unique_id=594484366]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 24
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 24
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer" unique_id=2050811969]
+layout_mode = 2
+
+[node name="FPS_Counter" type="Label" parent="MarginContainer/VBoxContainer" unique_id=1184507831]
+layout_mode = 2
+
+[node name="QualityRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="QualityLabel" type="Label" parent="MarginContainer/VBoxContainer/QualityRow"]
+layout_mode = 2
+text = "RT Quality"
+
+[node name="QualitySelector" type="OptionButton" parent="MarginContainer/VBoxContainer/QualityRow"]
+layout_mode = 2
+
+[node name="RenderMetrics" type="Label" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "RT backend: initializing"

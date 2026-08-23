@@ -1,0 +1,97 @@
+[gd_scene load_steps=17 format=3]
+
+[ext_resource type="Script" path="res://game/levels/terrain_test.gd" id="1_level"]
+[ext_resource type="Script" path="res://addons/procedural_terrain_grass/terrain_grass_3d.gd" id="2_terrain"]
+[ext_resource type="PackedScene" path="res://player/player.tscn" id="3_player"]
+[ext_resource type="Script" path="res://addons/game_flow/nodes/flow_spawn.gd" id="4_spawn"]
+[ext_resource type="Material" path="res://game/materials/test_caster_blinn_phong.tres" id="5_caster_material"]
+[ext_resource type="Material" path="res://game/materials/terrain_blinn_phong.tres" id="6_terrain_material"]
+[ext_resource type="Material" path="res://game/materials/test_reflector_blinn_phong.tres" id="7_reflector_material"]
+[ext_resource type="Script" path="res://game/levels/saveable_transform_3d.gd" id="8_saveable"]
+
+[sub_resource type="Environment" id="Environment_level"]
+background_mode = 1
+background_color = Color(0.26, 0.34, 0.43, 1)
+background_energy_multiplier = 0.8
+tonemap_mode = 0
+tonemap_exposure = 1.0
+
+[sub_resource type="BoxMesh" id="BoxMesh_caster"]
+size = Vector3(2, 3, 2)
+
+[sub_resource type="BoxShape3D" id="BoxShape_caster"]
+size = Vector3(2, 3, 2)
+
+[sub_resource type="SphereMesh" id="SphereMesh_reflector"]
+radius = 1.0
+height = 2.0
+radial_segments = 32
+rings = 16
+
+[sub_resource type="SphereShape3D" id="SphereShape_reflector"]
+radius = 1.0
+
+[node name="TerrainTest" type="Node3D"]
+script = ExtResource("1_level")
+level_id = &"terrain_test"
+standalone_player_scene = ExtResource("3_player")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_level")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.819152, -0.32899, 0.469846, 0, 0.819152, 0.573576, -0.573576, -0.469846, 0.67101, 0, 12, 0)
+light_color = Color(1, 0.91, 0.78, 1)
+light_energy = 1.15
+shadow_enabled = true
+directional_shadow_max_distance = 256.0
+
+[node name="TerrainGrass3D" type="Node3D" parent="."]
+script = ExtResource("2_terrain")
+auto_start = false
+terrain_material_override = ExtResource("6_terrain_material")
+terrain_mesh_group = &"retro_rt_managed"
+terrain_receiver_only_group = &"retro_rt_receiver_only"
+terrain_load_distance = 64.0
+terrain_unload_distance = 96.0
+grass_prefetch_distance = 64.0
+max_worker_jobs = 2
+max_mesh_commits_per_frame = 2
+
+[node name="SpawnPoints" type="Node3D" parent="."]
+
+[node name="Default" type="Marker3D" parent="SpawnPoints"]
+script = ExtResource("4_spawn")
+spawn_id = &"default"
+applies_facing = true
+
+[node name="StreamingAnchor" type="Node3D" parent="."]
+
+[node name="TestCaster" type="Node3D" parent="."]
+position = Vector3(6, 1.5, -6)
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TestCaster" groups=["retro_rt_managed"]]
+material_override = ExtResource("5_caster_material")
+mesh = SubResource("BoxMesh_caster")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="TestCaster"]
+collision_layer = 129
+collision_mask = 1
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TestCaster/StaticBody3D"]
+shape = SubResource("BoxShape_caster")
+
+[node name="TestReflector" type="Node3D" parent="." groups=["saveable"]]
+position = Vector3(-5, 1, -7)
+script = ExtResource("8_saveable")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TestReflector" groups=["retro_rt_managed"]]
+material_override = ExtResource("7_reflector_material")
+mesh = SubResource("SphereMesh_reflector")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="TestReflector"]
+collision_layer = 129
+collision_mask = 1
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TestReflector/StaticBody3D"]
+shape = SubResource("SphereShape_reflector")

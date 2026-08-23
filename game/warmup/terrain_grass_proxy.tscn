@@ -1,0 +1,70 @@
+[gd_scene format=4]
+
+[ext_resource type="Material" path="res://game/materials/terrain_blinn_phong.tres" id="1_pwb04"]
+[ext_resource type="Shader" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="2_t346k"]
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_0cow3"]
+_surfaces = [{
+"aabb": AABB(-1, 0, -1, 2, 1e-05, 2),
+"attribute_data": PackedByteArray("P3It/1GEOP9rYDP/OFYj/w=="),
+"format": 34359742479,
+"index_count": 6,
+"index_data": PackedByteArray("AAACAAEAAAADAAIA"),
+"material": ExtResource("1_pwb04"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 4,
+"vertex_data": PackedByteArray("AACAvwAAAAAAAIC/AACAPwAAAAAAAIC/AACAPwAAAAAAAIA/AACAvwAAAAAAAIA//3///wAA/7//f///AAD/v/9///8AAP+//3///wAA/78=")
+}]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_y6xwb"]
+resource_name = "Runtime Grass Shell Warmup"
+render_priority = 0
+shader = ExtResource("2_t346k")
+shader_parameter/grass_interactors = null
+shader_parameter/u_base_color = Color(0.11, 0.24, 0.06, 1)
+shader_parameter/u_tip_color = Color(0.32, 0.52, 0.12, 1)
+shader_parameter/u_density = 16.0
+shader_parameter/u_max_height = 0.6
+shader_parameter/u_root_offset = null
+shader_parameter/u_wind_direction = null
+shader_parameter/u_wind_speed = null
+shader_parameter/u_wind_strength = null
+shader_parameter/u_wind_enabled = null
+shader_parameter/u_interaction_enabled = null
+shader_parameter/u_color_noise_enabled = null
+shader_parameter/u_color_noise_strength = null
+shader_parameter/u_color_noise_seed = null
+shader_parameter/u_color_noise_patch_size = null
+shader_parameter/u_color_noise_low_tint = null
+shader_parameter/u_color_noise_high_tint = null
+shader_parameter/u_color_noise_detail_strength = null
+shader_parameter/u_system_origin_xz = null
+shader_parameter/u_interaction_push_scale = null
+shader_parameter/u_flatten_response = null
+shader_parameter/u_min_flatten = null
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_uhm3m"]
+_surfaces = [{
+"aabb": AABB(-1, 0, -1, 2, 1e-05, 2),
+"attribute_data": PackedByteArray("P3It/wAAAAAAAAAAUYQ4/wAAgD8AAAAAa2Az/wAAgD8AAIA/OFYj/wAAAAAAAIA/"),
+"format": 34359742495,
+"index_count": 6,
+"index_data": PackedByteArray("AAACAAEAAAADAAIA"),
+"material": SubResource("ShaderMaterial_y6xwb"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 4,
+"vertex_data": PackedByteArray("AACAvwAAAAAAAIC/AACAPwAAAAAAAIC/AACAPwAAAAAAAIA/AACAvwAAAAAAAIA//3///wAA/7//f///AAD/v/9///8AAP+//3///wAA/78=")
+}]
+
+[node name="TerrainGrassWarmupProxy" type="Node3D" unique_id=313051962]
+
+[node name="TerrainVertexColorFormat" type="MeshInstance3D" parent="." unique_id=1884182628]
+cast_shadow = 0
+mesh = SubResource("ArrayMesh_0cow3")
+
+[node name="GrassVertexColorUVFormat" type="MeshInstance3D" parent="." unique_id=475443077]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -2)
+cast_shadow = 0
+mesh = SubResource("ArrayMesh_uhm3m")
