@@ -83,14 +83,22 @@ static func mask_byte_count(resolution: int) -> int:
 	return ceili(float(resolution * resolution) / 8.0)
 
 
-# Baked into ARRAY_COLOR and read straight out as ALBEDO by terrain.gdshader.
+# Baked into ARRAY_COLOR and read straight out as ALBEDO by terrain.gdshader, or
+# multiplied into a white diffuse_color by BlinnPhong.gdshader.
 #
-# These colours are authored in sRGB and are passed through unconverted, which
-# looks like it should clash with grass_shell.gdshader taking its colours via
-# `source_color` uniforms. It does not: measured against a StandardMaterial3D
-# plate of the same authored colour under identical lighting, the raw vertex
-# colour matches, while an srgb_to_linear() conversion here renders roughly
-# half as bright. Do not "fix" this without re-measuring.
+# ARRAY_COLOR is NOT sRGB-decoded by the renderer, and the grass in this same
+# add-on depends on that: TerrainBuildState packs exact 8-bit fine-occupancy
+# bytes into COLOR.gb and an evenly spaced shell ramp into COLOR.r, and
+# grass_shell.gdshader decodes them with int(floor(x * 255.0 + 0.5)). A transfer
+# function anywhere on that path would corrupt the mask and bunch the shell
+# heights, so COLOR demonstrably arrives raw.
+#
+# These colours are therefore authored directly in SCENE-LINEAR radiance, unlike
+# the grass shader's source_color uniforms, which the compiler linearizes. Do not
+# add srgb_to_linear() here, and do not re-author them as sRGB swatches: the
+# values are calibrated against measured shell-grass canopy radiance so the
+# ground disappears under grass. See TerrainGrass3D.terrain_low_color for the
+# measurement method and the residual blue mismatch.
 static func terrain_color(height: float, normal_y: float, settings: Dictionary) -> Color:
 	var steep_threshold := float(settings["terrain_steep_normal_y"])
 	var steep_color: Color = settings["terrain_steep_color"]

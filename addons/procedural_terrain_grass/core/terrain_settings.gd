@@ -40,8 +40,9 @@ var noise_lacunarity: float = 2.0
 var noise_gain: float = 0.5
 var height_amplitude: float = 14.0
 
-var terrain_low_color: Color = Color("536b3c")
-var terrain_high_color: Color = Color("827651")
+# Scene-linear, mirroring TerrainGrass3D. See TerrainGenerator.terrain_color.
+var terrain_low_color: Color = Color(0.0040, 0.0278, 0.0008)
+var terrain_high_color: Color = Color(0.0054, 0.0376, 0.0011)
 var terrain_steep_color: Color = Color("665f55")
 var terrain_height_color_min: float = -10.0
 var terrain_height_color_max: float = 16.0

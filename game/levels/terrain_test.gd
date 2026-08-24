@@ -14,6 +14,16 @@ const SPAWN_CLEARANCE := 0.08
 
 @export var standalone_player_scene: PackedScene
 
+@export_group("Distance Fog")
+## Fog begins at this fraction of the terrain's load distance and reaches full
+## strength at [member fog_end_fraction] of it, so chunk pop-in at the load
+## boundary and the grass LOD cutoff always sit inside solid fog. Deriving the
+## reach keeps the two aligned when terrain_load_distance is retuned.
+@export_range(0.0, 1.0, 0.01) var fog_begin_fraction: float = 0.5
+@export_range(0.0, 2.0, 0.01) var fog_end_fraction: float = 1.0
+@export_range(0.25, 4.0, 0.01) var fog_curve: float = 1.0
+@export var fog_enabled: bool = true
+
 var _bound_player: Player
 
 
@@ -24,6 +34,32 @@ func _ready() -> void:
 
 func get_terrain() -> TerrainGrass3D:
 	return terrain
+
+
+## Fog reach derived from the streaming radius. GameApp calls this when the level
+## is installed and forwards the result to RTSceneManager.
+func distance_fog_request() -> Dictionary:
+	var reach := terrain.terrain_load_distance
+	return {
+		"enabled": fog_enabled,
+		"begin": reach * fog_begin_fraction,
+		"end": reach * fog_end_fraction,
+		"curve": fog_curve,
+	}
+
+
+## Receives the renderer's resolved fog, including the background radiance the
+## managed paths fade to, and hands it to the unmanaged shell grass.
+func apply_distance_fog(params: Dictionary) -> void:
+	if terrain == null:
+		return
+	var color: Color = params.get("color", Color.BLACK)
+	terrain.set_distance_fog(
+		bool(params.get("enabled", false)),
+		float(params.get("begin", 0.0)),
+		float(params.get("end", 0.0)),
+		float(params.get("curve", 1.0)),
+		Vector3(color.r, color.g, color.b))
 
 
 func get_bound_player() -> Player:

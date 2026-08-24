@@ -28,3 +28,5 @@ shader_parameter/u_system_origin_xz = null
 shader_parameter/u_interaction_push_scale = null
 shader_parameter/u_flatten_response = null
 shader_parameter/u_min_flatten = null
+shader_parameter/u_fog_params = null
+shader_parameter/u_fog_color = null

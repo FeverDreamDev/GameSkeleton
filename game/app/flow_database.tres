@@ -1,25 +1,16 @@
-[gd_resource type="Resource" script_class="FlowDatabase" load_steps=10 format=3]
+[gd_resource type="Resource" script_class="FlowDatabase" format=3 uid="uid://g52tnndjns6f"]
 
-[ext_resource type="Script" path="res://addons/game_flow/data/flow_database.gd" id="1_database"]
-[ext_resource type="Script" path="res://addons/game_flow/data/flow_level_entry.gd" id="2_level"]
-[ext_resource type="Script" path="res://addons/game_flow/data/flow_cutscene_entry.gd" id="3_cutscene"]
-[ext_resource type="Script" path="res://addons/game_flow/data/flow_event.gd" id="4_event"]
-[ext_resource type="Script" path="res://addons/game_flow/data/flow_action.gd" id="5_action"]
-
-[sub_resource type="Resource" id="FlowLevelEntry_terrain_test"]
-script = ExtResource("2_level")
-level_id = &"terrain_test"
-scene_path = "res://game/levels/terrain_test.tscn"
-display_name = "Terrain Test"
-default_spawn = &"default"
+[ext_resource type="Script" uid="uid://cd52pe57xh0l4" path="res://addons/game_flow/data/flow_database.gd" id="1_database"]
+[ext_resource type="Script" uid="uid://dpc78tl1uf3um" path="res://addons/game_flow/data/flow_level_entry.gd" id="2_level"]
+[ext_resource type="Script" uid="uid://dk1iyrv7d5u30" path="res://addons/game_flow/data/flow_cutscene_entry.gd" id="3_cutscene"]
+[ext_resource type="Script" uid="uid://d03tqa68qqkoc" path="res://addons/game_flow/data/flow_event.gd" id="4_event"]
+[ext_resource type="Script" uid="uid://j6kq5bxf5plx" path="res://addons/game_flow/data/flow_action.gd" id="5_action"]
 
 [sub_resource type="Resource" id="FlowCutsceneEntry_intro"]
 script = ExtResource("3_cutscene")
 cutscene_id = &"intro_blank"
 scene_path = "res://game/cutscenes/intro_blank.tscn"
 display_name = "Introduction"
-blocks_input = true
-skippable = true
 
 [sub_resource type="Resource" id="FlowAction_entered_save"]
 script = ExtResource("5_action")
@@ -31,6 +22,12 @@ script = ExtResource("4_event")
 event_id = &"entered_terrain_test"
 one_shot = true
 actions = Array[ExtResource("5_action")]([SubResource("FlowAction_entered_save")])
+
+[sub_resource type="Resource" id="FlowLevelEntry_terrain_test"]
+script = ExtResource("2_level")
+level_id = &"terrain_test"
+scene_path = "res://game/levels/terrain_test.tscn"
+display_name = "Terrain Test"
 
 [resource]
 script = ExtResource("1_database")

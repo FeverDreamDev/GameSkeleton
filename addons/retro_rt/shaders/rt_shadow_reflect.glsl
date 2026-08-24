@@ -21,6 +21,9 @@ layout(std140, set = 0, binding = 1) uniform FrameData {
 	vec4 environment_basis_y;
 	vec4 environment_basis_z;
 	vec4 environment_params;
+	// Distance fog, applied post-lighting in main(). x=begin, y=end, z=curve,
+	// w=enabled. See rt_fog_factor.
+	vec4 fog_params;
 } frame;
 layout(rgba16f, set = 0, binding = 2) uniform image2D scene_color;
 layout(rgba16f, set = 0, binding = 3) uniform image2D separate_specular;
@@ -103,6 +106,20 @@ float decode_roughness(float raw_roughness) {
 		value = 1.0 - value;
 	}
 	return value / (127.0 / 255.0);
+}
+
+
+// Canonical Retro RT distance fog. Keep this function byte-identical in every
+// copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
+// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
+// addons/procedural_terrain_grass/shaders/grass_shell.gdshader.
+// Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Distance fog".
+// params: x=begin, y=end (> begin), z=curve, w=enabled. distance is radial.
+float rt_fog_factor(vec4 params, float view_distance) {
+	if (params.w < 0.5) {
+		return 0.0;
+	}
+	return pow(smoothstep(params.x, params.y, view_distance), params.z);
 }
 
 
@@ -889,6 +906,14 @@ void main() {
 		}
 		color.rgb = mix(color.rgb, reflected_radiance, reflection_strength);
 	}
+	float fog = rt_fog_factor(frame.fog_params, length(world_position - frame.camera_position.xyz));
+	color.rgb = mix(color.rgb, frame.miss_color.rgb, fog);
+	// Forward+ adds separate_specular back into scene_color, so attenuating direct
+	// here makes the composite exactly (ambient + reflection + direct) * (1 - f)
+	// + fog_color * f. Fog is applied to the primary hit only: reflected radiance
+	// inherits the reflector's fog, not the reflected path length. The software
+	// path does the same thing at the same point so the two backends stay matched.
+	direct *= 1.0 - fog;
 	// Forward+'s compositor storage path does not propagate opaque alpha into a
 	// transparent ViewportTexture. Keep a visually-black half-float sentinel so
 	// the shared post pass can distinguish an exactly black managed surface from

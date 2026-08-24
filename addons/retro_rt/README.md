@@ -109,8 +109,10 @@ has to stay inside the shared contract:
   → `World3D`);
 - background `BG_CLEAR_COLOR`, `BG_COLOR` or `BG_SKY`;
 - **Linear** tonemapping at exposure `1.0`;
-- no fog, volumetric fog, SSAO, SSIL, SSR, SDFGI, glow, Environment adjustments,
-  auto exposure, camera exposure overrides, or depth of field;
+- no Environment fog or volumetric fog (RTSceneManager owns an equivalent
+  post-lighting distance fog instead — see **Distance fog**), no SSAO, SSIL, SSR,
+  SDFGI, glow, Environment adjustments, auto exposure, camera exposure overrides,
+  or depth of field;
 - one `RTSceneManager` per Viewport — the stack stamps a meta on the root
   Viewport and refuses a second;
 - opaque, rigid, triangle `MeshInstance3D` geometry: no alpha, skinning, morphs,

@@ -113,12 +113,15 @@ second renderer-owned display transfer. This root setting is separate from the
 three internal post SubViewports, which request HDR 2D as described below.
 
 The manager also validates the effective Environment and camera attributes.
-Fog, volumetric fog, SSAO, SSIL, SSR, SDFGI, glow, Environment adjustments,
-auto exposure, camera exposure overrides, depth of field, and physical-camera
-exposure behavior are outside the shared contract. Tonemapping must be Linear
-at exposure `1.0`. Screen-space roughness limiting is disabled in project
-settings. Managed authored light shadow checkboxes remain RT-shadow toggles;
-the corresponding native raster shadow maps are suppressed while RT is active.
+Environment fog, volumetric fog, SSAO, SSIL, SSR, SDFGI, glow, Environment
+adjustments, auto exposure, camera exposure overrides, depth of field, and
+physical-camera exposure behavior are outside the shared contract. Engine fog
+stays banned because the compositor overwrites managed scene color; the stack
+owns an equivalent post-lighting fade instead (see "Distance fog" below).
+Tonemapping must be Linear at exposure `1.0`. Screen-space roughness limiting
+is disabled in project settings. Managed authored light shadow checkboxes
+remain RT-shadow toggles; the corresponding native raster shadow maps are
+suppressed while RT is active.
 
 These are contract checks, not a claim that every named Godot feature was
 previously active. The validation prevents a scene change from silently adding
@@ -129,6 +132,54 @@ non-temporal resource. Camera-attribute propagation is tested separately from
 pixel hashes. Automatic exposure must never make a frozen-frame or
 quality-switch determinism check intermittently fail. It remains outside the
 current runtime visual contract rather than being enabled by quality scaling.
+
+### Distance fog
+
+`RTSceneManager` owns a post-lighting distance fog that replaces Godot's
+Environment fog, which stays banned. `fog_enabled`, `fog_begin`, `fog_end` and
+`fog_curve` are exported; `configure_distance_fog()` is the runtime push for
+systems that derive their reach from their own data, and `get_distance_fog()`
+plus the `distance_fog_changed` signal let unmanaged forward geometry stay
+matched.
+
+The fog colour is not authorable. It is always the environment's linear
+background radiance (the snapshot's `fallback_linear`), which is also what the
+post stack composites into uncovered pixels, so the fog asymptote and the
+visible background are the same value by construction and there is no seam
+where terrain meets sky.
+
+This function is normative. It is duplicated rather than included because the
+compute shader is compiled by `RDShaderFile` and the others by Godot's shading
+language; keep every copy byte-identical.
+
+```glsl
+float rt_fog_factor(vec4 params, float view_distance) {
+	if (params.w < 0.5) {
+		return 0.0;
+	}
+	return pow(smoothstep(params.x, params.y, view_distance), params.z);
+}
+```
+
+`params` is `(begin, end, curve, enabled)` and `view_distance` is radial, not
+view-space Z, so fog does not shimmer as the camera turns. `smoothstep` is
+C1-continuous at both ends, so there is no kink where the fog starts.
+
+Copies live in `shaders/rt_shadow_reflect.glsl`,
+`shaders/BlinnPhongSoftwareBody.gdshaderinc`, and
+`addons/procedural_terrain_grass/shaders/grass_shell.gdshader`.
+
+Every path composites `final = lit * (1 - f) + fog_color * f`:
+
+| Path | Application |
+| --- | --- |
+| Hardware | `scene_color = mix(ambient + emission + reflection, miss_color, f)` and `separate_specular = direct * (1 - f)`. Forward+ adds the two buffers. |
+| Software | `ALBEDO = mix(base_lighting + direct_lighting, miss_color, f)`, before the Compatibility sRGB compensation. |
+| Unmanaged | `ALBEDO *= (1 - f)`, `EMISSION = fog_color * f`, `SPECULAR *= (1 - f)`. Scaling `ALBEDO` attenuates the diffuse and ambient terms; `EMISSION` adds the fog back. |
+
+Fog is applied once, to the primary hit. Reflected radiance inherits the
+reflector's fog rather than the reflected path length; both RT backends do this
+at the same point, so they stay matched.
 
 ## RT quality presets and resolution domains
 
@@ -569,8 +620,10 @@ Overflow is an explicit error; lights are not silently discarded.
 Nested opaque rigid triangle MeshInstance3D geometry is supported, including
 indexed/non-indexed, multi-surface, shared-mesh, and instance-override cases.
 Missing normals are generated during extraction. Alpha, skinning, morphs,
-vertex deformation, fog, MultiMesh, GridMap, and arbitrary shader semantics
-remain outside the managed material contract.
+vertex deformation, Environment fog, MultiMesh, GridMap, and arbitrary shader
+semantics remain outside the managed material contract. Unmanaged forward
+geometry that must match managed surfaces (the streamed shell grass) subscribes
+to `distance_fog_changed` and applies the canonical `rt_fog_factor` itself.
 
 ## Software acceleration structure
 
@@ -601,6 +654,11 @@ intersections, derivatives, filtered samples, and final conversions differently.
 Those differences are acceptable only when they remain below the measured
 visual tolerances; an obvious image-level difference is a bug, not an accepted
 backend feature.
+
+Distance fog inherits that same class of difference: the hardware path derives
+its fog distance from a depth-reconstructed world position while the software
+path uses the interpolated one, so the two differ by float reconstruction
+error rather than by formula.
 
 ## Profiling
 

@@ -43,6 +43,8 @@ shader_parameter/u_system_origin_xz = null
 shader_parameter/u_interaction_push_scale = null
 shader_parameter/u_flatten_response = null
 shader_parameter/u_min_flatten = null
+shader_parameter/u_fog_params = null
+shader_parameter/u_fog_color = null
 
 [sub_resource type="ArrayMesh" id="ArrayMesh_uhm3m"]
 _surfaces = [{
@@ -58,13 +60,13 @@ _surfaces = [{
 "vertex_data": PackedByteArray("AACAvwAAAAAAAIC/AACAPwAAAAAAAIC/AACAPwAAAAAAAIA/AACAvwAAAAAAAIA//3///wAA/7//f///AAD/v/9///8AAP+//3///wAA/78=")
 }]
 
-[node name="TerrainGrassWarmupProxy" type="Node3D" unique_id=313051962]
+[node name="TerrainGrassWarmupProxy" type="Node3D" unique_id=616135767]
 
-[node name="TerrainVertexColorFormat" type="MeshInstance3D" parent="." unique_id=1884182628]
+[node name="TerrainVertexColorFormat" type="MeshInstance3D" parent="." unique_id=363451305]
 cast_shadow = 0
 mesh = SubResource("ArrayMesh_0cow3")
 
-[node name="GrassVertexColorUVFormat" type="MeshInstance3D" parent="." unique_id=475443077]
+[node name="GrassVertexColorUVFormat" type="MeshInstance3D" parent="." unique_id=1998315769]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -2)
 cast_shadow = 0
 mesh = SubResource("ArrayMesh_uhm3m")

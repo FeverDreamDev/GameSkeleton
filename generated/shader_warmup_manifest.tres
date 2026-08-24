@@ -1,4 +1,4 @@
-[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4 uid="uid://3sf4vb4yl6nt"]
+[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4 uid="uid://kkqdk6wbldfg"]
 
 [ext_resource type="Shader" uid="uid://bfhmjth5ltdrv" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="1_8rwql"]
 [ext_resource type="Shader" uid="uid://kueanl5fngu5" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="2_sm4wu"]
@@ -273,6 +273,8 @@ shader_parameter/u_system_origin_xz = Vector2(0, 0)
 shader_parameter/u_interaction_push_scale = 0.12
 shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
+shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
+shader_parameter/u_fog_color = Vector3(0, 0, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_3i7qk"]
 resource_name = "Runtime Grass Shell Warmup"
@@ -300,6 +302,8 @@ shader_parameter/u_system_origin_xz = Vector2(0, 0)
 shader_parameter/u_interaction_push_scale = 0.12
 shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
+shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
+shader_parameter/u_fog_color = Vector3(0, 0, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_dcn6r"]
 resource_name = "RT Warmup BlinnPhong"
@@ -351,6 +355,8 @@ shader_parameter/u_system_origin_xz = Vector2(0, 0)
 shader_parameter/u_interaction_push_scale = 0.12
 shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
+shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
+shader_parameter/u_fog_color = Vector3(0, 0, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_14so5"]
 resource_name = "Player RT Shadow Proxy"
@@ -480,6 +486,7 @@ shader_parameter/swrt_shading_layout = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_shading_counts = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_frame_settings = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_miss_color = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/swrt_environment_mode = 0
 shader_parameter/swrt_environment_basis_x = Vector3(1, 0, 0)
 shader_parameter/swrt_environment_basis_y = Vector3(0, 1, 0)
@@ -523,6 +530,7 @@ shader_parameter/swrt_shading_layout = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_shading_counts = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_frame_settings = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_miss_color = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/swrt_environment_mode = 0
 shader_parameter/swrt_environment_basis_x = Vector3(1, 0, 0)
 shader_parameter/swrt_environment_basis_y = Vector3(0, 1, 0)
@@ -544,5 +552,5 @@ sources = PackedStringArray("res://addons/retro_rt/examples/RTExample.tscn", "re
 pair_material_indices = PackedInt32Array(0, 1, 2, 3, 4, 5, 7, 8, 10, 11, 6, 12, 13)
 pair_vertex_formats = PackedInt64Array(4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4127, 4119, 4111, 4127, 4119)
 pair_flags = PackedInt32Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-generated_at = "2026-08-23 16:18:04"
-fingerprint = "e8caac73976cc220d4764cd1b1ea1e24f5d8fb3d60a369eef52dd3d57ff08474"
+generated_at = "2026-08-23 20:07:58"
+fingerprint = "a4cce821b7d4f7fe8ef44584d723aae6808e147d734f5cf605d18831378ea4e4"

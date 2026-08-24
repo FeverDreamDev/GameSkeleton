@@ -12,6 +12,10 @@ signal rt_failed(reason: String)
 signal rt_quality_changed(preset: int, requested_scale: float)
 signal topology_sync_started
 signal topology_sync_completed
+## Emitted when the fog parameters or the environment background radiance change.
+## Unmanaged forward geometry (shell grass and similar) subscribes to stay matched
+## to the managed surfaces it sits on.
+signal distance_fog_changed(params: Dictionary)
 
 enum RTBackend {
 	AUTO,
@@ -176,6 +180,32 @@ const RT_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
 @export var ray_origin_bias: float = 0.001
 @export var ray_max_distance: float = 10000.0
 @export var profiling_enabled: bool = false
+@export_group("Distance Fog")
+
+## Post-lighting distance fog applied identically by the hardware compositor, the
+## software fragment path, and any unmanaged shader that subscribes to
+## [signal distance_fog_changed]. Environment fog stays banned by
+## [method _validate_environment]; this replaces it. The fog colour is not
+## authorable: it is always the environment's linear background radiance, which
+## is also what the post stack composites into uncovered pixels.
+@export var fog_enabled: bool = false:
+	set(value):
+		fog_enabled = value
+		_mark_fog_dirty()
+@export_range(0.0, 4096.0, 0.5, "or_greater") var fog_begin: float = 32.0:
+	set(value):
+		fog_begin = maxf(value, 0.0)
+		_mark_fog_dirty()
+@export_range(0.0, 4096.0, 0.5, "or_greater") var fog_end: float = 64.0:
+	set(value):
+		fog_end = maxf(value, 0.0)
+		_mark_fog_dirty()
+## Exponent applied to the smoothstep ramp. 1.0 is the reference curve.
+@export_range(0.25, 4.0, 0.01) var fog_curve: float = 1.0:
+	set(value):
+		fog_curve = clampf(value, 0.01, 8.0)
+		_mark_fog_dirty()
+
 @export_group("Quality")
 
 var _rt_quality_preset: RTQualityPreset = RTQualityPreset.NATIVE
@@ -287,6 +317,8 @@ var _snapshot_bias := 0.001
 var _snapshot_max_distance := 10000.0
 var _snapshot_max_lights := MAX_SUPPORTED_LIGHTS
 var _snapshot_profiling_enabled := false
+var _snapshot_fog := Vector4.ZERO
+var _fog_signal_muted := false
 var _receiver_light_starts := PackedInt32Array()
 var _receiver_light_counts := PackedInt32Array()
 var _receiver_light_indices := PackedInt32Array()
@@ -1283,7 +1315,12 @@ func _validate_environment(environment: Environment) -> bool:
 	if environment == null:
 		return _validate_camera_attributes_contract()
 	if environment.fog_enabled or environment.volumetric_fog_enabled:
-		_fail("Fog is outside the opaque ray-tracing material contract and must be disabled.")
+		_fail(
+			"Environment fog is replaced by RTSceneManager's distance fog "
+			+ "(fog_enabled / fog_begin / fog_end / fog_curve, or configure_distance_fog()), "
+			+ "which the hardware compositor, the software fragment path and subscribed "
+			+ "unmanaged shaders apply identically. Engine fog is overwritten on managed "
+			+ "surfaces and would double-apply on unmanaged ones. Disable it.")
 		return false
 	if (
 			environment.ssao_enabled
@@ -1358,6 +1395,80 @@ func _linear_background_color(color: Color, energy: float) -> Color:
 	linear.b *= energy
 	linear.a = 1.0
 	return linear
+
+
+## Sanitized transport form. x=begin, y=end (always greater than begin), z=curve,
+## w=enabled. Matches the vec4 the three shading paths receive.
+func _effective_fog_params() -> Vector4:
+	var begin := maxf(fog_begin, 0.0)
+	var end_distance := maxf(fog_end, begin + 0.001)
+	return Vector4(begin, end_distance, maxf(fog_curve, 0.01), 1.0 if fog_enabled else 0.0)
+
+
+## Runtime push for systems that derive fog reach from their own data, such as
+## streamed terrain deriving it from its load distance. Equivalent to assigning
+## the four exported properties, and emits [signal distance_fog_changed] once.
+func configure_distance_fog(
+		begin: float,
+		end_distance: float,
+		curve: float = 1.0,
+		enabled: bool = true) -> void:
+	var changed := (
+		not is_equal_approx(fog_begin, begin)
+		or not is_equal_approx(fog_end, end_distance)
+		or not is_equal_approx(fog_curve, curve)
+		or fog_enabled != enabled)
+	if not changed:
+		return
+	# The four setters each call _mark_fog_dirty. Mute them so one push emits one
+	# signal instead of four.
+	_fog_signal_muted = true
+	fog_begin = maxf(begin, 0.0)
+	fog_end = maxf(end_distance, 0.0)
+	fog_curve = clampf(curve, 0.01, 8.0)
+	fog_enabled = enabled
+	_fog_signal_muted = false
+	_mark_fog_dirty()
+
+
+## Everything an unmanaged forward shader needs to match the RT paths exactly.
+## "color" is scene-linear radiance that has already been background-energy
+## scaled, so a consumer must not convert it again.
+func get_distance_fog() -> Dictionary:
+	var params := _effective_fog_params()
+	return {
+		"enabled": params.w >= 0.5,
+		"begin": params.x,
+		"end": params.y,
+		"curve": params.z,
+		"color": _current_fog_color(),
+	}
+
+
+func _current_fog_color() -> Color:
+	if not _snapshot_environment.is_empty():
+		return _snapshot_environment.get("fallback_linear", Color.BLACK)
+	# Before start_rt() the snapshot is empty. Resolve directly so a freshly
+	# installed level already fogs to the right colour on its first rendered frame.
+	var resolved := _resolve_effective_environment()
+	var environment := resolved.get("environment") as Environment
+	if environment == null:
+		return _linear_background_color(RenderingServer.get_default_clear_color(), 1.0)
+	var energy := environment.background_energy_multiplier
+	if environment.background_mode == Environment.BG_COLOR:
+		return _linear_background_color(environment.background_color, energy)
+	# BG_CLEAR_COLOR and BG_SKY both fall back to the clear colour here. Under a sky
+	# that is an approximation: the fog asymptote is flat while the visible
+	# background is not. This project uses BG_COLOR.
+	return _linear_background_color(RenderingServer.get_default_clear_color(), energy)
+
+
+func _mark_fog_dirty() -> void:
+	# Setters also run during property initialization, before the node exists in
+	# the tree. The periodic _publish_snapshot pass picks the values up either way.
+	if _fog_signal_muted or not is_inside_tree():
+		return
+	distance_fog_changed.emit(get_distance_fog())
 
 
 func _sky_bake_size(sky: Sky) -> Vector2i:
@@ -1657,6 +1768,10 @@ func _refresh_environment_snapshot(force: bool = false) -> int:
 	_environment_dirty = false
 	_environment_debounce_frames = 0
 	_environment_panorama_bytes = int(next_environment.get("bytes", 0))
+	# The background radiance is the fog colour, so every environment revision has
+	# to reach unmanaged subscribers — including the one taken during start_rt,
+	# which happens after a level installs and before any _publish_snapshot pass.
+	_mark_fog_dirty()
 	return 1
 
 
@@ -1885,6 +2000,7 @@ func _collect_scene() -> bool:
 	_snapshot_max_distance = ray_max_distance
 	_snapshot_max_lights = max_scene_lights
 	_snapshot_profiling_enabled = profiling_enabled
+	_snapshot_fog = _effective_fog_params()
 	_topology_revision += 1
 	return not _failed
 
@@ -3046,6 +3162,11 @@ func _restore_renderer_overrides() -> void:
 
 func _create_material_id_carrier() -> void:
 	if _carrier_light:
+		# _stop_rt_internal hides the carrier rather than freeing it, so a restart
+		# has to show it again. Without this the material-ID pass writes nothing
+		# after the first stop, decode_visibility_id fails for every managed pixel,
+		# and the compositor silently leaves raster carrier albedo on screen.
+		_carrier_light.visible = true
 		return
 	_carrier_light = DirectionalLight3D.new()
 	_carrier_light.name = "__RTMaterialIDCarrier"
@@ -3229,11 +3350,13 @@ func _publish_snapshot() -> void:
 			or not _packed_int_arrays_equal(next_receiver_indices, _receiver_light_indices))
 
 
+	var next_fog := _effective_fog_params()
 	var settings_changed := (
 		ray_origin_bias != _snapshot_bias
 		or ray_max_distance != _snapshot_max_distance
 		or max_scene_lights != _snapshot_max_lights
 		or profiling_enabled != _snapshot_profiling_enabled
+		or next_fog != _snapshot_fog
 	)
 	if not transforms_changed and not masks_changed and not layers_changed and not materials_changed and not lights_changed and not environment_changed and not receiver_lists_changed and not settings_changed:
 		return
@@ -3259,6 +3382,7 @@ func _publish_snapshot() -> void:
 	_snapshot_max_distance = ray_max_distance
 	_snapshot_max_lights = max_scene_lights
 	_snapshot_profiling_enabled = profiling_enabled
+	_snapshot_fog = next_fog
 
 	_snapshot_revision += 1
 	if traversal_changed:
@@ -3277,6 +3401,10 @@ func _publish_snapshot() -> void:
 	_commit_current_snapshot()
 	if environment_changed and _post_stack:
 		_post_stack.update(_get_post_settings())
+	if environment_changed or settings_changed:
+		# The background radiance is the fog colour, so an environment swap has to
+		# reach unmanaged subscribers too, not just the two RT backends.
+		_mark_fog_dirty()
 
 
 func _commit_current_snapshot() -> void:
@@ -3315,6 +3443,10 @@ func _commit_current_snapshot() -> void:
 		"max_distance": _snapshot_max_distance,
 		"max_lights": _snapshot_max_lights,
 		"profiling_enabled": _snapshot_profiling_enabled,
+		"fog_begin": _snapshot_fog.x,
+		"fog_end": _snapshot_fog.y,
+		"fog_curve": _snapshot_fog.z,
+		"fog_enabled": _snapshot_fog.w >= 0.5,
 	}
 	next_snapshot.make_read_only()
 	_current_snapshot = next_snapshot

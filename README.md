@@ -27,6 +27,11 @@ SMAA, and FSR add-ons.
   appearing in RT reflections.
 - Rigid props and the fixed player proxy use `retro_rt_managed`. Deforming shell grass stays
   outside RT geometry but remains inside the shared post stack.
+- Distance fog is owned by `RTSceneManager`, not the Environment (engine fog stays banned).
+  The level derives its reach from `terrain_load_distance`, so the fade always covers the
+  chunk streaming boundary, and the same `rt_fog_factor` runs in the hardware, software and
+  shell-grass paths. Terrain vertex colours are authored in scene-linear and target the
+  grass canopy so the ground stays invisible under grass.
 - The default is Native (100%) plus High SMAA. Reduced RT quality presets enable the FSR1
   EASU/RCAS path; the reticle and Win98 UI remain native-resolution layers above presentation.
 

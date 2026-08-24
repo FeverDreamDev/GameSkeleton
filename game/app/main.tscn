@@ -1,21 +1,21 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene format=3 uid="uid://b1idn1u6b231g"]
 
-[ext_resource type="Script" path="res://game/app/game_app.gd" id="1_app"]
-[ext_resource type="Script" path="res://addons/win98_ui/core/ui_system.gd" id="2_ui"]
-[ext_resource type="Script" path="res://addons/game_flow/core/flow_system.gd" id="3_flow"]
-[ext_resource type="Script" path="res://addons/shader_warmup/shader_warmup.gd" id="4_warmup"]
-[ext_resource type="Script" path="res://addons/retro_rt/scripts/RTSceneManager.gd" id="5_rt"]
-[ext_resource type="FlowDatabase" path="res://game/app/flow_database.tres" id="6_database"]
-[ext_resource type="PackedScene" path="res://player/player.tscn" id="7_player"]
+[ext_resource type="Script" uid="uid://bl0bemooqowoe" path="res://game/app/game_app.gd" id="1_app"]
+[ext_resource type="Script" uid="uid://cvivasp0cpkrb" path="res://addons/win98_ui/core/ui_system.gd" id="2_ui"]
+[ext_resource type="Script" uid="uid://danvyypnokl5x" path="res://addons/game_flow/core/flow_system.gd" id="3_flow"]
+[ext_resource type="Script" uid="uid://bd512grrlpslo" path="res://addons/shader_warmup/shader_warmup.gd" id="4_warmup"]
+[ext_resource type="Script" uid="uid://oqtwkbndq1c8" path="res://addons/retro_rt/scripts/RTSceneManager.gd" id="5_rt"]
+[ext_resource type="Resource" uid="uid://g52tnndjns6f" path="res://game/app/flow_database.tres" id="6_database"]
+[ext_resource type="PackedScene" uid="uid://df7k3m8px4n1v" path="res://player/player.tscn" id="7_player"]
 
-[node name="GameApp" type="Node"]
+[node name="GameApp" type="Node" unique_id=1113637451]
 process_mode = 3
 script = ExtResource("1_app")
 
-[node name="UISystem" type="Node" parent="."]
+[node name="UISystem" type="Node" parent="." unique_id=1507904035]
 script = ExtResource("2_ui")
 
-[node name="FlowSystem" type="Node" parent="."]
+[node name="FlowSystem" type="Node" parent="." unique_id=1813753328]
 script = ExtResource("3_flow")
 database = ExtResource("6_database")
 world_container_path = NodePath("../WorldRoot")
@@ -24,30 +24,25 @@ cutscene_container_path = NodePath("../CutsceneRoot")
 cover_duration = 0.3
 reveal_duration = 0.4
 
-[node name="ShaderWarmup" type="Node" parent="."]
+[node name="ShaderWarmup" type="Node" parent="." unique_id=447617292]
 script = ExtResource("4_warmup")
 
-[node name="RTSceneManager" type="Node" parent="."]
+[node name="RTSceneManager" type="Node" parent="." unique_id=19352855]
+process_priority = 100000
 script = ExtResource("5_rt")
-geometry_root_path = NodePath("..")
 world_environment_path = NodePath("")
 auto_start = false
 preview_in_editor = false
-rt_backend = 0
-rt_quality = 0
-post_anti_aliasing_enabled = true
-post_smaa_quality = 2
-retro_post_enabled = true
 
-[node name="WorldRoot" type="Node3D" parent="."]
+[node name="WorldRoot" type="Node3D" parent="." unique_id=1250619597]
 process_mode = 1
 
-[node name="PersistentActors" type="Node3D" parent="."]
+[node name="PersistentActors" type="Node3D" parent="." unique_id=1636893896]
 process_mode = 1
 
-[node name="Player" parent="PersistentActors" instance=ExtResource("7_player")]
+[node name="Player" parent="PersistentActors" unique_id=1076454426 instance=ExtResource("7_player")]
 integrated_mode = true
 capture_mouse_on_ready = false
 
-[node name="CutsceneRoot" type="Node" parent="."]
+[node name="CutsceneRoot" type="Node" parent="." unique_id=334328908]
 process_mode = 1

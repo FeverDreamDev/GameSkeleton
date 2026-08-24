@@ -124,6 +124,7 @@ server.
 | `is_position_ready(world_xz)` / `wait_for_position_ready(world_xz, timeout)` | Collision-safe spawn/load handoff |
 | `get_runtime_stats()` | Counters for an on-screen overlay |
 | `invalidate_grass_region(aabb)` | Force static masking to re-run over a region |
+| `set_distance_fog(enabled, begin, end, curve, color)` | Host-renderer hook: fades the unmanaged grass on the renderer's fog curve. `color` is scene-linear radiance |
 | `chunk_loaded` / `chunk_unloaded` / `grass_rebuilt` | Streaming signals |
 
 ## Constraints

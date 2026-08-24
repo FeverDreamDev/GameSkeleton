@@ -13,6 +13,9 @@ const INDEX_STRIDE := 4
 const INSTANCE_RECORD_SIZE := 64
 const MATERIAL_RECORD_SIZE := 128
 const MAX_LIGHT_RECORDS := 256
+# std140 FrameData is mat4 + 13 vec4 = 17 vec4. Keep in step with the FrameData
+# block in rt_shadow_reflect.glsl; a mismatch fails loudly in _update_frame_ubo.
+const FRAME_UBO_FLOATS := 68
 
 const PROFILE_TLAS_BEGIN := "RetroRT/TLAS begin"
 const PROFILE_TLAS_END := "RetroRT/TLAS end"
@@ -262,11 +265,11 @@ func _initialize_resources(snapshot: Dictionary) -> bool:
 		return false
 	if not _build_geometry(snapshot):
 		return false
-	frame_ubo = rd.uniform_buffer_create(256)
+	frame_ubo = rd.uniform_buffer_create(FRAME_UBO_FLOATS * 4)
 	if not frame_ubo.is_valid():
 		_fail("Unable to allocate the RT frame UBO.")
 		return false
-	_frame_values_cache.resize(64)
+	_frame_values_cache.resize(FRAME_UBO_FLOATS)
 	_initialized = true
 	var ready := _update_instances(snapshot, bool(snapshot.get("profiling_enabled", false)))
 	if ready:
@@ -839,6 +842,11 @@ func _update_frame_ubo(
 		float(environment.get("width", 0)),
 		float(environment.get("height", 0)),
 		0.0))
+	_set_frame_vec4(64, Vector4(
+		float(snapshot.get("fog_begin", 0.0)),
+		float(snapshot.get("fog_end", 1.0)),
+		float(snapshot.get("fog_curve", 1.0)),
+		1.0 if bool(snapshot.get("fog_enabled", false)) else 0.0))
 	var bytes := _frame_values_cache.to_byte_array()
 	if rd.buffer_update(frame_ubo, 0, bytes.size(), bytes) != OK:
 		_fail("Unable to update the RT frame UBO.")

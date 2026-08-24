@@ -175,6 +175,11 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_record_explicit_allocation()
 	_internal_camera.name = "SceneCaptureCamera"
 	_internal_camera.set_meta(&"__rt_internal", true)
+	# _sync_camera assigns this camera's transform every frame from _process, which
+	# is outside the physics tick that project-wide physics interpolation expects.
+	# Interpolating a mirror of an already-interpolated camera would only make it
+	# lag the source, so drive it directly.
+	_internal_camera.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	_scene_viewport.add_child(_internal_camera)
 
 	_edge_material = ShaderMaterial.new()

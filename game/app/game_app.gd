@@ -119,6 +119,7 @@ func _wire_systems() -> bool:
 		rt_manager.rt_ready.connect(_on_rt_ready)
 		rt_manager.rt_failed.connect(_on_rt_failed)
 		rt_manager.rt_quality_changed.connect(_on_rt_quality_changed)
+		rt_manager.distance_fog_changed.connect(_on_distance_fog_changed)
 		_apply_graphics_preferences()
 	return true
 
@@ -493,6 +494,30 @@ func _recover_to_main_menu() -> void:
 
 #region World installation
 
+
+
+## Levels own their fog reach because only they know their streaming radius.
+## A level without the hook simply never enables fog.
+func _apply_level_distance_fog(level: Node) -> void:
+	if rt_manager == null or level == null or not level.has_method("distance_fog_request"):
+		return
+	var request: Dictionary = level.call("distance_fog_request")
+	rt_manager.configure_distance_fog(
+		float(request.get("begin", 0.0)),
+		float(request.get("end", 0.0)),
+		float(request.get("curve", 1.0)),
+		bool(request.get("enabled", false)))
+	# configure_distance_fog stays silent when nothing changed, but a reinstalled
+	# level always brings a fresh grass material at the shader defaults. Push
+	# straight to the level so it is seeded either way.
+	if level.has_method("apply_distance_fog"):
+		level.call("apply_distance_fog", rt_manager.get_distance_fog())
+
+
+func _on_distance_fog_changed(params: Dictionary) -> void:
+	var level := flow_system.current_level() if flow_system != null else null
+	if level != null and level.has_method("apply_distance_fog"):
+		level.call("apply_distance_fog", params)
 func _install_world(
 		scene: PackedScene,
 		entry: FlowLevelEntry,
@@ -512,6 +537,8 @@ func _install_world(
 		level_node.queue_free()
 		return &""
 	world_root.add_child(level)
+	# Before RT starts, so the level's first rendered frame already has its fog.
+	_apply_level_distance_fog(level)
 	player.visible = true
 	_set_player_camera_current(true)
 
@@ -743,7 +770,7 @@ func _apply_graphics_preferences() -> void:
 		return
 	rt_manager.set_rt_quality(_rt_quality)
 	rt_manager.post_anti_aliasing_enabled = _smaa_enabled
-	rt_manager.post_smaa_quality = _smaa_quality
+	rt_manager.post_smaa_quality = _smaa_quality as RTSceneManager.SMAAQuality
 	rt_manager.retro_post_enabled = _retro_post_enabled
 
 

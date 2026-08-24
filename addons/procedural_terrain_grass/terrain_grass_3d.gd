@@ -85,8 +85,27 @@ signal grass_rebuilt(coord: Vector2i)
 	set(value):
 		terrain_material_override = value
 		_mark_visuals_dirty()
-@export var terrain_low_color: Color = Color("536b3c")
-@export var terrain_high_color: Color = Color("827651")
+# Authored in SCENE-LINEAR radiance, not sRGB. See TerrainGenerator.terrain_color.
+#
+# Calibrated empirically, not derived: the ground is lit by the RT compositor
+# while the shell grass is lit natively, so the two responses differ and the
+# match has to be measured. Method: park the camera over flat ground, sample the
+# mean radiance of a guaranteed-ground screen band with grass on (canopy) and off
+# (bare terrain), and solve for the albedo that equates them. At these values the
+# measured canopy/ground ratio is (0.96, 0.98, 0.32) -- red and green match within
+# 4%, which is what carries a green surface.
+#
+# Blue cannot be matched. The ground carries a ~0.011 blue floor that does not
+# respond to albedo at all, against the canopy's 0.0037; the excess is roughly
+# 0.008 linear and reads as a very slight cast, not a visible patch.
+#
+# These sit near the 8-bit ARRAY_COLOR floor (red is one or two codes out of 255),
+# so the height ramp survives mostly in green. That is deliberate: the ramp is
+# already quantized into six bands by terrain_color, and subtle is the intent.
+# Re-measure if the sun, the ambient, or the grass colours change.
+# Keep in sync with TerrainSettings.
+@export var terrain_low_color: Color = Color(0.0040, 0.0278, 0.0008)
+@export var terrain_high_color: Color = Color(0.0054, 0.0376, 0.0011)
 @export var terrain_steep_color: Color = Color("665f55")
 @export var terrain_height_color_min: float = -10.0
 @export var terrain_height_color_max: float = 16.0
@@ -248,6 +267,10 @@ var _runtime_epoch: int = 0
 var _started: bool = false
 var _missing_target_warned: bool = false
 var _visuals_dirty: bool = true
+# Distance fog is a live material uniform only: it never feeds mesh generation,
+# masking or LOD, so it is deliberately kept out of TerrainSettings.
+var _fog_params := Vector4(0.0, 1.0, 1.0, 0.0)
+var _fog_color := Vector3.ZERO
 var _registered_static: Dictionary = {}
 var _registered_interactors: Dictionary = {}
 var _preview_noise: FastNoiseLite
@@ -426,6 +449,29 @@ func get_blocker_query_mask() -> int:
 
 func get_grass_material() -> ShaderMaterial:
 	return _grass_material
+
+
+## Applies the host renderer's distance fog to the shell grass so this unmanaged
+## geometry fades on exactly the same curve as the managed ground beneath it.
+## [param color] is scene-linear radiance, never sRGB, and must be the renderer's
+## background radiance. The grass never derives fog itself; the level pushes it.
+func set_distance_fog(
+		enabled: bool,
+		begin: float,
+		end_distance: float,
+		curve: float,
+		color: Vector3) -> void:
+	var sanitized_begin := maxf(begin, 0.0)
+	var next_params := Vector4(
+		sanitized_begin,
+		maxf(end_distance, sanitized_begin + 0.001),
+		maxf(curve, 0.01),
+		1.0 if enabled else 0.0)
+	if next_params == _fog_params and color.is_equal_approx(_fog_color):
+		return
+	_fog_params = next_params
+	_fog_color = color
+	_mark_visuals_dirty()
 
 
 func get_active_interactor_count() -> int:
@@ -628,6 +674,8 @@ func _apply_visual_settings() -> void:
 		_grass_material.set_shader_parameter("u_min_flatten", minimum_flatten)
 		var origin := _origin_position()
 		_grass_material.set_shader_parameter("u_system_origin_xz", Vector2(origin.x, origin.z))
+		_grass_material.set_shader_parameter("u_fog_params", _fog_params)
+		_grass_material.set_shader_parameter("u_fog_color", _fog_color)
 	if _interaction_manager != null:
 		_interaction_manager.dynamic_interaction_enabled = dynamic_interaction_enabled
 	if _terrain_manager != null:

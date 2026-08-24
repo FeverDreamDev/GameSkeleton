@@ -25,6 +25,13 @@ uniform vec2 u_system_origin_xz = vec2(0.0);
 uniform float u_interaction_push_scale = 0.12;
 uniform float u_flatten_response = 1.0;
 uniform float u_min_flatten = 0.3;
+// Distance fog pushed by the host renderer so unmanaged grass fades on exactly
+// the same curve as the managed ground under it. x=begin, y=end, z=curve,
+// w=enabled.
+uniform vec4 u_fog_params = vec4(0.0, 1.0, 1.0, 0.0);
+// Scene-linear radiance, deliberately NOT source_color: the value arrives
+// already linearized and must not be converted a second time.
+uniform vec3 u_fog_color = vec3(0.0);
 
 varying vec3 base_world_position;
 varying vec3 base_world_normal;
@@ -51,6 +58,20 @@ float smooth_value_noise(vec2 p) {
 	float n01 = hash12(lattice + vec2(0.0, 1.0));
 	float n11 = hash12(lattice + vec2(1.0, 1.0));
 	return mix(mix(n00, n10, fade.x), mix(n01, n11, fade.x), fade.y);
+}
+
+
+// Canonical Retro RT distance fog. Keep this function byte-identical in every
+// copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
+// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
+// addons/procedural_terrain_grass/shaders/grass_shell.gdshader.
+// Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Distance fog".
+// params: x=begin, y=end (> begin), z=curve, w=enabled. distance is radial.
+float rt_fog_factor(vec4 params, float view_distance) {
+	if (params.w < 0.5) {
+		return 0.0;
+	}
+	return pow(smoothstep(params.x, params.y, view_distance), params.z);
 }
 
 vec2 stalk_center_for(vec2 cell, vec2 random_value) {
@@ -181,9 +202,19 @@ void fragment() {
 	}
 	color *= mix(0.72, 1.0, pow(h, 0.72));
 	color *= mix(0.88, 1.0, edge_coverage);
-	ALBEDO = color;
+	// Grass is unmanaged and forward-lit with no light() override, so fog is applied
+	// by attenuating ALBEDO (which scales both the diffuse and the ambient term) and
+	// adding the fog radiance back through EMISSION. That is exactly
+	// mix(lit, u_fog_color, fog), matching the two RT paths.
+	vec3 fog_world_position = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float fog = rt_fog_factor(u_fog_params, length(fog_world_position - INV_VIEW_MATRIX[3].xyz));
+	ALBEDO = color * (1.0 - fog);
+	EMISSION = u_fog_color * fog;
 	ROUGHNESS = 0.92;
-	SPECULAR = 0.08;
+	// Godot derives f90 from f0 = 0.16 * SPECULAR^2, so driving SPECULAR to zero
+	// removes the grazing-angle Fresnel rim as well. Left at 0.08 the far grass
+	// would keep a highlight against flat fog, which is the pop this hides.
+	SPECULAR = 0.08 * (1.0 - fog);
 	vec3 world_normal = normalize(mix(base_world_normal, vec3(0.0, 1.0, 0.0), h * 0.78));
 	NORMAL = normalize((VIEW_MATRIX * vec4(world_normal, 0.0)).xyz);
 }

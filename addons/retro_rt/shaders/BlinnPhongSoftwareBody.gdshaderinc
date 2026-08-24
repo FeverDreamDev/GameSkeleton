@@ -42,6 +42,11 @@ uniform ivec4 swrt_shading_layout = ivec4(0);
 uniform ivec4 swrt_shading_counts = ivec4(0);
 uniform vec4 swrt_frame_settings = vec4(0.0);
 uniform vec4 swrt_miss_color = vec4(0.0);
+// Post-lighting composite only, so deliberately not folded into
+// swrt_frame_settings, which carries traversal state. The fog colour is
+// swrt_miss_color: already raw scene-linear, so no source_color hint here.
+// x=begin, y=end, z=curve, w=enabled.
+uniform vec4 swrt_fog_params = vec4(0.0, 1.0, 1.0, 0.0);
 uniform int swrt_environment_mode = 0;
 uniform vec3 swrt_environment_basis_x = vec3(1.0, 0.0, 0.0);
 uniform vec3 swrt_environment_basis_y = vec3(0.0, 1.0, 0.0);
@@ -84,6 +89,20 @@ vec3 swrt_srgb_to_linear(vec3 color) {
 	vec3 low = color / 12.92;
 	vec3 high = pow(max((color + 0.055) / 1.055, vec3(0.0)), vec3(2.4));
 	return mix(high, low, cutoff);
+}
+
+
+// Canonical Retro RT distance fog. Keep this function byte-identical in every
+// copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
+// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
+// addons/procedural_terrain_grass/shaders/grass_shell.gdshader.
+// Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Distance fog".
+// params: x=begin, y=end (> begin), z=curve, w=enabled. distance is radial.
+float rt_fog_factor(vec4 params, float view_distance) {
+	if (params.w < 0.5) {
+		return 0.0;
+	}
+	return pow(smoothstep(params.x, params.y, view_distance), params.z);
 }
 
 
@@ -434,9 +453,13 @@ void fragment() {
 		vec3 base_lighting = reflection_amount > (0.5 / 127.0)
 			? mix(ambient_emission, reflected_radiance, reflection_amount)
 			: ambient_emission;
-		ALBEDO = malformed
-			? vec3(1.0, 0.0, 1.0)
-			: base_lighting + direct_lighting;
+		// Fog matches the hardware path: applied post-lighting to the primary hit
+		// only, fading to the environment radiance the post stack also composites
+		// into uncovered pixels.
+		vec3 lit = base_lighting + direct_lighting;
+		float fog = rt_fog_factor(swrt_fog_params, length(world_position - camera_position));
+		lit = mix(lit, swrt_miss_color.rgb, fog);
+		ALBEDO = malformed ? vec3(1.0, 0.0, 1.0) : lit;
 		// Compatibility always linearizes spatial ALBEDO before its lighting/
 		// tonemap stage. Compensate only at this renderer boundary so the value
 		// arriving at the shared post stack remains canonical scene-linear RGB.

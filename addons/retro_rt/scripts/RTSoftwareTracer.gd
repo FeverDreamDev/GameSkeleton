@@ -91,6 +91,7 @@ var _shading_layout := Vector4i.ZERO
 var _shading_counts := Vector4i.ZERO
 var _frame_settings := Vector4.ZERO
 var _miss_color := Color.BLACK
+var _fog_params := Vector4(0.0, 1.0, 1.0, 0.0)
 var _environment_mode := 0
 var _environment_inverse_basis := Basis.IDENTITY
 var _environment_revision := -1
@@ -295,6 +296,17 @@ func update(snapshot: Dictionary, _retro_settings: Dictionary = {}) -> String:
 		_primary_material_records = (snapshot.get("material_records", []) as Array).duplicate(true)
 		_material_parameters_dirty = true
 
+	var next_fog := Vector4(
+		float(snapshot.get("fog_begin", 0.0)),
+		float(snapshot.get("fog_end", 1.0)),
+		float(snapshot.get("fog_curve", 1.0)),
+		1.0 if bool(snapshot.get("fog_enabled", false)) else 0.0)
+	if next_fog != _fog_params:
+		# Deliberately not part of packed_settings_changed: fog is a post-lighting
+		# composite, and that flag rebuilds the whole shading atlas.
+		_fog_params = next_fog
+		_frame_uniforms_dirty = true
+
 	_tlas_revision = next_tlas_revision
 	_instance_revision = next_instance_revision
 	_material_revision = next_material_revision
@@ -423,6 +435,7 @@ func shutdown() -> void:
 	_shading_counts = Vector4i.ZERO
 	_frame_settings = Vector4.ZERO
 	_miss_color = Color.BLACK
+	_fog_params = Vector4(0.0, 1.0, 1.0, 0.0)
 	_environment_mode = 0
 	_environment_inverse_basis = Basis.IDENTITY
 	_environment_revision = -1
@@ -1122,6 +1135,7 @@ func _sync_frame_uniforms() -> void:
 		clone.set_shader_parameter(&"swrt_shading_counts", _shading_counts)
 		clone.set_shader_parameter(&"swrt_frame_settings", _frame_settings)
 		clone.set_shader_parameter(&"swrt_miss_color", _miss_color)
+		clone.set_shader_parameter(&"swrt_fog_params", _fog_params)
 		clone.set_shader_parameter(&"swrt_environment_mode", _environment_mode)
 		clone.set_shader_parameter(&"swrt_environment_basis_x", _environment_inverse_basis.x)
 		clone.set_shader_parameter(&"swrt_environment_basis_y", _environment_inverse_basis.y)
