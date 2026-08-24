@@ -27,6 +27,13 @@ SMAA, and FSR add-ons.
   appearing in RT reflections.
 - Rigid props and the fixed player proxy use `retro_rt_managed`. Deforming shell grass stays
   outside RT geometry but remains inside the shared post stack.
+- Neither terrain nor grass can therefore be traced, so `TerrainGrass3D` publishes the ground
+  to `RTSceneManager.configure_ground_layer()` as one camera-centred RGBA32F heightfield:
+  scene-linear canopy colour in RGB, canopy height in A. A reflection ray that misses the
+  acceleration structure marches that instead of falling straight through to the sky, which
+  is how ground and grass appear in mirrors without either entering the TLAS. Set
+  `RTSceneManager.ground_march_steps` to zero to turn it off. See `RT_PIPELINE.md`,
+  "Analytic ground layer".
 - Distance fog is owned by `RTSceneManager`, not the Environment (engine fog stays banned).
   The level derives its reach from `terrain_load_distance`, so the fade always covers the
   chunk streaming boundary, and the same `rt_fog_factor` runs in the hardware, software and
@@ -61,4 +68,5 @@ The generator writes the exact runtime terrain/grass vertex-format proxies and
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_flow_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_recovery_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/ground_layer_smoke.gd
 ```

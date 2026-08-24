@@ -15,6 +15,12 @@ extends Node3D
 ## call [method rebuild] after changing those at runtime.
 
 const SYSTEM_GROUP := &"procedural_terrain_grass_system"
+const GROUND_RT_LOOKUP_INTERVAL_FRAMES := 30
+## Where between the blade base and tip the reflected canopy is averaged. A
+## mirror sees the canopy from outside, so it is weighted towards the tips
+## without reaching them: the shell renderer draws the full gradient and the
+## darker roots are still part of what comes back.
+const GROUND_CANOPY_COLOR_MIX := 0.65
 const TerrainSettingsScript = preload("res://addons/procedural_terrain_grass/core/terrain_settings.gd")
 const TerrainManagerScript = preload("res://addons/procedural_terrain_grass/core/terrain_manager.gd")
 const TerrainGeneratorScript = preload("res://addons/procedural_terrain_grass/core/terrain_generator.gd")
@@ -135,6 +141,28 @@ signal grass_rebuilt(coord: Vector2i)
 ## shadow and reflection traversal. It can receive a shadow without creating
 ## one, and its streamed topology never becomes a secondary-ray occluder.
 @export var terrain_receiver_only_group: StringName
+
+@export_category("Reflection Ground")
+## Publishes a small heightfield of this terrain to Retro RT, so a mirror can
+## reflect ground that is deliberately absent from the acceleration structure:
+## terrain chunks are receiver-only so their streaming never rebuilds the TLAS,
+## and shell grass is vertex-deformed and outside the managed contract entirely.
+## The reflected surface is the grass canopy, not the bare ground, because the
+## baked colours are already the ones calibrated against canopy radiance.
+@export var reflection_ground_enabled: bool = true
+## Texels per side of the published window. The default lands close to one texel
+## per terrain cell at the default chunk resolution, which is what makes the
+## reflection shade on the same grid the mesh is built on.
+@export_range(32, 512, 1) var reflection_ground_resolution: int = 192
+## How far past the load distance the window reaches, as a multiplier. It only
+## has to cover what a mirror can see before fog closes in.
+@export_range(1.0, 4.0, 0.05) var reflection_ground_margin: float = 1.25
+## Fraction of grass_height the reflected canopy stands at. Blades do not fill
+## their shell to the top, so reflecting the full height reads as a step up out
+## of the ground.
+@export_range(0.0, 1.0, 0.01) var grass_canopy_fill: float = 0.8
+## Left empty, the node finds the manager by group and then by tree search.
+@export_node_path("Node") var rt_scene_manager_path: NodePath = ^""
 
 @export_category("Streaming")
 @export_range(1.0, 4096.0, 1.0, "or_greater") var terrain_load_distance: float = 96.0
@@ -280,6 +308,22 @@ var _visuals_dirty: bool = true
 # masking or LOD, so it is deliberately kept out of TerrainSettings.
 var _fog_params := Vector4(0.0, 1.0, 1.0, 0.0)
 var _fog_color := Vector3.ZERO
+# Reflection ground layer published to Retro RT. The bake runs on a worker
+# thread and only when the streaming target has left the window it was baked
+# for, so a standing player pays nothing for it at all.
+var _rt_manager: Node
+var _ground_rt_lookup_cooldown: int = 0
+var _ground_bake_task: int = -1
+var _ground_bake_origin := Vector2.ZERO
+var _ground_bake_settings: Dictionary = {}
+var _ground_bake_canopy_fill: float = 0.0
+var _ground_bake_canopy_color := Color.BLACK
+var _ground_bake_result: Dictionary = {}
+var _ground_window_center := Vector2.ZERO
+var _ground_window_size: float = 0.0
+var _ground_window_resolution: int = 0
+var _ground_window_valid: bool = false
+var _ground_layer_published: bool = false
 var _registered_static: Dictionary = {}
 var _registered_interactors: Dictionary = {}
 var _preview_noise: FastNoiseLite
@@ -341,6 +385,7 @@ func _process(_delta: float) -> void:
 	if Engine.is_editor_hint() or _terrain_manager == null:
 		return
 	_refresh_target()
+	_update_reflection_ground()
 	if _visuals_dirty:
 		_apply_visual_settings()
 
@@ -612,6 +657,14 @@ func _dispose_runtime() -> void:
 	_runtime_epoch += 1
 	_started = false
 	_active_target = null
+	# The bake holds a callable back into this node, so it has to be joined
+	# before the runtime goes away rather than left to finish into a corpse.
+	if _ground_bake_task != -1:
+		WorkerThreadPool.wait_for_task_completion(_ground_bake_task)
+		_ground_bake_task = -1
+	_ground_bake_result = {}
+	_ground_window_valid = false
+	_ground_layer_published = false
 	if is_instance_valid(_terrain_manager):
 		_terrain_manager.shutdown()
 		remove_child(_terrain_manager)
@@ -812,3 +865,198 @@ func _on_chunk_unloaded(coord: Vector2i) -> void:
 
 func _on_grass_rebuilt(coord: Vector2i) -> void:
 	grass_rebuilt.emit(coord)
+
+
+## Keeps the published ground layer following the streaming target. Called once
+## per frame from _process, and cheap on the frames it decides to do nothing:
+## the bake itself runs on a worker thread and only when the target has left the
+## window it was baked for.
+func _update_reflection_ground() -> void:
+	_resolve_ground_rt_manager()
+	if _rt_manager == null or not _rt_manager.has_method(&"configure_ground_layer"):
+		return
+	if not reflection_ground_enabled:
+		if _ground_layer_published:
+			_ground_layer_published = false
+			_ground_window_valid = false
+			_rt_manager.call(
+				&"configure_ground_layer", null, Vector2.ZERO, 0.0, Vector2.ZERO, Color.BLACK)
+		return
+	if _ground_bake_task != -1:
+		if not WorkerThreadPool.is_task_completed(_ground_bake_task):
+			return
+		WorkerThreadPool.wait_for_task_completion(_ground_bake_task)
+		_ground_bake_task = -1
+		_publish_reflection_ground()
+		return
+	if _active_target == null or not is_instance_valid(_active_target):
+		return
+	var window_size := maxf(terrain_load_distance * 2.0 * reflection_ground_margin, 1.0)
+	var resolution := maxi(reflection_ground_resolution, 32)
+	var texel_size := window_size / float(resolution)
+	var target := _active_target.global_position
+	# Snapped to the texel grid so a rebake samples exactly the world positions
+	# the last one did. Without the snap the whole field slides by a fraction of
+	# a texel every time the window recentres, and the reflection crawls.
+	var center := (Vector2(target.x, target.z) / texel_size).floor() * texel_size
+	if (
+			_ground_window_valid
+			and _ground_window_size == window_size
+			and _ground_window_resolution == resolution
+			and center.distance_to(_ground_window_center) < window_size * 0.15
+	):
+		return
+	_ground_window_center = center
+	_ground_window_size = window_size
+	_ground_window_resolution = resolution
+	_ground_window_valid = true
+	_ground_bake_origin = center - Vector2(window_size, window_size) * 0.5
+	_ground_bake_settings = _build_settings().snapshot()
+	_ground_bake_canopy_fill = grass_canopy_fill if grass_enabled else 0.0
+	# The grass palette is authored in sRGB, unlike the terrain colours, which are
+	# authored directly in scene-linear. Decoding here is what the source_color
+	# hints on the shell shader do for it at compile time.
+	_ground_bake_canopy_color = (
+		grass_base_color.srgb_to_linear().lerp(
+			grass_tip_color.srgb_to_linear(), GROUND_CANOPY_COLOR_MIX)
+		if grass_enabled
+		else Color.BLACK)
+	_ground_bake_result = {}
+	_ground_bake_task = WorkerThreadPool.add_task(
+		_bake_reflection_ground, true, "TerrainGrass3D reflection ground bake")
+
+
+## Runs on a worker thread. Reads only the fields the caller froze before
+## launching it and writes only _ground_bake_result, which nothing else touches
+## until the task reports complete.
+func _bake_reflection_ground() -> void:
+	var settings: Dictionary = _ground_bake_settings
+	var resolution := _ground_window_resolution
+	var window_size := _ground_window_size
+	var origin := _ground_bake_origin
+	var texel_size := window_size / float(resolution)
+	var noise := TerrainGeneratorScript.create_noise(settings)
+	# One extra ring so every published texel has the four neighbours its normal
+	# is taken from, the same halo the chunk mesher samples for the same reason.
+	var padded := resolution + 2
+	var heights := PackedFloat32Array()
+	heights.resize(padded * padded)
+	for z in padded:
+		var world_z := origin.y + (float(z) - 0.5) * texel_size
+		for x in padded:
+			var world_x := origin.x + (float(x) - 0.5) * texel_size
+			heights[z * padded + x] = TerrainGeneratorScript.sample_height(
+				noise, world_x, world_z, settings)
+	var pixels := PackedFloat32Array()
+	pixels.resize(resolution * resolution * 4)
+	var slope_cosine := float(settings["max_grass_slope_cos"])
+	var canopy_height := float(settings["grass_height"]) * _ground_bake_canopy_fill
+	var canopy_color := _ground_bake_canopy_color
+	var lowest := INF
+	var highest := -INF
+	for z in resolution:
+		for x in resolution:
+			var index := (z + 1) * padded + (x + 1)
+			var height := heights[index]
+			var normal := Vector3(
+				heights[index - 1] - heights[index + 1],
+				2.0 * texel_size,
+				heights[index - padded] - heights[index + padded]).normalized()
+			# The same colour rule that bakes the chunk vertex colours, called
+			# rather than restated, so the reflected ground cannot drift from the
+			# ground it stands in for.
+			var color := TerrainGeneratorScript.terrain_color(height, normal.y, settings)
+			# Deliberately a smoothstep where the mesher uses a hard slope cut.
+			# The mesher is deciding whether to place a blade; this is a surface
+			# a ray gets marched against, and a cliff in it would put a wrong
+			# normal along every grass edge.
+			var cover := smoothstep(slope_cosine - 0.08, slope_cosine, normal.y)
+			var top := height + canopy_height * cover
+			# Where grass covers the ground, a mirror sees the canopy rather than
+			# what is under it. terrain_color is deliberately dark enough to vanish
+			# beneath the blades, so reflecting it directly would read as bare soil
+			# next to a field that is visibly grass. This is an average of the blade
+			# gradient, not a second copy of how blades are drawn: the shell shader
+			# still owns that, and nothing here has to track it.
+			if cover > 0.0:
+				color = color.lerp(canopy_color, cover)
+			lowest = minf(lowest, top)
+			highest = maxf(highest, top)
+			var base := (z * resolution + x) * 4
+			pixels[base] = color.r
+			pixels[base + 1] = color.g
+			pixels[base + 2] = color.b
+			pixels[base + 3] = top
+	if not is_finite(lowest) or not is_finite(highest):
+		return
+	# Written as raw floats rather than through set_pixel: canopy heights are
+	# routinely negative and a Color would be the wrong container for them.
+	_ground_bake_result = {
+		"image": Image.create_from_data(
+			resolution, resolution, false, Image.FORMAT_RGBAF, pixels.to_byte_array()),
+		"origin": origin,
+		"window_size": window_size,
+		"height_range": Vector2(lowest, highest),
+	}
+
+
+func _publish_reflection_ground() -> void:
+	if _ground_bake_result.is_empty() or _rt_manager == null:
+		return
+	var image: Image = _ground_bake_result["image"]
+	var height_range: Vector2 = _ground_bake_result["height_range"]
+	_rt_manager.call(
+		&"configure_ground_layer",
+		image,
+		_ground_bake_result["origin"],
+		_ground_bake_result["window_size"],
+		height_range,
+		_reflection_ground_ambient())
+	_ground_layer_published = true
+	_ground_bake_result = {}
+
+
+## The ambient the real terrain is lit by, read off the material a day/night
+## system drives at runtime, so the reflection tracks the time of day without
+## this node having to know a sky exists.
+func _reflection_ground_ambient() -> Color:
+	if terrain_material_override == null:
+		return Color.BLACK
+	var value: Variant = terrain_material_override.get_shader_parameter(&"ambient_light")
+	return value if value is Color else Color.BLACK
+
+
+func _resolve_ground_rt_manager() -> void:
+	if _rt_manager != null and is_instance_valid(_rt_manager):
+		return
+	_rt_manager = null
+	# A persistent app shell can install its renderer after the level, so the
+	# lookup retries rather than resolving once at build time. Throttled because
+	# a miss walks the tree.
+	_ground_rt_lookup_cooldown -= 1
+	if _ground_rt_lookup_cooldown > 0:
+		return
+	_ground_rt_lookup_cooldown = GROUND_RT_LOOKUP_INTERVAL_FRAMES
+	if not rt_scene_manager_path.is_empty():
+		_rt_manager = get_node_or_null(rt_scene_manager_path)
+		return
+	if not is_inside_tree():
+		return
+	for candidate: Node in get_tree().get_nodes_in_group(&"retro_rt_scene_manager"):
+		_rt_manager = candidate
+		return
+	# No group to search, so fall back to the first manager in the tree. A
+	# project with several would name one explicitly.
+	var tree_root := get_tree().root
+	if tree_root != null:
+		_rt_manager = _find_ground_rt_manager(tree_root)
+
+
+func _find_ground_rt_manager(node: Node) -> Node:
+	if node.has_method(&"configure_ground_layer") and node.has_method(&"get_active_rt_backend"):
+		return node
+	for child: Node in node.get_children():
+		var found := _find_ground_rt_manager(child)
+		if found != null:
+			return found
+	return null

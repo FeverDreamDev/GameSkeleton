@@ -1,4 +1,4 @@
-[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4 uid="uid://bx6xcahp2rfxl"]
+[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4 uid="uid://cxu72vgqd5oqm"]
 
 [ext_resource type="Shader" uid="uid://bfhmjth5ltdrv" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="1_8rwql"]
 [ext_resource type="Shader" uid="uid://kueanl5fngu5" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="2_sm4wu"]
@@ -677,6 +677,11 @@ shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/swrt_cloud_params = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_cloud_motion = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_cloud_sun_direction = Vector3(0, 1, 0)
+shader_parameter/swrt_ground_params = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_ground_bounds = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_ground_sun_direction = Vector4(0, 1, 0, 0)
+shader_parameter/swrt_ground_sun_radiance = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_ground_ambient = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_environment_mode = 0
 shader_parameter/swrt_environment_basis_x = Vector3(1, 0, 0)
 shader_parameter/swrt_environment_basis_y = Vector3(0, 1, 0)
@@ -724,6 +729,11 @@ shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/swrt_cloud_params = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_cloud_motion = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_cloud_sun_direction = Vector3(0, 1, 0)
+shader_parameter/swrt_ground_params = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_ground_bounds = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_ground_sun_direction = Vector4(0, 1, 0, 0)
+shader_parameter/swrt_ground_sun_radiance = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_ground_ambient = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_environment_mode = 0
 shader_parameter/swrt_environment_basis_x = Vector3(1, 0, 0)
 shader_parameter/swrt_environment_basis_y = Vector3(0, 1, 0)
@@ -745,5 +755,5 @@ sources = PackedStringArray("res://addons/day_night_cycle/examples/DayNightExamp
 pair_material_indices = PackedInt32Array(0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 8, 14, 15)
 pair_vertex_formats = PackedInt64Array(4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4127, 4119, 4111, 4127, 4119)
 pair_flags = PackedInt32Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-generated_at = "2026-08-24 05:57:54"
-fingerprint = "86d7196048a8c841a9f921daac7136e7929260d4b3f82367d84fa204ec627772"
+generated_at = "2026-08-24 16:46:51"
+fingerprint = "1e1731b1038b2aebb59d55518f695c7ba5a679841838674e2b99b0d354b24bbb"

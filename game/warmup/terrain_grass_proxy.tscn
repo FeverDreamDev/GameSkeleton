@@ -64,13 +64,13 @@ _surfaces = [{
 "vertex_data": PackedByteArray("AACAvwAAAAAAAIC/AACAPwAAAAAAAIC/AACAPwAAAAAAAIA/AACAvwAAAAAAAIA//3///wAA/7//f///AAD/v/9///8AAP+//3///wAA/78=")
 }]
 
-[node name="TerrainGrassWarmupProxy" type="Node3D" unique_id=239006316]
+[node name="TerrainGrassWarmupProxy" type="Node3D" unique_id=564835592]
 
-[node name="TerrainVertexColorFormat" type="MeshInstance3D" parent="." unique_id=1075565024]
+[node name="TerrainVertexColorFormat" type="MeshInstance3D" parent="." unique_id=1868028249]
 cast_shadow = 0
 mesh = SubResource("ArrayMesh_0cow3")
 
-[node name="GrassVertexColorUVFormat" type="MeshInstance3D" parent="." unique_id=1663513028]
+[node name="GrassVertexColorUVFormat" type="MeshInstance3D" parent="." unique_id=1930721946]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -2)
 cast_shadow = 0
 mesh = SubResource("ArrayMesh_uhm3m")

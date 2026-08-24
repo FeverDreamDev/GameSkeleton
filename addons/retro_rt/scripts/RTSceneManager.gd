@@ -179,6 +179,11 @@ const RT_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
 @export_range(1, 32, 1) var software_max_lights_per_receiver: int = 16
 @export var ray_origin_bias: float = 0.001
 @export var ray_max_distance: float = 10000.0
+## Steps the reflection ground march takes across the layer window. Zero turns
+## the layer off outright, which makes a reflection miss resolve against the
+## environment exactly as it did before the layer existed. Only a reflection
+## ray that actually enters the window pays for these.
+@export_range(0, 128, 1) var ground_march_steps: int = 32
 @export var profiling_enabled: bool = false
 @export_group("Distance Fog")
 
@@ -328,6 +333,26 @@ var _cloud_sun_direction := Vector3.UP
 var _snapshot_cloud_params := Vector4.ZERO
 var _snapshot_cloud_motion := Vector4.ZERO
 var _snapshot_cloud_sun := Vector3.UP
+# Analytic ground layer pushed by a terrain system through
+# configure_ground_layer(). Streamed terrain is registered receiver-only so
+# chunk churn never rebuilds the TLAS, and shell grass is vertex-deformed and
+# so outside the managed contract entirely. Neither can be traced, which leaves
+# this heightfield as the only thing a reflection ray has to resolve the ground
+# against. See rt_ground_reflection in
+# addons/retro_rt/shaders/rt_shadow_reflect.glsl.
+var _ground_texture: ImageTexture
+var _ground_params := Vector4.ZERO
+var _ground_bounds := Vector4.ZERO
+var _ground_ambient := Color.BLACK
+var _ground_revision := 0
+var _snapshot_ground_texture: ImageTexture
+var _snapshot_ground_params := Vector4.ZERO
+var _snapshot_ground_bounds := Vector4.ZERO
+var _snapshot_ground_ambient := Color.BLACK
+var _snapshot_ground_revision := -1
+var _snapshot_ground_sun_direction := Vector3.UP
+var _snapshot_ground_sun_radiance := Color.BLACK
+var _snapshot_ground_sun_enabled := false
 # Reflection-miss radiance supplied by a sky system, replacing the flat colour
 # without changing the visible background or the fog. See set_reflection_panorama().
 var _reflection_override: ImageTexture
@@ -1517,6 +1542,132 @@ func get_cloud_layer() -> Dictionary:
 		"motion": _cloud_motion,
 		"sun_direction": _cloud_sun_direction,
 	}
+
+
+## Replaces what a reflection ray resolves when it misses the acceleration
+## structure, for the one case that structure can never answer: the ground.
+## Streamed terrain is registered receiver-only so chunk churn never rebuilds
+## the TLAS, and shell grass is vertex-deformed and so outside the managed
+## contract entirely. Neither can be traced, so the ground arrives as a
+## heightfield the shader marches instead of as geometry.
+##
+## [param image] is RGBA32F. RGB is scene-linear ground radiance and A is canopy
+## height in world Y, meaning the terrain surface plus whatever grass stands on
+## it, so a reflection shows the canopy without one blade being traced. Pass
+## null to drop the layer and go back to a plain environment miss.
+##
+## [param window_origin_xz] is the minimum corner in world XZ and
+## [param window_size] the extent in metres of the square the image covers.
+## [param height_range] is the lowest and highest canopy height in that image;
+## it is what lets a ray clearing the terrain skip the march outright, so it
+## must bound the data rather than approximate it. [param ambient] is the
+## ambient radiance the real ground receives, so its reflection is lit the way
+## the original is.
+##
+## The caller owns the bake and its schedule, and only pays for it when it asks.
+func configure_ground_layer(
+		image: Image,
+		window_origin_xz: Vector2,
+		window_size: float,
+		height_range: Vector2,
+		ambient: Color) -> void:
+	if image == null or image.is_empty() or window_size <= 0.0:
+		if _ground_texture == null:
+			return
+		_ground_texture = null
+		_ground_params = Vector4.ZERO
+		_ground_bounds = Vector4.ZERO
+		_ground_ambient = Color.BLACK
+		_ground_revision += 1
+		return
+	var converted := image
+	if converted.get_format() != Image.FORMAT_RGBAF:
+		converted = image.duplicate()
+		converted.convert(Image.FORMAT_RGBAF)
+	if converted.get_format() != Image.FORMAT_RGBAF:
+		push_warning("RTSceneManager: the ground layer could not be converted to RGBAF.")
+		return
+	# Updating in place keeps the texture RID, so a rebake does not invalidate
+	# the hardware descriptor set. Only a resize has to allocate a new one.
+	if (
+			_ground_texture != null
+			and int(_ground_texture.get_width()) == converted.get_width()
+			and int(_ground_texture.get_height()) == converted.get_height()
+	):
+		_ground_texture.update(converted)
+	else:
+		_ground_texture = ImageTexture.create_from_image(converted)
+	# w is left at zero here and filled with the march step count when the
+	# snapshot commits, because that is a ray budget this manager owns rather
+	# than something the terrain producer should be choosing. Same for bounds.z,
+	# the march distance, which follows the fog the manager also owns.
+	_ground_params = Vector4(
+		window_origin_xz.x,
+		window_origin_xz.y,
+		1.0 / window_size,
+		0.0)
+	_ground_bounds = Vector4(
+		height_range.x,
+		height_range.y,
+		0.0,
+		window_size / float(maxi(converted.get_width(), 1)))
+	_ground_ambient = ambient
+	_ground_revision += 1
+
+
+## The producer supplies the window and the heights it baked; the march step
+## count and the march distance are ray budget this manager owns, so they are
+## resolved here rather than at configure_ground_layer() time. The snapshot and
+## get_ground_layer() both read through this, so a consumer inspecting the layer
+## sees exactly what the shader will march. The march never needs to outrun the
+## fog: past fog_end the ground has already resolved to the same flat radiance
+## the sky shows there, so marching further only costs.
+func _resolved_ground_layer(fog_params: Vector4) -> Array:
+	var params := _ground_params
+	var bounds := _ground_bounds
+	if _ground_texture == null:
+		return [params, bounds]
+	params.w = float(maxi(ground_march_steps, 0))
+	var window_size := 1.0 / maxf(params.z, 0.000001)
+	bounds.z = window_size * 2.0
+	if fog_params.w >= 0.5:
+		bounds.z = minf(fog_params.y, bounds.z)
+	return [params, bounds]
+
+
+## Everything a shader needs to resolve the same ground this renderer reflects.
+func get_ground_layer() -> Dictionary:
+	var resolved := _resolved_ground_layer(_effective_fog_params())
+	return {
+		"texture": _ground_texture,
+		"params": resolved[0],
+		"bounds": resolved[1],
+		"ambient": _ground_ambient,
+		"sun_direction": _snapshot_ground_sun_direction,
+		"sun_radiance": _snapshot_ground_sun_radiance,
+		"sun_enabled": _snapshot_ground_sun_enabled,
+	}
+
+
+## The brightest directional light in the published table, which is what the
+## ground layer is lit by. Positional lights are skipped on purpose: the layer
+## stands in for terrain out to the fog boundary, where a lamp a few metres from
+## the camera has no bearing on what a mirror shows.
+func _ground_sun_from_lights(light_snapshot: Dictionary) -> Array:
+	var best_direction := Vector3.UP
+	var best_radiance := Color.BLACK
+	var best_score := 0.0
+	for record: Dictionary in light_snapshot.get("records", []) as Array:
+		if int(record.get("type", -1)) != 0:
+			continue
+		var radiance: Color = record.get("color", Color.BLACK)
+		var score := radiance.r * 0.2126 + radiance.g * 0.7152 + radiance.b * 0.0722
+		if score <= best_score:
+			continue
+		best_score = score
+		best_radiance = radiance
+		best_direction = record.get("direction", Vector3.UP)
+	return [best_direction, best_radiance, best_score > 0.0]
 
 
 ## "color" is scene-linear radiance that has already been background-energy
@@ -3439,6 +3590,13 @@ func _publish_snapshot() -> void:
 
 
 	var next_fog := _effective_fog_params()
+	var next_ground := _resolved_ground_layer(next_fog)
+	var next_ground_params: Vector4 = next_ground[0]
+	var next_ground_bounds: Vector4 = next_ground[1]
+	var next_ground_sun := _ground_sun_from_lights(next_light)
+	var next_ground_sun_direction: Vector3 = next_ground_sun[0]
+	var next_ground_sun_radiance: Color = next_ground_sun[1]
+	var next_ground_sun_enabled: bool = next_ground_sun[2]
 	var settings_changed := (
 		ray_origin_bias != _snapshot_bias
 		or ray_max_distance != _snapshot_max_distance
@@ -3448,6 +3606,13 @@ func _publish_snapshot() -> void:
 		or _cloud_params != _snapshot_cloud_params
 		or _cloud_motion != _snapshot_cloud_motion
 		or _cloud_sun_direction != _snapshot_cloud_sun
+		or _ground_revision != _snapshot_ground_revision
+		or next_ground_params != _snapshot_ground_params
+		or next_ground_bounds != _snapshot_ground_bounds
+		or _ground_ambient != _snapshot_ground_ambient
+		or next_ground_sun_direction != _snapshot_ground_sun_direction
+		or next_ground_sun_radiance != _snapshot_ground_sun_radiance
+		or next_ground_sun_enabled != _snapshot_ground_sun_enabled
 	)
 	if not transforms_changed and not masks_changed and not layers_changed and not materials_changed and not lights_changed and not environment_changed and not receiver_lists_changed and not settings_changed:
 		return
@@ -3477,6 +3642,14 @@ func _publish_snapshot() -> void:
 	_snapshot_cloud_params = _cloud_params
 	_snapshot_cloud_motion = _cloud_motion
 	_snapshot_cloud_sun = _cloud_sun_direction
+	_snapshot_ground_texture = _ground_texture
+	_snapshot_ground_params = next_ground_params
+	_snapshot_ground_bounds = next_ground_bounds
+	_snapshot_ground_ambient = _ground_ambient
+	_snapshot_ground_revision = _ground_revision
+	_snapshot_ground_sun_direction = next_ground_sun_direction
+	_snapshot_ground_sun_radiance = next_ground_sun_radiance
+	_snapshot_ground_sun_enabled = next_ground_sun_enabled
 
 	_snapshot_revision += 1
 	if traversal_changed:
@@ -3544,6 +3717,14 @@ func _commit_current_snapshot() -> void:
 		"cloud_params": _snapshot_cloud_params,
 		"cloud_motion": _snapshot_cloud_motion,
 		"cloud_sun_direction": _snapshot_cloud_sun,
+		"ground_map": _snapshot_ground_texture,
+		"ground_params": _snapshot_ground_params,
+		"ground_bounds": _snapshot_ground_bounds,
+		"ground_ambient": _snapshot_ground_ambient,
+		"ground_revision": _snapshot_ground_revision,
+		"ground_sun_direction": _snapshot_ground_sun_direction,
+		"ground_sun_radiance": _snapshot_ground_sun_radiance,
+		"ground_sun_enabled": _snapshot_ground_sun_enabled,
 	}
 	next_snapshot.make_read_only()
 	_current_snapshot = next_snapshot

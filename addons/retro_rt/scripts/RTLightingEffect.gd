@@ -15,7 +15,7 @@ const MATERIAL_RECORD_SIZE := 128
 const MAX_LIGHT_RECORDS := 256
 # std140 FrameData is mat4 + 16 vec4 = 20 vec4. Keep in step with the FrameData
 # block in rt_shadow_reflect.glsl; a mismatch fails loudly in _update_frame_ubo.
-const FRAME_UBO_FLOATS := 80
+const FRAME_UBO_FLOATS := 100
 
 const PROFILE_TLAS_BEGIN := "RetroRT/TLAS begin"
 const PROFILE_TLAS_END := "RetroRT/TLAS end"
@@ -49,9 +49,11 @@ var receiver_light_index_buffer: RID
 var albedo_atlas_texture: RID
 var normal_atlas_texture: RID
 var environment_texture: RID
+var ground_texture: RID
 var _albedo_atlas_resource: Texture2D
 var _normal_atlas_resource: Texture2D
 var _environment_resource: Texture2D
+var _ground_resource: Texture2D
 var _initialized := false
 var _failed := false
 var _last_tlas_revision := -1
@@ -59,8 +61,10 @@ var _last_instance_revision := -1
 var _last_material_revision := -1
 var _last_light_revision := -1
 var _last_environment_revision := -1
+var _last_ground_revision := -1
 var _last_receiver_light_revision := -1
 var _environment_texture_bindings := 0
+var _ground_texture_bindings := 0
 var _instance_buffer_capacity := 0
 var _material_buffer_capacity := 0
 var _instance_material_buffer_capacity := 0
@@ -83,6 +87,7 @@ var _cached_uniform_normal_roughness := RID()
 var _cached_uniform_specular := RID()
 var _cached_uniform_tlas := RID()
 var _cached_uniform_environment := RID()
+var _cached_uniform_ground := RID()
 var _last_profiled_timestamp_frame := -1
 var _profiling_active := false
 var _profile_mutex := Mutex.new()
@@ -106,6 +111,8 @@ var _profile := {
 	"environment_panorama_width": 0,
 	"environment_panorama_height": 0,
 	"environment_panorama_bytes": 0,
+	"ground_texture_bindings": 0,
+	"ground_revision": 0,
 	"uniform_set_rebuilds": 0,
 	"tlas_cpu_seconds": 0.0,
 	"dispatch_cpu_seconds": 0.0,
@@ -261,6 +268,8 @@ func _initialize_resources(snapshot: Dictionary) -> bool:
 		return false
 	if not _initialize_texture_atlases(snapshot):
 		return false
+	if not _update_ground_texture(snapshot, true):
+		return false
 	if not _update_environment_texture(snapshot, true):
 		return false
 	if not _build_geometry(snapshot):
@@ -355,6 +364,42 @@ func _update_environment_texture(snapshot: Dictionary, force: bool = false) -> b
 		"environment_panorama_bytes": int(environment.get("bytes", 0)),
 	})
 	return true
+
+## The analytic ground layer a terrain system pushed through
+## RTSceneManager.configure_ground_layer(). Absent by default, in which case
+## the binding falls back to the albedo atlas exactly as an unset environment
+## panorama does: a ray tracing descriptor set has to stay complete, and a zero
+## march step count already stops the shader ever sampling it.
+func _update_ground_texture(snapshot: Dictionary, force: bool = false) -> bool:
+	var revision := int(snapshot.get("ground_revision", -1))
+	if not force and revision == _last_ground_revision:
+		return true
+	var next_texture := albedo_atlas_texture
+	var next_resource: Texture2D
+	var ground_value: Variant = snapshot.get("ground_map")
+	if ground_value is Texture2D:
+		next_resource = ground_value as Texture2D
+		next_texture = RenderingServer.texture_get_rd_texture(next_resource.get_rid(), false)
+		if not next_texture.is_valid():
+			_fail("Unable to access the RT ground layer through RenderingDevice.")
+			return false
+		# RGBA32F only. The producer bakes scene-linear radiance into RGB and a
+		# world-space canopy height into A; a half float would quantize heights
+		# into visible terraces once the window spans a few hundred metres.
+		if rd.texture_get_format(next_texture).format != RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT:
+			_fail("The RT ground layer must upload as an RGBA32F texture.")
+			return false
+	_ground_resource = next_resource
+	ground_texture = next_texture
+	_last_ground_revision = revision
+	_ground_texture_bindings += 1
+	_cached_uniform_set = RID()
+	_set_profile_facts({
+		"ground_texture_bindings": _ground_texture_bindings,
+		"ground_revision": revision,
+	})
+	return true
+
 
 
 func _build_geometry(snapshot: Dictionary) -> bool:
@@ -660,6 +705,8 @@ func _update_dynamic_buffers(snapshot: Dictionary) -> bool:
 	if int(snapshot["light_revision"]) != _last_light_revision:
 		if not _upload_lights(snapshot):
 			return false
+	if not _update_ground_texture(snapshot):
+		return false
 	if not _update_environment_texture(snapshot):
 		return false
 	var receiver_revision := int(snapshot.get("receiver_light_revision", snapshot.get("light_revision", 0)))
@@ -853,6 +900,24 @@ func _update_frame_ubo(
 	_set_frame_vec4(72, snapshot.get("cloud_motion", Vector4.ZERO))
 	var cloud_sun: Vector3 = snapshot.get("cloud_sun_direction", Vector3.UP)
 	_set_frame_vec4(76, Vector4(cloud_sun.x, cloud_sun.y, cloud_sun.z, 0.0))
+	# The ground layer a terrain system pushed through configure_ground_layer().
+	# Zero by default, and the canonical rt_ground_trace() reads a zero step
+	# count in ground_params.w as no layer, so a scene without terrain resolves
+	# its reflection misses against the environment exactly as it did before.
+	_set_frame_vec4(80, snapshot.get("ground_params", Vector4.ZERO))
+	_set_frame_vec4(84, snapshot.get("ground_bounds", Vector4.ZERO))
+	var ground_sun: Vector3 = snapshot.get("ground_sun_direction", Vector3.UP)
+	_set_frame_vec4(88, Vector4(
+		ground_sun.x,
+		ground_sun.y,
+		ground_sun.z,
+		1.0 if bool(snapshot.get("ground_sun_enabled", false)) else 0.0))
+	var ground_sun_radiance: Color = snapshot.get("ground_sun_radiance", Color.BLACK)
+	_set_frame_vec4(92, Vector4(
+		ground_sun_radiance.r, ground_sun_radiance.g, ground_sun_radiance.b, 0.0))
+	var ground_ambient: Color = snapshot.get("ground_ambient", Color.BLACK)
+	_set_frame_vec4(96, Vector4(
+		ground_ambient.r, ground_ambient.g, ground_ambient.b, 0.0))
 	var bytes := _frame_values_cache.to_byte_array()
 	if rd.buffer_update(frame_ubo, 0, bytes.size(), bytes) != OK:
 		_fail("Unable to update the RT frame UBO.")
@@ -896,7 +961,8 @@ func _get_uniform_set(
 		and normal_roughness == _cached_uniform_normal_roughness
 		and specular == _cached_uniform_specular
 		and tlas == _cached_uniform_tlas
-		and environment_texture == _cached_uniform_environment)
+		and environment_texture == _cached_uniform_environment
+		and ground_texture == _cached_uniform_ground)
 	if inputs_unchanged and _cached_uniform_set.is_valid() and rd.uniform_set_is_valid(_cached_uniform_set):
 		return _cached_uniform_set
 	if rd.texture_get_format(specular).format != RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT:
@@ -913,6 +979,7 @@ func _get_uniform_set(
 		_cached_uniform_specular = specular
 		_cached_uniform_tlas = tlas
 		_cached_uniform_environment = environment_texture
+		_cached_uniform_ground = ground_texture
 		_increment_profile("uniform_set_rebuilds")
 	return _cached_uniform_set
 
@@ -944,6 +1011,7 @@ func _make_uniform_set(
 	uniforms.append(_uniform(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 19, [receiver_light_count_buffer]))
 	uniforms.append(_uniform(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 20, [receiver_light_index_buffer]))
 	uniforms.append(_sampler_uniform(21, environment_texture))
+	uniforms.append(_sampler_uniform(22, ground_texture))
 	return UniformSetCacheRD.get_cache(shader, 0, uniforms)
 
 func _uniform(kind: RenderingDevice.UniformType, binding: int, ids: Array) -> RDUniform:
@@ -1091,7 +1159,9 @@ func shutdown() -> void:
 
 	_initialized = false
 	_environment_resource = null
+	_ground_resource = null
 	environment_texture = RID()
+	ground_texture = RID()
 	_mesh_records_for_blas.clear()
 	_mesh_index_buffers.clear()
 

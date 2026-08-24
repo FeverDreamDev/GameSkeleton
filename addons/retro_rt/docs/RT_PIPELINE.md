@@ -594,6 +594,85 @@ roughness convolution, a reflection probe, or another reflection bounce.
 Unsupported Environment modes fail instead of producing backend-dependent
 results.
 
+## Analytic ground layer
+
+A reflection miss can resolve against the ground instead of the sky. This exists
+for one specific hole: the ground is the only thing in these scenes that a ray
+can never hit, and it is the thing a mirror sitting on it most obviously ought
+to show.
+
+Two independent reasons put it out of reach of the acceleration structure, and
+neither is worth undoing:
+
+- Streamed terrain chunks are registered `retro_rt_receiver_only`, which gives
+  them instance mask `0`. That is what stops chunk streaming from rebuilding the
+  BLAS and TLAS several times a second. Admitting them would also collide with
+  the vertex-colour rule below: ray-visible managed geometry may not use vertex
+  colours, and terrain ground colour is authored as exactly that.
+- Shell grass is vertex-deformed, so it is outside the managed material contract
+  permanently, MultiMesh and skinning being excluded for the same reason.
+
+So the ground arrives as data rather than as geometry. A terrain system calls
+`RTSceneManager.configure_ground_layer()` with one RGBA32F image covering a
+square window in world XZ:
+
+- `RGB` is scene-linear ground radiance, baked by the producer from the same
+  colour rule that bakes its chunk vertex colours. Nothing about that rule is
+  restated in shader code, so the reflection cannot drift from the ground it
+  stands in for.
+- `A` is canopy height in world Y: the terrain surface plus whatever grass
+  stands on it. The reflected surface is therefore the canopy, and grass appears
+  in mirrors without one blade being traced.
+
+Five `vec4`s carry the rest, riding in `FrameData` next to the cloud layer:
+
+| | x | y | z | w |
+|---|---|---|---|---|
+| `ground_params` | window origin X | window origin Z | 1/window size | march step count |
+| `ground_bounds` | lowest canopy height | highest canopy height | max march distance | texel size in metres |
+| `ground_sun_direction` | direction to sun | | | 1 when lit |
+| `ground_sun_radiance` | colour scaled by energy | | | unused |
+| `ground_ambient` | ambient radiance | | | unused |
+
+`ground_params.w` doubles as the disable switch, the way `cloud_params.y` does:
+a zero step count leaves the miss path byte-identical to what it was before the
+layer existed. The step count and the march distance are ray budget the manager
+owns rather than values the producer chooses, so both are resolved when the
+snapshot commits. The march is capped at `fog_end`, because past it the ground
+has already resolved to what the sky shows there.
+
+`rt_ground_reflection()` is duplicated byte-identically in
+`addons/retro_rt/shaders/rt_shadow_reflect.glsl` and
+`addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc`, for the same
+reason `rt_fog_factor` is: an `RDShaderFile` cannot include a `.gdshaderinc`.
+`addons/retro_rt/tests/ground_layer_smoke.gd` fails if the two copies drift.
+
+Three properties of the march are load-bearing rather than tuning:
+
+- **The window test comes first.** A reflection that never reaches the ground
+  costs one ray/box test and nothing else. Most mirror pixels point at sky, and
+  that early-out is the whole reason the layer is affordable.
+- **Texels are fetched and blended by hand**, never handed to a sampler. The two
+  backends have to agree bit for bit and drivers round filtering differently,
+  which is why the environment panorama is sampled the same way. Blending rather
+  than point sampling is also not optional: this field is a surface a ray is
+  marched against, and a staircase of texels catches a grazing ray on its risers
+  and paints the reflection in flat axis-aligned plateaus.
+- **A ray starting under the canopy resolves where it stands.** That is the
+  ordinary case for a mirror resting in grass, not an error: the bottom of the
+  reflector is inside the layer. Marching on would find no crossing and let sky
+  out through the underside of the reflector.
+
+A ground hit is shaded with ambient plus one directional term, takes the same
+`dnc_cloud_shadow()` the real ground does, and then fades on `rt_fog_factor` into
+exactly what the ray would have returned had it missed. Fading to the flat fog
+colour instead leaves a visible step at the fog boundary, because below the
+horizon a sky is free to draw something other than its horizon band, and a mirror
+shows both sides of that boundary at once.
+
+This is a stand-in for ground, not a second renderer. It has no blade detail, no
+shadows cast onto it, and no reflection of its own.
+
 ## Shared rays, lighting, and materials
 
 - Directional, Omni, Spot, and Area lights under the geometry root are

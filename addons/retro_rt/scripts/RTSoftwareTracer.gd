@@ -95,6 +95,16 @@ var _fog_params := Vector4(0.0, 1.0, 1.0, 0.0)
 var _cloud_params := Vector4.ZERO
 var _cloud_motion := Vector4.ZERO
 var _cloud_sun_direction := Vector3.UP
+# Analytic ground layer, the only thing a reflection ray has to resolve the
+# ground against: streamed terrain is receiver-only and shell grass is
+# unmanaged, so neither is in the BVH. See RTSceneManager.configure_ground_layer.
+var _ground_texture: Texture2D
+var _ground_params := Vector4.ZERO
+var _ground_bounds := Vector4.ZERO
+var _ground_ambient := Color.BLACK
+var _ground_sun_direction := Vector3.UP
+var _ground_sun_radiance := Color.BLACK
+var _ground_sun_enabled := false
 var _environment_mode := 0
 var _environment_inverse_basis := Basis.IDENTITY
 var _environment_revision := -1
@@ -316,6 +326,31 @@ func update(snapshot: Dictionary, _retro_settings: Dictionary = {}) -> String:
 		_cloud_motion = next_cloud_motion
 		_cloud_sun_direction = next_cloud_sun
 		_frame_uniforms_dirty = true
+	# Same reasoning as the cloud layer above: the ground a reflection resolves
+	# against is a lighting term, not part of the packed material settings that
+	# rebuild the shading atlas.
+	var next_ground_texture: Texture2D = snapshot.get("ground_map")
+	var next_ground_params: Vector4 = snapshot.get("ground_params", Vector4.ZERO)
+	var next_ground_bounds: Vector4 = snapshot.get("ground_bounds", Vector4.ZERO)
+	var next_ground_ambient: Color = snapshot.get("ground_ambient", Color.BLACK)
+	var next_ground_sun_direction: Vector3 = snapshot.get("ground_sun_direction", Vector3.UP)
+	var next_ground_sun_radiance: Color = snapshot.get("ground_sun_radiance", Color.BLACK)
+	var next_ground_sun_enabled := bool(snapshot.get("ground_sun_enabled", false))
+	if (next_ground_texture != _ground_texture
+			or next_ground_params != _ground_params
+			or next_ground_bounds != _ground_bounds
+			or next_ground_ambient != _ground_ambient
+			or next_ground_sun_direction != _ground_sun_direction
+			or next_ground_sun_radiance != _ground_sun_radiance
+			or next_ground_sun_enabled != _ground_sun_enabled):
+		_ground_texture = next_ground_texture
+		_ground_params = next_ground_params
+		_ground_bounds = next_ground_bounds
+		_ground_ambient = next_ground_ambient
+		_ground_sun_direction = next_ground_sun_direction
+		_ground_sun_radiance = next_ground_sun_radiance
+		_ground_sun_enabled = next_ground_sun_enabled
+		_frame_uniforms_dirty = true
 	if next_fog != _fog_params:
 		# Deliberately not part of packed_settings_changed: fog is a post-lighting
 		# composite, and that flag rebuilds the whole shading atlas.
@@ -454,6 +489,13 @@ func shutdown() -> void:
 	_cloud_params = Vector4.ZERO
 	_cloud_motion = Vector4.ZERO
 	_cloud_sun_direction = Vector3.UP
+	_ground_texture = null
+	_ground_params = Vector4.ZERO
+	_ground_bounds = Vector4.ZERO
+	_ground_ambient = Color.BLACK
+	_ground_sun_direction = Vector3.UP
+	_ground_sun_radiance = Color.BLACK
+	_ground_sun_enabled = false
 	_environment_mode = 0
 	_environment_inverse_basis = Basis.IDENTITY
 	_environment_revision = -1
@@ -1157,6 +1199,15 @@ func _sync_frame_uniforms() -> void:
 		clone.set_shader_parameter(&"swrt_cloud_params", _cloud_params)
 		clone.set_shader_parameter(&"swrt_cloud_motion", _cloud_motion)
 		clone.set_shader_parameter(&"swrt_cloud_sun_direction", _cloud_sun_direction)
+		clone.set_shader_parameter(&"swrt_ground_params", _ground_params)
+		clone.set_shader_parameter(&"swrt_ground_bounds", _ground_bounds)
+		clone.set_shader_parameter(&"swrt_ground_ambient", _ground_ambient)
+		clone.set_shader_parameter(&"swrt_ground_sun_direction", Vector4(
+			_ground_sun_direction.x,
+			_ground_sun_direction.y,
+			_ground_sun_direction.z,
+			1.0 if _ground_sun_enabled else 0.0))
+		clone.set_shader_parameter(&"swrt_ground_sun_radiance", _ground_sun_radiance)
 		clone.set_shader_parameter(&"swrt_environment_mode", _environment_mode)
 		clone.set_shader_parameter(&"swrt_environment_basis_x", _environment_inverse_basis.x)
 		clone.set_shader_parameter(&"swrt_environment_basis_y", _environment_inverse_basis.y)
@@ -1205,6 +1256,7 @@ func _bind_atlases_to_materials() -> void:
 		clone.set_shader_parameter(&"swrt_albedo_atlas", _albedo_texture)
 		clone.set_shader_parameter(&"swrt_normal_atlas", _normal_texture)
 		clone.set_shader_parameter(&"swrt_environment_panorama", _environment_texture)
+		clone.set_shader_parameter(&"swrt_ground_map", _ground_texture)
 	_textures_dirty = false
 
 

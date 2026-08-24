@@ -32,6 +32,19 @@ layout(std140, set = 0, binding = 1) uniform FrameData {
 	vec4 cloud_motion;
 	// Direction towards the sun, w unused.
 	vec4 cloud_sun_direction;
+	// Analytic ground layer pushed by a terrain system, so a reflection that
+	// misses the acceleration structure can still resolve the ground its
+	// streamed chunks are deliberately kept out of. See rt_ground_reflection.
+	// x,y=window origin in world XZ, z=1/window size, w=march step count.
+	vec4 ground_params;
+	// x=lowest canopy height, y=highest, z=max march distance, w=texel metres.
+	vec4 ground_bounds;
+	// xyz=direction towards the ground layer's sun, w=1 when it is lit at all.
+	vec4 ground_sun_direction;
+	// rgb=sun radiance already scaled by energy, w unused.
+	vec4 ground_sun_radiance;
+	// rgb=ambient radiance the ground receives, w unused.
+	vec4 ground_ambient;
 } frame;
 layout(rgba16f, set = 0, binding = 2) uniform image2D scene_color;
 layout(rgba16f, set = 0, binding = 3) uniform image2D separate_specular;
@@ -83,6 +96,7 @@ layout(std430, set = 0, binding = 18) readonly buffer ReceiverLightStartBuffer {
 layout(std430, set = 0, binding = 19) readonly buffer ReceiverLightCountBuffer { uint receiver_light_counts[]; };
 layout(std430, set = 0, binding = 20) readonly buffer ReceiverLightIndexBuffer { uint receiver_light_indices[]; };
 layout(set = 0, binding = 21) uniform sampler2D environment_panorama;
+layout(set = 0, binding = 22) uniform sampler2D ground_map;
 
 struct Payload {
 	uint instance_id;
@@ -256,6 +270,207 @@ float dnc_cloud_shadow(
 	}
 	vec2 hit = world_position.xz + direction_to_sun.xz * travel;
 	return dnc_cloud_density(params, motion, hit, 1.0) * motion.w;
+}
+
+
+// Canonical Retro RT analytic ground layer. Keep every function below
+// byte-identical in each copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
+// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc.
+// Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Analytic ground layer".
+//
+// Streamed terrain is receiver-only and shell grass is unmanaged, so neither
+// is in the acceleration structure and a reflection ray can never hit the
+// ground. This layer resolves that one miss against a camera-centred
+// heightfield instead of admitting chunks to the TLAS, which would rebuild it
+// on every chunk commit and forbid the vertex colours the ground is authored
+// with.
+//
+// RGB is the producer's own terrain colour, already scene-linear, and A is
+// canopy height in world Y: the terrain surface plus the grass the shell
+// renderer draws on top of it. The reflected ground is therefore the grass
+// canopy by construction, with no grass geometry traced and no colour rule
+// restated here to drift from the one that bakes the vertex colours.
+//
+// params: x,y=window origin in world XZ, z=1/window size in metres, w=march
+// step count (zero disables the layer).
+// bounds: x=lowest canopy height, y=highest canopy height, z=maximum march
+// distance, w=texel size in metres.
+const int RT_GROUND_REFINE_STEPS = 4;
+
+
+vec4 rt_ground_sample(sampler2D ground_map, vec4 params, vec3 world_position) {
+	// Fetched and blended by hand rather than handed to the sampler, the way the
+	// environment panorama is and for the same reason: the two backends have to
+	// agree bit for bit and drivers round filtering differently.
+	//
+	// Blending rather than point sampling is not a quality option here. This
+	// field is a surface a ray gets marched against, and a staircase of texels
+	// catches a grazing ray on its risers, which paints the reflection in flat
+	// axis-aligned plateaus rather than terrain.
+	ivec2 map_size = max(textureSize(ground_map, 0), ivec2(1));
+	vec2 texel_position =
+		(world_position.xz - params.xy) * params.z * vec2(map_size) - vec2(0.5);
+	ivec2 base = ivec2(floor(texel_position));
+	vec2 blend = fract(texel_position);
+	// Clamped rather than wrapped: past the window edge the march is already
+	// being cut short by the window test, and a wrap would fold far terrain back
+	// under the reflector.
+	ivec2 low = clamp(base, ivec2(0), map_size - ivec2(1));
+	ivec2 high = clamp(base + ivec2(1), ivec2(0), map_size - ivec2(1));
+	vec4 near_row = mix(
+		texelFetch(ground_map, ivec2(low.x, low.y), 0),
+		texelFetch(ground_map, ivec2(high.x, low.y), 0),
+		blend.x);
+	vec4 far_row = mix(
+		texelFetch(ground_map, ivec2(low.x, high.y), 0),
+		texelFetch(ground_map, ivec2(high.x, high.y), 0),
+		blend.x);
+	return mix(near_row, far_row, blend.y);
+}
+
+
+// Ray against the window box, so a reflection that never reaches the ground
+// costs this test and nothing else. That early-out is what keeps the layer
+// affordable: most mirror pixels point at sky.
+bool rt_ground_window(
+		vec4 params,
+		vec4 bounds,
+		vec3 origin,
+		vec3 direction,
+		out float enter_distance,
+		out float exit_distance) {
+	float window_size = 1.0 / max(params.z, 1e-6);
+	vec3 box_min = vec3(params.x, bounds.x, params.y);
+	vec3 box_max = vec3(params.x + window_size, bounds.y, params.y + window_size);
+	// A zero component yields an infinite slab bound here, which min and max
+	// order correctly. Only an origin exactly on the face of a parallel ray
+	// produces a NaN, and the ordered comparison below rejects that case.
+	vec3 inverse_direction = 1.0 / direction;
+	vec3 first_plane = (box_min - origin) * inverse_direction;
+	vec3 second_plane = (box_max - origin) * inverse_direction;
+	vec3 near_plane = min(first_plane, second_plane);
+	vec3 far_plane = max(first_plane, second_plane);
+	enter_distance = max(max(near_plane.x, near_plane.y), max(near_plane.z, 0.0));
+	exit_distance = min(min(far_plane.x, far_plane.y), min(far_plane.z, bounds.z));
+	return exit_distance > enter_distance;
+}
+
+
+// Central differences over the canopy channel, in the shape the terrain mesher
+// gives its vertex normals, so the reflected ground shades like the ground it
+// stands in for.
+vec3 rt_ground_normal(
+		sampler2D ground_map,
+		vec4 params,
+		vec4 bounds,
+		vec3 world_position) {
+	vec3 offset_x = vec3(bounds.w, 0.0, 0.0);
+	vec3 offset_z = vec3(0.0, 0.0, bounds.w);
+	float left = rt_ground_sample(ground_map, params, world_position - offset_x).a;
+	float right = rt_ground_sample(ground_map, params, world_position + offset_x).a;
+	float back = rt_ground_sample(ground_map, params, world_position - offset_z).a;
+	float front = rt_ground_sample(ground_map, params, world_position + offset_z).a;
+	return normalize(vec3(left - right, 2.0 * bounds.w, back - front));
+}
+
+
+// Uniform march to the first crossing, then a fixed bisection of that one
+// interval. Both counts stay small on purpose: this runs only for a reflection
+// ray that entered the window, and it stands in for ground far enough away
+// that a silhouette a texel or two out cannot be read.
+bool rt_ground_trace(
+		sampler2D ground_map,
+		vec4 params,
+		vec4 bounds,
+		vec3 origin,
+		vec3 direction,
+		out vec3 hit_position,
+		out float hit_distance) {
+	hit_position = origin;
+	hit_distance = 0.0;
+	int step_count = int(params.w);
+	float enter_distance = 0.0;
+	float exit_distance = 0.0;
+	if (step_count < 1 || !rt_ground_window(
+			params, bounds, origin, direction, enter_distance, exit_distance)) {
+		return false;
+	}
+	vec3 entry_position = origin + direction * enter_distance;
+	if (entry_position.y < rt_ground_sample(ground_map, params, entry_position).a) {
+		// The ray starts under the canopy, which is the ordinary case for a mirror
+		// resting in grass rather than an error: the bottom of the reflector is
+		// inside the layer. Resolving it where it stands shows the canopy it is
+		// sitting in. Marching on instead would find no crossing and let sky out
+		// through the underside of the reflector.
+		hit_distance = enter_distance;
+		hit_position = entry_position;
+		return true;
+	}
+	float step_size = (exit_distance - enter_distance) / float(step_count);
+	float previous_distance = enter_distance;
+	for (int index = 1; index <= step_count; index++) {
+		float current_distance = enter_distance + step_size * float(index);
+		vec3 current_position = origin + direction * current_distance;
+		if (current_position.y < rt_ground_sample(ground_map, params, current_position).a) {
+			float above_distance = previous_distance;
+			float below_distance = current_distance;
+			for (int refine = 0; refine < RT_GROUND_REFINE_STEPS; refine++) {
+				float middle_distance = (above_distance + below_distance) * 0.5;
+				vec3 middle_position = origin + direction * middle_distance;
+				if (middle_position.y
+						< rt_ground_sample(ground_map, params, middle_position).a) {
+					below_distance = middle_distance;
+				} else {
+					above_distance = middle_distance;
+				}
+			}
+			hit_distance = below_distance;
+			hit_position = origin + direction * hit_distance;
+			return true;
+		}
+		previous_distance = current_distance;
+	}
+	return false;
+}
+
+
+// One reflection miss resolved against the ground instead of the sky. Returns
+// false when the ray leaves the window without crossing the canopy, which is
+// the caller's signal to fall back to the environment exactly as before.
+bool rt_ground_reflection(
+		sampler2D ground_map,
+		vec4 params,
+		vec4 bounds,
+		vec4 sun_direction,
+		vec4 sun_radiance,
+		vec4 ambient,
+		vec4 cloud_params,
+		vec4 cloud_motion,
+		vec3 cloud_sun_direction,
+		vec4 fog_params,
+		vec3 environment_radiance,
+		vec3 origin,
+		vec3 direction,
+		out vec3 radiance) {
+	radiance = vec3(0.0);
+	vec3 hit_position = origin;
+	float hit_distance = 0.0;
+	if (!rt_ground_trace(
+			ground_map, params, bounds, origin, direction, hit_position, hit_distance)) {
+		return false;
+	}
+	vec3 albedo = rt_ground_sample(ground_map, params, hit_position).rgb;
+	vec3 normal = rt_ground_normal(ground_map, params, bounds, hit_position);
+	float n_dot_l = max(dot(normal, sun_direction.xyz), 0.0) * sun_direction.w;
+	vec3 lit = albedo * (ambient.rgb + sun_radiance.rgb * n_dot_l);
+	lit *= 1.0 - dnc_cloud_shadow(cloud_params, cloud_motion, hit_position, cloud_sun_direction);
+	// Fades into exactly what this ray would have returned had it missed, which
+	// is what the caller passes in. Fading to the flat fog colour instead leaves
+	// a visible step at the fog boundary, because below the horizon a sky is
+	// free to draw something other than its horizon band, and the mirror shows
+	// both sides of that boundary at once.
+	radiance = mix(lit, environment_radiance, rt_fog_factor(fog_params, hit_distance));
+	return true;
 }
 
 
@@ -1038,7 +1253,27 @@ void main() {
 				reflection_direction,
 				material.emission_flags.a >= 0.5);
 		} else {
-			reflected_radiance = sample_environment_miss(reflection_direction);
+			// Sampled once and used for both outcomes: it is the fallback when the
+			// march finds no ground, and the target the ground fades into when it
+			// does, which is what keeps the two continuous at the fog boundary.
+			vec3 environment_radiance = sample_environment_miss(reflection_direction);
+			if (!rt_ground_reflection(
+					ground_map,
+					frame.ground_params,
+					frame.ground_bounds,
+					frame.ground_sun_direction,
+					frame.ground_sun_radiance,
+					frame.ground_ambient,
+					frame.cloud_params,
+					frame.cloud_motion,
+					frame.cloud_sun_direction.xyz,
+					frame.fog_params,
+					environment_radiance,
+					reflection_origin,
+					reflection_direction,
+					reflected_radiance)) {
+				reflected_radiance = environment_radiance;
+			}
 		}
 		color.rgb = mix(color.rgb, reflected_radiance, reflection_strength);
 	}
