@@ -1,9 +1,11 @@
-[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4 uid="uid://kkqdk6wbldfg"]
+[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4 uid="uid://bx6xcahp2rfxl"]
 
 [ext_resource type="Shader" uid="uid://bfhmjth5ltdrv" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="1_8rwql"]
 [ext_resource type="Shader" uid="uid://kueanl5fngu5" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="2_sm4wu"]
 [ext_resource type="Shader" uid="uid://b8aw1vycdmf36" path="res://addons/procedural_terrain_grass/shaders/terrain.gdshader" id="3_fg7vo"]
+[ext_resource type="Shader" uid="uid://btwyab1wn3lat" path="res://addons/day_night_cycle/shaders/day_night_sky_bake.gdshader" id="4_fg7vo"]
 [ext_resource type="Shader" uid="uid://gw3alysmim4a" path="res://addons/retro_rt/post_processing/shaders/fsr_easu.gdshader" id="4_hmvwk"]
+[ext_resource type="Shader" uid="uid://vifywj662n75" path="res://addons/day_night_cycle/shaders/day_night_sky.gdshader" id="4_sct6b"]
 [ext_resource type="Shader" uid="uid://d1mvi48gh3pmu" path="res://addons/retro_rt/post_processing/shaders/retro_present.gdshader" id="5_sct6b"]
 [ext_resource type="Shader" uid="uid://cvyogr2v2n1ig" path="res://addons/retro_rt/post_processing/shaders/smaa_edge.gdshader" id="6_rlwkw"]
 [ext_resource type="Shader" uid="uid://31pirw558gvd" path="res://addons/retro_rt/post_processing/shaders/smaa_neighborhood.gdshader" id="7_itc6l"]
@@ -12,18 +14,27 @@
 [ext_resource type="Shader" uid="uid://dn65lq2u22dcn" path="res://addons/retro_rt/shaders/BlinnPhongSoftwareValidation.gdshader" id="10_4swyu"]
 [ext_resource type="Script" uid="uid://cirkj6idwgnr6" path="res://addons/shader_warmup/shader_warmup_manifest.gd" id="11_ux7tk"]
 
-[sub_resource type="Environment" id="Environment_8rwql"]
+[sub_resource type="Environment" id="Environment_fg7vo"]
+background_mode = 1
+background_color = Color(0.56, 0.7, 0.85, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.42, 0.5, 0.62, 1)
+ambient_light_energy = 0.55
+
+[sub_resource type="Environment" id="Environment_hmvwk"]
 background_mode = 1
 background_color = Color(0.18, 0.18, 0.2, 1)
 ssao_radius = 0.8
 ssao_intensity = 16.0
 
-[sub_resource type="Environment" id="Environment_sm4wu"]
+[sub_resource type="Environment" id="Environment_sct6b"]
 background_mode = 1
-background_color = Color(0.26, 0.34, 0.43, 1)
-background_energy_multiplier = 0.8
+background_color = Color(0.56, 0.7, 0.85, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.42, 0.5, 0.62, 1)
+ambient_light_energy = 0.55
 
-[sub_resource type="Environment" id="Environment_fg7vo"]
+[sub_resource type="Environment" id="Environment_rlwkw"]
 background_mode = 1
 background_color = Color(0.035, 0.04, 0.05, 1)
 ambient_light_source = 2
@@ -31,7 +42,61 @@ ambient_light_color = Color(0.12, 0.13, 0.15, 1)
 ambient_light_energy = 0.35
 reflected_light_source = 2
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_hmvwk"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_itc6l"]
+resource_name = "Example Ground Blinn-Phong"
+render_priority = 0
+shader = ExtResource("1_8rwql")
+shader_parameter/ambient_light = Color(0.16, 0.18, 0.2, 1)
+shader_parameter/diffuse_color = Color(0.3, 0.34, 0.26, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.08, 0.08, 0.08, 1)
+shader_parameter/vertex_color_enabled = false
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 8.0
+shader_parameter/direct_specular_intensity = 0.05
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 0.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_hq4cd"]
+resource_name = "Example Prop Blinn-Phong"
+render_priority = 0
+shader = ExtResource("1_8rwql")
+shader_parameter/ambient_light = Color(0.16, 0.18, 0.2, 1)
+shader_parameter/diffuse_color = Color(0.52, 0.3, 0.18, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.4, 0.34, 0.28, 1)
+shader_parameter/vertex_color_enabled = false
+shader_parameter/triplanar_enabled = false
+shader_parameter/triplanar_world_space = false
+shader_parameter/triplanar_scale = Vector3(1, 1, 1)
+shader_parameter/triplanar_offset = Vector3(0, 0, 0)
+shader_parameter/triplanar_sharpness = 1.0
+shader_parameter/shininess = 24.0
+shader_parameter/direct_specular_intensity = 0.35
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 0.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+shader_parameter/rt_material_id = 0
+shader_parameter/rt_has_albedo_texture = false
+shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_knj3i"]
 resource_name = "ShaderMaterial_myinc"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -54,8 +119,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_sct6b"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_4swyu"]
 resource_name = "ShaderMaterial_8tn2x"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -78,8 +146,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_rlwkw"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ux7tk"]
 resource_name = "ShaderMaterial_standard_cyl"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -102,8 +173,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_itc6l"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_8ifgs"]
 resource_name = "ShaderMaterial_standard_torus"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -126,8 +200,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_hq4cd"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_h14yv"]
 resource_name = "ShaderMaterial_njov2"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -150,8 +227,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_knj3i"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_3i7qk"]
 resource_name = "ShaderMaterial_2au82"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -174,8 +254,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_4swyu"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_dcn6r"]
 resource_name = "Terrain Blinn-Phong"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -198,8 +281,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_ux7tk"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_pv62b"]
 resource_name = "Terrain Test Caster Blinn-Phong"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -222,8 +308,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_8ifgs"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_14so5"]
 resource_name = "Terrain Test Reflector Blinn-Phong"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -246,8 +335,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_h14yv"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_62r3d"]
 resource_name = "Runtime Grass Shell Warmup"
 render_priority = 0
 shader = ExtResource("2_sm4wu")
@@ -275,8 +367,12 @@ shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
 shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/u_fog_color = Vector3(0, 0, 0)
+shader_parameter/u_cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
+shader_parameter/u_cloud_shadow_tint = Color(0.62, 0.66, 0.76, 1)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_3i7qk"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_5f0mj"]
 resource_name = "Runtime Grass Shell Warmup"
 render_priority = 0
 shader = ExtResource("2_sm4wu")
@@ -304,8 +400,12 @@ shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
 shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/u_fog_color = Vector3(0, 0, 0)
+shader_parameter/u_cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
+shader_parameter/u_cloud_shadow_tint = Color(0.62, 0.66, 0.76, 1)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_dcn6r"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_68idg"]
 resource_name = "RT Warmup BlinnPhong"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -328,8 +428,11 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_pv62b"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_imjdj"]
 resource_name = "Runtime Grass Shell Warmup"
 render_priority = 0
 shader = ExtResource("2_sm4wu")
@@ -357,8 +460,12 @@ shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
 shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/u_fog_color = Vector3(0, 0, 0)
+shader_parameter/u_cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
+shader_parameter/u_cloud_shadow_tint = Color(0.62, 0.66, 0.76, 1)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_14so5"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_h4hbv"]
 resource_name = "Player RT Shadow Proxy"
 render_priority = 0
 shader = ExtResource("1_8rwql")
@@ -381,21 +488,101 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
+shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_62r3d"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_1lix6"]
+resource_name = "day_night_sky"
+render_priority = 0
+shader = ExtResource("4_sct6b")
+shader_parameter/u_zenith_color = Color(0.16, 0.33, 0.62, 1)
+shader_parameter/u_horizon_color = Color(0.55, 0.68, 0.82, 1)
+shader_parameter/u_ground_color = Color(0.2, 0.22, 0.24, 1)
+shader_parameter/u_horizon_falloff = 1.7
+shader_parameter/u_ground_falloff = 5.0
+shader_parameter/u_sun_direction = Vector3(0, 1, 0)
+shader_parameter/u_sun_color = Color(1, 0.96, 0.86, 1)
+shader_parameter/u_sun_angular_radius = 0.035
+shader_parameter/u_sun_intensity = 2.4
+shader_parameter/u_sun_glow_color = Color(1, 0.72, 0.42, 1)
+shader_parameter/u_sun_glow_intensity = 0.5
+shader_parameter/u_sun_glow_falloff = 18.0
+shader_parameter/u_moon_direction = Vector3(0, -1, 0)
+shader_parameter/u_moon_color = Color(0.92, 0.94, 1, 1)
+shader_parameter/u_moon_angular_radius = 0.045
+shader_parameter/u_moon_intensity = 1.0
+shader_parameter/u_moon_phase = 0.5
+shader_parameter/u_moon_earthshine = 0.05
+shader_parameter/u_moon_glow_intensity = 0.1
+shader_parameter/u_star_intensity = 0.0
+shader_parameter/u_star_density = 150.0
+shader_parameter/u_star_seed = 0.0
+shader_parameter/u_star_size = 0.055
+shader_parameter/u_star_coverage = 0.42
+shader_parameter/u_star_twinkle_time = 0.0
+shader_parameter/u_star_twinkle_amount = 0.35
+shader_parameter/u_star_horizon_fade = 0.13
+shader_parameter/u_cloud_params = Vector4(260, 0, 0.5, 0.17)
+shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_lit_color = Color(1, 1, 1, 1)
+shader_parameter/u_cloud_shade_color = Color(0.55, 0.68, 0.82, 1)
+shader_parameter/u_cloud_shade = 0.45
+shader_parameter/u_cloud_fade_distance = 5200.0
+shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_4gk2t"]
+resource_name = "day_night_sky_bake"
+shader = ExtResource("4_fg7vo")
+shader_parameter/u_zenith_color = Color(0.16, 0.33, 0.62, 1)
+shader_parameter/u_horizon_color = Color(0.55, 0.68, 0.82, 1)
+shader_parameter/u_ground_color = Color(0.2, 0.22, 0.24, 1)
+shader_parameter/u_horizon_falloff = 1.7
+shader_parameter/u_ground_falloff = 5.0
+shader_parameter/u_sun_direction = Vector3(0, 1, 0)
+shader_parameter/u_sun_color = Color(1, 0.96, 0.86, 1)
+shader_parameter/u_sun_angular_radius = 0.035
+shader_parameter/u_sun_intensity = 2.4
+shader_parameter/u_sun_glow_color = Color(1, 0.72, 0.42, 1)
+shader_parameter/u_sun_glow_intensity = 0.5
+shader_parameter/u_sun_glow_falloff = 18.0
+shader_parameter/u_moon_direction = Vector3(0, -1, 0)
+shader_parameter/u_moon_color = Color(0.92, 0.94, 1, 1)
+shader_parameter/u_moon_angular_radius = 0.045
+shader_parameter/u_moon_intensity = 1.0
+shader_parameter/u_moon_phase = 0.5
+shader_parameter/u_moon_earthshine = 0.05
+shader_parameter/u_moon_glow_intensity = 0.1
+shader_parameter/u_star_intensity = 0.0
+shader_parameter/u_star_density = 150.0
+shader_parameter/u_star_seed = 0.0
+shader_parameter/u_star_size = 0.055
+shader_parameter/u_star_coverage = 0.42
+shader_parameter/u_star_twinkle_time = 0.0
+shader_parameter/u_star_twinkle_amount = 0.35
+shader_parameter/u_star_horizon_fade = 0.13
+shader_parameter/u_cloud_params = Vector4(260, 0, 0.5, 0.17)
+shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/u_cloud_lit_color = Color(1, 1, 1, 1)
+shader_parameter/u_cloud_shade_color = Color(0.55, 0.68, 0.82, 1)
+shader_parameter/u_cloud_shade = 0.45
+shader_parameter/u_cloud_fade_distance = 5200.0
+shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_2qu36"]
 resource_name = "terrain"
 render_priority = 0
 shader = ExtResource("3_fg7vo")
 shader_parameter/u_roughness = 0.95
 shader_parameter/u_specular = 0.05
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_5f0mj"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_6ge4k"]
 resource_name = "fsr_easu"
 shader = ExtResource("4_hmvwk")
 shader_parameter/easu_input_size = Vector2(1, 1)
 shader_parameter/easu_output_size = Vector2(1, 1)
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_68idg"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_fydai"]
 resource_name = "retro_present"
 shader = ExtResource("5_sct6b")
 shader_parameter/sharpen_mode = 0
@@ -411,7 +598,7 @@ shader_parameter/posterize_enabled = false
 shader_parameter/posterize_levels = 256.0
 shader_parameter/posterize_strength = 1.0
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_imjdj"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_2kmg4"]
 resource_name = "smaa_edge"
 shader = ExtResource("6_rlwkw")
 shader_parameter/viewport_size = Vector2(1, 1)
@@ -428,7 +615,7 @@ shader_parameter/camera_ray_bottom_right = Vector3(0, 0, -1)
 shader_parameter/recover_opaque_coverage_from_rgb = false
 shader_parameter/scene_input_is_linear = false
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_h4hbv"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_uwm67"]
 resource_name = "smaa_neighborhood"
 shader = ExtResource("7_itc6l")
 shader_parameter/viewport_size = Vector2(1, 1)
@@ -445,7 +632,7 @@ shader_parameter/camera_ray_bottom_right = Vector3(0, 0, -1)
 shader_parameter/recover_opaque_coverage_from_rgb = false
 shader_parameter/scene_input_is_linear = false
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_1lix6"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_trxff"]
 resource_name = "smaa_weights"
 shader = ExtResource("8_hq4cd")
 shader_parameter/viewport_size = Vector2(1, 1)
@@ -455,7 +642,7 @@ shader_parameter/diagonal_detection_enabled = true
 shader_parameter/corner_detection_enabled = true
 shader_parameter/corner_rounding = 0.25
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_4gk2t"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_xxd4q"]
 resource_name = "BlinnPhongSoftware"
 render_priority = 0
 shader = ExtResource("9_knj3i")
@@ -487,6 +674,9 @@ shader_parameter/swrt_shading_counts = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_frame_settings = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_miss_color = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
+shader_parameter/swrt_cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_cloud_sun_direction = Vector3(0, 1, 0)
 shader_parameter/swrt_environment_mode = 0
 shader_parameter/swrt_environment_basis_x = Vector3(1, 0, 0)
 shader_parameter/swrt_environment_basis_y = Vector3(0, 1, 0)
@@ -499,7 +689,7 @@ shader_parameter/swrt_primary_specular_color = Vector3(1, 1, 1)
 shader_parameter/swrt_primary_direct_specular_intensity = 1.0
 shader_parameter/swrt_primary_reflection_shadows_enabled = false
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_2qu36"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_rbhje"]
 resource_name = "BlinnPhongSoftwareValidation"
 render_priority = 0
 shader = ExtResource("10_4swyu")
@@ -531,6 +721,9 @@ shader_parameter/swrt_shading_counts = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_frame_settings = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_miss_color = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
+shader_parameter/swrt_cloud_params = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_cloud_motion = Vector4(0, 0, 0, 0)
+shader_parameter/swrt_cloud_sun_direction = Vector3(0, 1, 0)
 shader_parameter/swrt_environment_mode = 0
 shader_parameter/swrt_environment_basis_x = Vector3(1, 0, 0)
 shader_parameter/swrt_environment_basis_y = Vector3(0, 1, 0)
@@ -545,12 +738,12 @@ shader_parameter/swrt_primary_reflection_shadows_enabled = false
 
 [resource]
 script = ExtResource("11_ux7tk")
-materials = Array[Material]([SubResource("ShaderMaterial_hmvwk"), SubResource("ShaderMaterial_sct6b"), SubResource("ShaderMaterial_rlwkw"), SubResource("ShaderMaterial_itc6l"), SubResource("ShaderMaterial_hq4cd"), SubResource("ShaderMaterial_knj3i"), SubResource("ShaderMaterial_4swyu"), SubResource("ShaderMaterial_ux7tk"), SubResource("ShaderMaterial_8ifgs"), SubResource("ShaderMaterial_h14yv"), SubResource("ShaderMaterial_3i7qk"), SubResource("ShaderMaterial_dcn6r"), SubResource("ShaderMaterial_pv62b"), SubResource("ShaderMaterial_14so5"), SubResource("ShaderMaterial_62r3d"), SubResource("ShaderMaterial_5f0mj"), SubResource("ShaderMaterial_68idg"), SubResource("ShaderMaterial_imjdj"), SubResource("ShaderMaterial_h4hbv"), SubResource("ShaderMaterial_1lix6"), SubResource("ShaderMaterial_4gk2t"), SubResource("ShaderMaterial_2qu36")])
-environments = Array[Environment]([SubResource("Environment_8rwql"), SubResource("Environment_sm4wu"), SubResource("Environment_fg7vo")])
-labels = PackedStringArray("ShaderMaterial_myinc", "ShaderMaterial_8tn2x", "ShaderMaterial_standard_cyl", "ShaderMaterial_standard_torus", "ShaderMaterial_njov2", "ShaderMaterial_2au82", "Terrain Blinn-Phong", "Terrain Test Caster Blinn-Phong", "Terrain Test Reflector Blinn-Phong", "Runtime Grass Shell Warmup", "Runtime Grass Shell Warmup", "RT Warmup BlinnPhong", "Runtime Grass Shell Warmup", "Player RT Shadow Proxy", "terrain", "fsr_easu", "retro_present", "smaa_edge", "smaa_neighborhood", "smaa_weights", "BlinnPhongSoftware", "BlinnPhongSoftwareValidation")
-sources = PackedStringArray("res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://game/levels/terrain_test.tscn", "res://game/levels/terrain_test.tscn", "res://game/levels/terrain_test.tscn", "res://game/materials/warmup_grass.tres", "res://game/warmup/grass_vertex_format.res", "res://game/warmup/rt_fixture.tscn", "res://game/warmup/terrain_grass_proxy.tscn", "res://player/player.tscn", "res://addons/procedural_terrain_grass/shaders/terrain.gdshader", "res://addons/retro_rt/post_processing/shaders/fsr_easu.gdshader", "res://addons/retro_rt/post_processing/shaders/retro_present.gdshader", "res://addons/retro_rt/post_processing/shaders/smaa_edge.gdshader", "res://addons/retro_rt/post_processing/shaders/smaa_neighborhood.gdshader", "res://addons/retro_rt/post_processing/shaders/smaa_weights.gdshader", "res://addons/retro_rt/shaders/BlinnPhongSoftware.gdshader", "res://addons/retro_rt/shaders/BlinnPhongSoftwareValidation.gdshader")
-pair_material_indices = PackedInt32Array(0, 1, 2, 3, 4, 5, 7, 8, 10, 11, 6, 12, 13)
-pair_vertex_formats = PackedInt64Array(4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4127, 4119, 4111, 4127, 4119)
-pair_flags = PackedInt32Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-generated_at = "2026-08-23 20:07:58"
-fingerprint = "a4cce821b7d4f7fe8ef44584d723aae6808e147d734f5cf605d18831378ea4e4"
+materials = Array[Material]([SubResource("ShaderMaterial_itc6l"), SubResource("ShaderMaterial_hq4cd"), SubResource("ShaderMaterial_knj3i"), SubResource("ShaderMaterial_4swyu"), SubResource("ShaderMaterial_ux7tk"), SubResource("ShaderMaterial_8ifgs"), SubResource("ShaderMaterial_h14yv"), SubResource("ShaderMaterial_3i7qk"), SubResource("ShaderMaterial_dcn6r"), SubResource("ShaderMaterial_pv62b"), SubResource("ShaderMaterial_14so5"), SubResource("ShaderMaterial_62r3d"), SubResource("ShaderMaterial_5f0mj"), SubResource("ShaderMaterial_68idg"), SubResource("ShaderMaterial_imjdj"), SubResource("ShaderMaterial_h4hbv"), SubResource("ShaderMaterial_1lix6"), SubResource("ShaderMaterial_4gk2t"), SubResource("ShaderMaterial_2qu36"), SubResource("ShaderMaterial_6ge4k"), SubResource("ShaderMaterial_fydai"), SubResource("ShaderMaterial_2kmg4"), SubResource("ShaderMaterial_uwm67"), SubResource("ShaderMaterial_trxff"), SubResource("ShaderMaterial_xxd4q"), SubResource("ShaderMaterial_rbhje")])
+environments = Array[Environment]([SubResource("Environment_fg7vo"), SubResource("Environment_hmvwk"), SubResource("Environment_sct6b"), SubResource("Environment_rlwkw")])
+labels = PackedStringArray("Example Ground Blinn-Phong", "Example Prop Blinn-Phong", "ShaderMaterial_myinc", "ShaderMaterial_8tn2x", "ShaderMaterial_standard_cyl", "ShaderMaterial_standard_torus", "ShaderMaterial_njov2", "ShaderMaterial_2au82", "Terrain Blinn-Phong", "Terrain Test Caster Blinn-Phong", "Terrain Test Reflector Blinn-Phong", "Runtime Grass Shell Warmup", "Runtime Grass Shell Warmup", "RT Warmup BlinnPhong", "Runtime Grass Shell Warmup", "Player RT Shadow Proxy", "day_night_sky", "day_night_sky_bake", "terrain", "fsr_easu", "retro_present", "smaa_edge", "smaa_neighborhood", "smaa_weights", "BlinnPhongSoftware", "BlinnPhongSoftwareValidation")
+sources = PackedStringArray("res://addons/day_night_cycle/examples/DayNightExample.tscn", "res://addons/day_night_cycle/examples/DayNightExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://addons/retro_rt/examples/RTExample.tscn", "res://game/levels/terrain_test.tscn", "res://game/levels/terrain_test.tscn", "res://game/levels/terrain_test.tscn", "res://game/materials/warmup_grass.tres", "res://game/warmup/grass_vertex_format.res", "res://game/warmup/rt_fixture.tscn", "res://game/warmup/terrain_grass_proxy.tscn", "res://player/player.tscn", "res://addons/day_night_cycle/shaders/day_night_sky.gdshader", "res://addons/day_night_cycle/shaders/day_night_sky_bake.gdshader", "res://addons/procedural_terrain_grass/shaders/terrain.gdshader", "res://addons/retro_rt/post_processing/shaders/fsr_easu.gdshader", "res://addons/retro_rt/post_processing/shaders/retro_present.gdshader", "res://addons/retro_rt/post_processing/shaders/smaa_edge.gdshader", "res://addons/retro_rt/post_processing/shaders/smaa_neighborhood.gdshader", "res://addons/retro_rt/post_processing/shaders/smaa_weights.gdshader", "res://addons/retro_rt/shaders/BlinnPhongSoftware.gdshader", "res://addons/retro_rt/shaders/BlinnPhongSoftwareValidation.gdshader")
+pair_material_indices = PackedInt32Array(0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 8, 14, 15)
+pair_vertex_formats = PackedInt64Array(4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4127, 4119, 4111, 4127, 4119)
+pair_flags = PackedInt32Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+generated_at = "2026-08-24 05:57:54"
+fingerprint = "86d7196048a8c841a9f921daac7136e7929260d4b3f82367d84fa204ec627772"

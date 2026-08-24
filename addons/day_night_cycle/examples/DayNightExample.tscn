@@ -1,0 +1,97 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://addons/day_night_cycle/examples/DayNightExample.gd" id="1_example"]
+[ext_resource type="Script" path="res://addons/day_night_cycle/day_night_cycle_3d.gd" id="2_cycle"]
+[ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="3_blinn"]
+
+[sub_resource type="Environment" id="Environment_example"]
+background_mode = 1
+background_color = Color(0.56, 0.7, 0.85, 1)
+background_energy_multiplier = 1.0
+ambient_light_source = 2
+ambient_light_color = Color(0.42, 0.5, 0.62, 1)
+ambient_light_energy = 0.55
+tonemap_mode = 0
+tonemap_exposure = 1.0
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_ground"]
+resource_name = "Example Ground Blinn-Phong"
+shader = ExtResource("3_blinn")
+shader_parameter/ambient_light = Color(0.16, 0.18, 0.2, 1)
+shader_parameter/diffuse_color = Color(0.3, 0.34, 0.26, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.08, 0.08, 0.08, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/vertex_color_enabled = false
+shader_parameter/shininess = 8.0
+shader_parameter/direct_specular_intensity = 0.05
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 0.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_prop"]
+resource_name = "Example Prop Blinn-Phong"
+shader = ExtResource("3_blinn")
+shader_parameter/ambient_light = Color(0.16, 0.18, 0.2, 1)
+shader_parameter/diffuse_color = Color(0.52, 0.3, 0.18, 1)
+shader_parameter/emission_color = Color(0, 0, 0, 1)
+shader_parameter/specular_color = Color(0.4, 0.34, 0.28, 1)
+shader_parameter/triplanar_enabled = false
+shader_parameter/vertex_color_enabled = false
+shader_parameter/shininess = 24.0
+shader_parameter/direct_specular_intensity = 0.35
+shader_parameter/mirror_enabled = false
+shader_parameter/reflection_strength = 0.0
+shader_parameter/reflection_shadows_enabled = false
+shader_parameter/rt_pipeline_active = false
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_ground"]
+size = Vector2(260, 260)
+
+[sub_resource type="BoxMesh" id="BoxMesh_prop"]
+size = Vector3(3, 6, 3)
+
+[node name="DayNightExample" type="Node3D"]
+script = ExtResource("1_example")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_example")
+
+[node name="DayNightCycle3D" type="Node3D" parent="."]
+script = ExtResource("2_cycle")
+day_length_seconds = 180.0
+start_time_of_day = 6.5
+cloud_altitude = 140.0
+cloud_world_size = 340.0
+sky_dome_radius = 700.0
+ambient_materials = Array[ShaderMaterial]([SubResource("ShaderMaterial_ground"), SubResource("ShaderMaterial_prop")])
+cloud_shadow_materials = Array[ShaderMaterial]([SubResource("ShaderMaterial_ground"), SubResource("ShaderMaterial_prop")])
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+material_override = SubResource("ShaderMaterial_ground")
+mesh = SubResource("PlaneMesh_ground")
+
+[node name="PropA" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6, 3, -4)
+material_override = SubResource("ShaderMaterial_prop")
+mesh = SubResource("BoxMesh_prop")
+
+[node name="PropB" type="MeshInstance3D" parent="."]
+transform = Transform3D(0.7, 0, 0, 0, 1.6, 0, 0, 0, 0.7, 7, 4.8, 3)
+material_override = SubResource("ShaderMaterial_prop")
+mesh = SubResource("BoxMesh_prop")
+
+[node name="CameraPivot" type="Node3D" parent="."]
+
+[node name="Camera3D" type="Camera3D" parent="CameraPivot"]
+transform = Transform3D(1, 0, 0, 0, 0.94, 0.342, 0, -0.342, 0.94, 0, 9, 26)
+far = 2000.0
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Readout" type="Label" parent="UI"]
+offset_left = 16.0
+offset_top = 12.0
+offset_right = 560.0
+offset_bottom = 180.0

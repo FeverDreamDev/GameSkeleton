@@ -1,3 +1,4 @@
+@tool
 # Immutable copy of a TerrainGrass3D's inspector values, taken when the runtime
 # starts. Managers read this instead of the node so a rebuild mid-frame cannot
 # change generation parameters underneath in-flight jobs.

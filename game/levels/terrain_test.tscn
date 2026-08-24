@@ -1,4 +1,4 @@
-[gd_scene load_steps=17 format=3]
+[gd_scene load_steps=18 format=3]
 
 [ext_resource type="Script" path="res://game/levels/terrain_test.gd" id="1_level"]
 [ext_resource type="Script" path="res://addons/procedural_terrain_grass/terrain_grass_3d.gd" id="2_terrain"]
@@ -8,11 +8,15 @@
 [ext_resource type="Material" path="res://game/materials/terrain_blinn_phong.tres" id="6_terrain_material"]
 [ext_resource type="Material" path="res://game/materials/test_reflector_blinn_phong.tres" id="7_reflector_material"]
 [ext_resource type="Script" path="res://game/levels/saveable_transform_3d.gd" id="8_saveable"]
+[ext_resource type="Script" path="res://addons/day_night_cycle/day_night_cycle_3d.gd" id="9_day_night"]
 
 [sub_resource type="Environment" id="Environment_level"]
 background_mode = 1
-background_color = Color(0.26, 0.34, 0.43, 1)
-background_energy_multiplier = 0.8
+background_color = Color(0.56, 0.7, 0.85, 1)
+background_energy_multiplier = 1.0
+ambient_light_source = 2
+ambient_light_color = Color(0.42, 0.5, 0.62, 1)
+ambient_light_energy = 0.55
 tonemap_mode = 0
 tonemap_exposure = 1.0
 
@@ -39,12 +43,9 @@ standalone_player_scene = ExtResource("3_player")
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_level")
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.819152, -0.32899, 0.469846, 0, 0.819152, 0.573576, -0.573576, -0.469846, 0.67101, 0, 12, 0)
-light_color = Color(1, 0.91, 0.78, 1)
-light_energy = 1.15
-shadow_enabled = true
-directional_shadow_max_distance = 256.0
+[node name="DayNightCycle3D" type="Node3D" parent="." groups=["saveable"]]
+script = ExtResource("9_day_night")
+ambient_materials = Array[ShaderMaterial]([ExtResource("6_terrain_material"), ExtResource("5_caster_material"), ExtResource("7_reflector_material")])
 
 [node name="TerrainGrass3D" type="Node3D" parent="."]
 script = ExtResource("2_terrain")

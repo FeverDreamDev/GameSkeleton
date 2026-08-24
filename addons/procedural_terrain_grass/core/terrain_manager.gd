@@ -1,3 +1,4 @@
+@tool
 # Chunk streaming, generation scheduling and static grass masking.
 #
 # Work moves through four stages, each budgeted so no single frame stalls:

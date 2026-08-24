@@ -24,7 +24,7 @@ window/stretch/aspect="expand"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/procedural_terrain_grass/plugin.cfg", "res://addons/retro_rt/plugin.cfg", "res://addons/shader_warmup/plugin.cfg")
+enabled=PackedStringArray("res://addons/day_night_cycle/plugin.cfg", "res://addons/procedural_terrain_grass/plugin.cfg", "res://addons/retro_rt/plugin.cfg", "res://addons/shader_warmup/plugin.cfg")
 
 [input]
 

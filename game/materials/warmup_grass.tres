@@ -30,3 +30,7 @@ shader_parameter/u_flatten_response = null
 shader_parameter/u_min_flatten = null
 shader_parameter/u_fog_params = null
 shader_parameter/u_fog_color = null
+shader_parameter/u_cloud_params = null
+shader_parameter/u_cloud_motion = null
+shader_parameter/u_cloud_sun_direction = null
+shader_parameter/u_cloud_shadow_tint = null

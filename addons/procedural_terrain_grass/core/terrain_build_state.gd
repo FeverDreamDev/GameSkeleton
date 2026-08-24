@@ -1,3 +1,4 @@
+@tool
 extends RefCounted
 
 const TerrainGenerator = preload("res://addons/procedural_terrain_grass/core/terrain_generator.gd")

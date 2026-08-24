@@ -1,3 +1,4 @@
+@tool
 # One streamed terrain tile: a terrain mesh, a heightmap collider, and the three
 # cached grass shell meshes the LOD bands switch between.
 extends Node3D

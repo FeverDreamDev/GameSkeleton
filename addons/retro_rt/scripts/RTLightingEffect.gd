@@ -13,9 +13,9 @@ const INDEX_STRIDE := 4
 const INSTANCE_RECORD_SIZE := 64
 const MATERIAL_RECORD_SIZE := 128
 const MAX_LIGHT_RECORDS := 256
-# std140 FrameData is mat4 + 13 vec4 = 17 vec4. Keep in step with the FrameData
+# std140 FrameData is mat4 + 16 vec4 = 20 vec4. Keep in step with the FrameData
 # block in rt_shadow_reflect.glsl; a mismatch fails loudly in _update_frame_ubo.
-const FRAME_UBO_FLOATS := 68
+const FRAME_UBO_FLOATS := 80
 
 const PROFILE_TLAS_BEGIN := "RetroRT/TLAS begin"
 const PROFILE_TLAS_END := "RetroRT/TLAS end"
@@ -847,6 +847,12 @@ func _update_frame_ubo(
 		float(snapshot.get("fog_end", 1.0)),
 		float(snapshot.get("fog_curve", 1.0)),
 		1.0 if bool(snapshot.get("fog_enabled", false)) else 0.0))
+	# The cloud layer a sky system pushed through configure_cloud_layer(). Zero
+	# by default, which the canonical dnc_cloud_shadow() reads as no layer.
+	_set_frame_vec4(68, snapshot.get("cloud_params", Vector4.ZERO))
+	_set_frame_vec4(72, snapshot.get("cloud_motion", Vector4.ZERO))
+	var cloud_sun: Vector3 = snapshot.get("cloud_sun_direction", Vector3.UP)
+	_set_frame_vec4(76, Vector4(cloud_sun.x, cloud_sun.y, cloud_sun.z, 0.0))
 	var bytes := _frame_values_cache.to_byte_array()
 	if rd.buffer_update(frame_ubo, 0, bytes.size(), bytes) != OK:
 		_fail("Unable to update the RT frame UBO.")

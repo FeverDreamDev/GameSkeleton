@@ -1,3 +1,4 @@
+@tool
 # Shared lookup used by the blocker and interactor helper nodes to find the
 # TerrainGrass3D they belong to.
 #

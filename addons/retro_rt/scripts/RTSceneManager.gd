@@ -318,6 +318,20 @@ var _snapshot_max_distance := 10000.0
 var _snapshot_max_lights := MAX_SUPPORTED_LIGHTS
 var _snapshot_profiling_enabled := false
 var _snapshot_fog := Vector4.ZERO
+# Cloud layer pushed by a sky system through configure_cloud_layer(). Managed
+# surfaces are lit here rather than by their own material, so an analytic sky
+# shadow has to arrive with the rest of the frame state. See
+# addons/day_night_cycle, "The cloud layer".
+var _cloud_params := Vector4.ZERO
+var _cloud_motion := Vector4.ZERO
+var _cloud_sun_direction := Vector3.UP
+var _snapshot_cloud_params := Vector4.ZERO
+var _snapshot_cloud_motion := Vector4.ZERO
+var _snapshot_cloud_sun := Vector3.UP
+# Reflection-miss radiance supplied by a sky system, replacing the flat colour
+# without changing the visible background or the fog. See set_reflection_panorama().
+var _reflection_override: ImageTexture
+var _reflection_override_basis := Basis.IDENTITY
 var _fog_signal_muted := false
 var _receiver_light_starts := PackedInt32Array()
 var _receiver_light_counts := PackedInt32Array()
@@ -1432,6 +1446,79 @@ func configure_distance_fog(
 
 
 ## Everything an unmanaged forward shader needs to match the RT paths exactly.
+## Runtime push for a sky system that owns an analytic cloud layer, so managed
+## surfaces can resolve the same shadow their unmanaged neighbours already do.
+## Managed geometry is lit here rather than by its own material, which is why
+## this cannot simply be a shader parameter on the material.
+##
+## [param params] is (altitude, 1/tile size, coverage threshold, edge softness),
+## Replaces the reflection-miss radiance without touching the visible background
+## or the fog. A sky system that draws its own dome keeps the Environment on
+## BG_COLOR, because that is the branch with no panorama bake and the branch
+## whose flat radiance the distance fog resolves to. This is the one thing that
+## branch cannot supply: something for a mirror to reflect.
+##
+## [param image] is linear radiance; pass null to go back to the flat colour.
+## The caller owns the bake and its schedule, and only pays for it when it asks.
+func set_reflection_panorama(image: Image, sky_rotation: Basis = Basis.IDENTITY) -> void:
+	if image == null or image.is_empty():
+		if _reflection_override == null:
+			return
+		_reflection_override = null
+		_reflection_override_basis = Basis.IDENTITY
+		_environment_dirty = true
+		_environment_debounce_frames = 0
+		return
+	var converted := image
+	if converted.get_format() != Image.FORMAT_RGBAF:
+		converted = image.duplicate()
+		converted.convert(Image.FORMAT_RGBAF)
+	if converted.get_format() != Image.FORMAT_RGBAF:
+		push_warning("RTSceneManager: reflection panorama could not be converted to RGBAF.")
+		return
+	_reflection_override = ImageTexture.create_from_image(converted)
+	_reflection_override_basis = sky_rotation.inverse()
+	_environment_dirty = true
+	_environment_debounce_frames = 0
+
+
+## Swaps the reflection source into a snapshot that was otherwise built from the
+## flat background, so fallback_linear stays the fog colour while the miss
+## radiance becomes the supplied panorama.
+func _apply_reflection_panorama_override(snapshot: Dictionary) -> void:
+	if _reflection_override == null or snapshot.is_empty():
+		return
+	snapshot["mode"] = RTEnvironmentMode.PANORAMA
+	snapshot["panorama"] = _reflection_override
+	snapshot["inverse_sky_basis"] = _reflection_override_basis
+	snapshot["width"] = _reflection_override.get_width()
+	snapshot["height"] = _reflection_override.get_height()
+	snapshot["bytes"] = _reflection_override.get_width() * _reflection_override.get_height() * 16
+	snapshot["bake_source"] = &"reflection_override"
+
+
+## with a zero tile size disabling the layer. [param motion] is (scroll x, seed,
+## scroll z, shadow strength). Both are consumed by the canonical
+## dnc_cloud_shadow(); see addons/day_night_cycle/README.md.
+func configure_cloud_layer(
+		params: Vector4,
+		motion: Vector4,
+		sun_direction: Vector3) -> void:
+	_cloud_params = params
+	_cloud_motion = motion
+	_cloud_sun_direction = sun_direction
+
+
+## Everything a shader needs to resolve the same cloud shadow this renderer
+## applies to its managed surfaces.
+func get_cloud_layer() -> Dictionary:
+	return {
+		"params": _cloud_params,
+		"motion": _cloud_motion,
+		"sun_direction": _cloud_sun_direction,
+	}
+
+
 ## "color" is scene-linear radiance that has already been background-energy
 ## scaled, so a consumer must not convert it again.
 func get_distance_fog() -> Dictionary:
@@ -1759,6 +1846,7 @@ func _refresh_environment_snapshot(force: bool = false) -> int:
 		environment, source_kind, next_revision)
 	if next_environment.is_empty():
 		return -1
+	_apply_reflection_panorama_override(next_environment)
 	next_environment.make_read_only()
 	_snapshot_environment = next_environment
 	_environment_revision = next_revision
@@ -3357,6 +3445,9 @@ func _publish_snapshot() -> void:
 		or max_scene_lights != _snapshot_max_lights
 		or profiling_enabled != _snapshot_profiling_enabled
 		or next_fog != _snapshot_fog
+		or _cloud_params != _snapshot_cloud_params
+		or _cloud_motion != _snapshot_cloud_motion
+		or _cloud_sun_direction != _snapshot_cloud_sun
 	)
 	if not transforms_changed and not masks_changed and not layers_changed and not materials_changed and not lights_changed and not environment_changed and not receiver_lists_changed and not settings_changed:
 		return
@@ -3383,6 +3474,9 @@ func _publish_snapshot() -> void:
 	_snapshot_max_lights = max_scene_lights
 	_snapshot_profiling_enabled = profiling_enabled
 	_snapshot_fog = next_fog
+	_snapshot_cloud_params = _cloud_params
+	_snapshot_cloud_motion = _cloud_motion
+	_snapshot_cloud_sun = _cloud_sun_direction
 
 	_snapshot_revision += 1
 	if traversal_changed:
@@ -3447,6 +3541,9 @@ func _commit_current_snapshot() -> void:
 		"fog_end": _snapshot_fog.y,
 		"fog_curve": _snapshot_fog.z,
 		"fog_enabled": _snapshot_fog.w >= 0.5,
+		"cloud_params": _snapshot_cloud_params,
+		"cloud_motion": _snapshot_cloud_motion,
+		"cloud_sun_direction": _snapshot_cloud_sun,
 	}
 	next_snapshot.make_read_only()
 	_current_snapshot = next_snapshot

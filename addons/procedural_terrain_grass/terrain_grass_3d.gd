@@ -38,6 +38,14 @@ signal grass_rebuilt(coord: Vector2i)
 ## Begin streaming automatically as soon as a target is available.
 @export var auto_start: bool = true
 
+@export_group("Editor Preview")
+## Builds a fixed patch of terrain in the editor viewport, without grass, so a
+## level can be laid out against the ground it will actually have.
+@export var editor_preview_enabled: bool = true
+## Radius of that patch in metres. Kept well under the runtime load distance
+## because it is generated on the main thread while the editor waits.
+@export_range(8.0, 512.0, 1.0) var editor_preview_distance: float = 48.0
+
 # Changing any of these takes effect on the next rebuild(), but they also feed
 # the height preview sample_height() serves before the runtime exists, so each
 # one drops that cache.
@@ -263,6 +271,7 @@ var _interaction_manager: Node3D
 var _terrain_material: ShaderMaterial
 var _grass_material: ShaderMaterial
 var _active_target: Node3D
+var _editor_preview_anchor: Node3D
 var _runtime_epoch: int = 0
 var _started: bool = false
 var _missing_target_warned: bool = false
@@ -282,15 +291,37 @@ func _ready() -> void:
 	# The shader needs the system origin, and chunks are placed relative to it.
 	set_notify_transform(true)
 	if Engine.is_editor_hint():
-		# Nothing streams in the editor; only configuration warnings and
-		# sample_height() previews stay live.
+		if editor_preview_enabled:
+			_create_editor_preview()
+			return
+		# Without a preview nothing streams in the editor; only configuration
+		# warnings and sample_height() previews stay live.
 		set_process(false)
 		return
 	_create_runtime()
 
 
+## A fixed patch of terrain around this node, so a level can be laid out against
+## the ground it will actually have. Grass is deliberately left out: it is the
+## expensive half, it hides the surface you are trying to place things on, and
+## it is the half that reacts to gameplay rather than to authoring.
+##
+## The patch is anchored to this node rather than to the editor camera, so it
+## never streams while you fly around and never competes with the editor for
+## worker threads.
+func _create_editor_preview() -> void:
+	_create_runtime(false)
+	if _terrain_manager == null:
+		return
+	_editor_preview_anchor = Node3D.new()
+	_editor_preview_anchor.name = "_EditorPreviewAnchor"
+	add_child(_editor_preview_anchor)
+	_terrain_manager.target = _editor_preview_anchor
+	_terrain_manager.start_streaming()
+
+
 func _exit_tree() -> void:
-	if Engine.is_editor_hint():
+	if Engine.is_editor_hint() and not editor_preview_enabled:
 		return
 	_dispose_runtime()
 
@@ -686,6 +717,14 @@ func _build_settings():
 	var result = TerrainSettingsScript.new()
 	for property in TerrainSettingsScript.MIRRORED_PROPERTIES:
 		result.set(property, get(property))
+	if Engine.is_editor_hint():
+		# The editor patch is generated while the editor waits on it, so it is
+		# deliberately small and grassless whatever the runtime settings say.
+		result.terrain_load_distance = editor_preview_distance
+		result.terrain_unload_distance = editor_preview_distance * 1.5
+		result.grass_enabled = false
+		result.static_masking_enabled = false
+		result.dynamic_interaction_enabled = false
 	return result
 
 

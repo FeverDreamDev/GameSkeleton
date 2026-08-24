@@ -40,6 +40,15 @@ func _run() -> void:
 	if spawn != &"default":
 		_finish()
 		return
+	# The level now carries a day/night cycle whose cloud shadow casters are
+	# traversable RT geometry. Moving traversable geometry legitimately dirties
+	# the TLAS, which would mask the receiver-registry regressions this probe
+	# exists to catch. Freeze the sky for the same reason the player is frozen
+	# below: everything except the receiver stream has to hold still.
+	var day_night := level.get_day_night()
+	day_night.set_time_running(false)
+	day_night.set_wind_speed(0.0)
+
 	# Let the initial radius finish committing before taking capacity baselines;
 	# otherwise later completions look like growth caused by the distant stream.
 	for _frame in 120:

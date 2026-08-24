@@ -1,3 +1,4 @@
+@tool
 # Tracks what carves grass away (static blockers) and what bends it (dynamic
 # interactors), and keeps the grass shader's interactor uniform up to date.
 #

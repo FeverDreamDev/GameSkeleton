@@ -47,6 +47,11 @@ uniform vec4 swrt_miss_color = vec4(0.0);
 // swrt_miss_color: already raw scene-linear, so no source_color hint here.
 // x=begin, y=end, z=curve, w=enabled.
 uniform vec4 swrt_fog_params = vec4(0.0, 1.0, 1.0, 0.0);
+// Analytic cloud layer pushed by a sky system, so managed surfaces resolve the
+// same shadow their unmanaged neighbours already do. See addons/day_night_cycle.
+uniform vec4 swrt_cloud_params = vec4(0.0);
+uniform vec4 swrt_cloud_motion = vec4(0.0);
+uniform vec3 swrt_cloud_sun_direction = vec3(0.0, 1.0, 0.0);
 uniform int swrt_environment_mode = 0;
 uniform vec3 swrt_environment_basis_x = vec3(1.0, 0.0, 0.0);
 uniform vec3 swrt_environment_basis_y = vec3(0.0, 1.0, 0.0);
@@ -103,6 +108,134 @@ float rt_fog_factor(vec4 params, float view_distance) {
 		return 0.0;
 	}
 	return pow(smoothstep(params.x, params.y, view_distance), params.z);
+}
+// Canonical day_night_cycle cloud layer. Keep every function below
+// byte-identical in each copy: addons/day_night_cycle/shaders/day_night_sky.gdshader,
+// addons/procedural_terrain_grass/shaders/grass_shell.gdshader,
+// addons/retro_rt/shaders/BlinnPhong.gdshader,
+// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
+// addons/retro_rt/shaders/rt_shadow_reflect.glsl.
+// Normative text: addons/day_night_cycle/README.md, "The cloud layer".
+//
+// The layer is one flat plane of fractal noise. That is the whole reason a
+// shadow can be resolved analytically: there is no volume to march and no
+// geometry to trace, so the sky and the ground agree by construction rather
+// than by being kept in sync.
+//
+// The field is computed rather than sampled from a texture on purpose. A
+// sampler would have to be threaded through the hardware ray tracing descriptor
+// set as well as every material, where two vec4s ride along in FrameData for
+// free.
+//
+// params: x=altitude, y=1/tile size in metres (zero disables the layer),
+// z=coverage threshold, w=edge softness.
+// motion: x,z=world scroll offset, y=seed, w=shadow strength.
+// Deliberately not the usual fract(sin(dot(...))) hash. Cloud cells run to the
+// hundreds once the layer is sampled a few kilometres out, and sin() of an
+// argument that large loses so much precision in 32-bit float that the hash
+// degenerates into visible axis-aligned rectangles across the sky. This one
+// never calls a trig function and stays stable out there.
+//
+// The three multipliers below must stay distinct. Scaling every component by
+// the same constant leaves the third equal to the first -- the input only has
+// two dimensions -- and the gradients it produces end up correlated, which
+// draws long straight streaks across the layer at grazing angles.
+vec2 dnc_cloud_hash(vec2 cell, float seed) {
+	vec3 scattered = fract(
+		vec3(cell.x, cell.y, cell.x) * vec3(0.1031, 0.1030, 0.0973) + seed);
+	scattered += dot(scattered, vec3(scattered.y, scattered.z, scattered.x) + 33.33);
+	return fract(
+		(vec2(scattered.x, scattered.x) + vec2(scattered.y, scattered.z))
+		* vec2(scattered.z, scattered.y));
+}
+
+
+// A unit vector per lattice corner. Taking the angle from the hash rather than
+// normalising a hashed vector keeps the distribution even; sin and cos are safe
+// here because the argument is bounded to one turn.
+vec2 dnc_cloud_gradient(vec2 cell, float seed) {
+	float angle = dnc_cloud_hash(cell, seed).x * 6.2831853;
+	return vec2(cos(angle), sin(angle));
+}
+
+
+float dnc_cloud_noise(vec2 point, float seed) {
+	vec2 lattice = floor(point);
+	vec2 fraction = point - lattice;
+	// Quintic, not the cheaper cubic smoothstep. Interpolated with a cubic the
+	// second derivative is discontinuous at every lattice boundary, and a
+	// coverage threshold turns those creases into straight visible seams the
+	// moment the layer is viewed at a grazing angle.
+	vec2 fade = fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0);
+	float corner00 = dot(dnc_cloud_gradient(lattice, seed), fraction);
+	float corner10 = dot(
+		dnc_cloud_gradient(lattice + vec2(1.0, 0.0), seed), fraction - vec2(1.0, 0.0));
+	float corner01 = dot(
+		dnc_cloud_gradient(lattice + vec2(0.0, 1.0), seed), fraction - vec2(0.0, 1.0));
+	float corner11 = dot(
+		dnc_cloud_gradient(lattice + vec2(1.0, 1.0), seed), fraction - vec2(1.0, 1.0));
+	float value = mix(
+		mix(corner00, corner10, fade.x),
+		mix(corner01, corner11, fade.x),
+		fade.y);
+	// Two-dimensional gradient noise spans roughly -0.707..0.707.
+	return clamp(value * 0.7071 + 0.5, 0.0, 1.0);
+}
+
+
+float dnc_cloud_field(vec2 point, float seed) {
+	float total = 0.0;
+	float amplitude = 0.5;
+	float normalization = 0.0;
+	vec2 sample_point = point;
+	for (int octave = 0; octave < 4; octave++) {
+		total += dnc_cloud_noise(sample_point, seed) * amplitude;
+		normalization += amplitude;
+		// Each octave is rotated as well as scaled. Sharing one lattice
+		// orientation across octaves lets their grids reinforce into a visible
+		// direction; an irrational-looking rotation leaves them nothing to agree
+		// on. The lacunarity is deliberately not exactly two either: whole-number
+		// steps line the octaves up on the same lattice and print a grid.
+		sample_point = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * sample_point;
+		sample_point = sample_point * 2.03 + vec2(37.0, 17.0);
+		amplitude *= 0.5;
+	}
+	return total / normalization;
+}
+
+
+// [param edge_scale] widens the coverage threshold, which is how the layer
+// stops aliasing as it stretches towards the horizon: it is the cheap stand-in
+// for the mip level a texture lookup would have picked. Pass 1.0 for a lookup
+// that is not being minified.
+float dnc_cloud_density(vec4 params, vec4 motion, vec2 world_xz, float edge_scale) {
+	if (params.y <= 0.0) {
+		return 0.0;
+	}
+	float raw = dnc_cloud_field((world_xz + motion.xz) * params.y, motion.y);
+	float edge = max(params.w * edge_scale, 0.001);
+	return smoothstep(params.z - edge, params.z + edge, raw);
+}
+
+
+// Fraction of the sun a world position loses to the layer overhead.
+float dnc_cloud_shadow(
+		vec4 params,
+		vec4 motion,
+		vec3 world_position,
+		vec3 direction_to_sun) {
+	// Under a grazing sun the ray runs almost parallel to the layer and the
+	// travel distance explodes, so the shadow is dropped rather than smeared
+	// out to the horizon.
+	if (params.y <= 0.0 || motion.w <= 0.0 || direction_to_sun.y <= 0.05) {
+		return 0.0;
+	}
+	float travel = (params.x - world_position.y) / direction_to_sun.y;
+	if (travel <= 0.0) {
+		return 0.0;
+	}
+	vec2 hit = world_position.xz + direction_to_sun.xz * travel;
+	return dnc_cloud_density(params, motion, hit, 1.0) * motion.w;
 }
 
 
@@ -456,6 +589,13 @@ void fragment() {
 		// Fog matches the hardware path: applied post-lighting to the primary hit
 		// only, fading to the environment radiance the post stack also composites
 		// into uncovered pixels.
+		// The cloud layer shadows the primary hit at the same point the hardware
+		// path applies it, so the two backends stay matched.
+		direct_lighting *= 1.0 - dnc_cloud_shadow(
+			swrt_cloud_params,
+			swrt_cloud_motion,
+			world_position,
+			swrt_cloud_sun_direction);
 		vec3 lit = base_lighting + direct_lighting;
 		float fog = rt_fog_factor(swrt_fog_params, length(world_position - camera_position));
 		lit = mix(lit, swrt_miss_color.rgb, fog);

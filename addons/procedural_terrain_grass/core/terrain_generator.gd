@@ -1,3 +1,4 @@
+@tool
 # Stateless helpers shared by the streaming manager and the incremental mesh
 # builder in terrain_build_state.gd. Nothing here touches the scene tree, so it
 # is safe to call from a WorkerThreadPool task.

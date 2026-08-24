@@ -11,6 +11,7 @@ const SPAWN_CLEARANCE := 0.08
 @onready var streaming_anchor: Node3D = $StreamingAnchor
 @onready var test_caster: Node3D = $TestCaster
 @onready var test_reflector: Node3D = $TestReflector
+@onready var day_night: DayNightCycle3D = $DayNightCycle3D
 
 @export var standalone_player_scene: PackedScene
 
@@ -29,6 +30,10 @@ var _bound_player: Player
 
 func _ready() -> void:
 	_place_static_content_on_terrain()
+	# The shell grass is unmanaged forward geometry, so it resolves its own cloud
+	# shadow from the layer the sky draws. TerrainGrass3D builds its materials in
+	# its own _ready, which runs before this one.
+	day_night.register_cloud_shadow_material(terrain.get_grass_material())
 	_bind_existing_or_spawn_standalone.call_deferred()
 
 
@@ -60,6 +65,12 @@ func apply_distance_fog(params: Dictionary) -> void:
 		float(params.get("end", 0.0)),
 		float(params.get("curve", 1.0)),
 		Vector3(color.r, color.g, color.b))
+
+
+
+
+func get_day_night() -> DayNightCycle3D:
+	return day_night
 
 
 func get_bound_player() -> Player:
