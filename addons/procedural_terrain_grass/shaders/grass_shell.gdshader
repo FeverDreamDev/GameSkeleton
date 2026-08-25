@@ -33,35 +33,11 @@ uniform vec4 u_fog_params = vec4(0.0, 1.0, 1.0, 0.0);
 // already linearized and must not be converted a second time.
 uniform vec3 u_fog_color = vec3(0.0);
 
-// Cloud shadow, pushed by the host the same way the fog above it is. This
-// canopy is unmanaged and RTSceneManager suppresses the native shadow map of
-// every light it discovers, so grass receives no engine shadow at all. Sampling
-// the same cloud layer the sky draws is what keeps the canopy and the managed
-// ground beneath it in the same shadow. See addons/day_night_cycle.
-uniform vec4 u_cloud_params = vec4(0.0);
-uniform vec4 u_cloud_motion = vec4(0.0);
-uniform vec3 u_cloud_sun_direction = vec3(0.0, 1.0, 0.0);
-// Colour multiplier under a fully shadowed patch. Slightly blue, as a real
-// cloud shadow is lit by sky rather than by sun.
-uniform vec3 u_cloud_shadow_tint : source_color = vec3(0.62, 0.66, 0.76);
-
 varying vec3 base_world_position;
 varying vec3 base_world_normal;
 varying float shell_level;
 varying vec2 fine_mask_bytes;
 varying float broad_color_noise;
-// Resolved per vertex, not per fragment. dnc_cloud_shadow() is four octaves of
-// gradient noise -- sixteen lattice hashes and thirty-two transcendentals -- and
-// it was by a wide margin the most expensive thing in this shader, paid on every
-// surviving blade fragment of every one of up to sixteen shell layers.
-//
-// Interpolating it is safe because of the scale it works at: one tile of the
-// layer covers cloud_world_size metres (420 by default) while these vertices sit
-// one metre apart, so a triangle spans about a four-hundredth of the smallest
-// feature the field can produce. The canopy is also the wrong surface to want
-// per-pixel cloud detail on -- it is already being multiplied into blades a few
-// centimetres wide.
-varying float cloud_shadow_amount;
 
 vec2 hash22(vec2 p) {
 	p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
@@ -99,135 +75,6 @@ float rt_fog_factor(vec4 params, float view_distance) {
 }
 
 
-// Canonical day_night_cycle cloud layer. Keep every function below
-// byte-identical in each copy: addons/day_night_cycle/shaders/day_night_sky.gdshader,
-// addons/procedural_terrain_grass/shaders/grass_shell.gdshader,
-// addons/retro_rt/shaders/BlinnPhong.gdshader,
-// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
-// addons/retro_rt/shaders/rt_shadow_reflect.glsl.
-// Normative text: addons/day_night_cycle/README.md, "The cloud layer".
-//
-// The layer is one flat plane of fractal noise. That is the whole reason a
-// shadow can be resolved analytically: there is no volume to march and no
-// geometry to trace, so the sky and the ground agree by construction rather
-// than by being kept in sync.
-//
-// The field is computed rather than sampled from a texture on purpose. A
-// sampler would have to be threaded through the hardware ray tracing descriptor
-// set as well as every material, where two vec4s ride along in FrameData for
-// free.
-//
-// params: x=altitude, y=1/tile size in metres (zero disables the layer),
-// z=coverage threshold, w=edge softness.
-// motion: x,z=world scroll offset, y=seed, w=shadow strength.
-// Deliberately not the usual fract(sin(dot(...))) hash. Cloud cells run to the
-// hundreds once the layer is sampled a few kilometres out, and sin() of an
-// argument that large loses so much precision in 32-bit float that the hash
-// degenerates into visible axis-aligned rectangles across the sky. This one
-// never calls a trig function and stays stable out there.
-//
-// The three multipliers below must stay distinct. Scaling every component by
-// the same constant leaves the third equal to the first -- the input only has
-// two dimensions -- and the gradients it produces end up correlated, which
-// draws long straight streaks across the layer at grazing angles.
-vec2 dnc_cloud_hash(vec2 cell, float seed) {
-	vec3 scattered = fract(
-		vec3(cell.x, cell.y, cell.x) * vec3(0.1031, 0.1030, 0.0973) + seed);
-	scattered += dot(scattered, vec3(scattered.y, scattered.z, scattered.x) + 33.33);
-	return fract(
-		(vec2(scattered.x, scattered.x) + vec2(scattered.y, scattered.z))
-		* vec2(scattered.z, scattered.y));
-}
-
-
-// A unit vector per lattice corner. Taking the angle from the hash rather than
-// normalising a hashed vector keeps the distribution even; sin and cos are safe
-// here because the argument is bounded to one turn.
-vec2 dnc_cloud_gradient(vec2 cell, float seed) {
-	float angle = dnc_cloud_hash(cell, seed).x * 6.2831853;
-	return vec2(cos(angle), sin(angle));
-}
-
-
-float dnc_cloud_noise(vec2 point, float seed) {
-	vec2 lattice = floor(point);
-	vec2 fraction = point - lattice;
-	// Quintic, not the cheaper cubic smoothstep. Interpolated with a cubic the
-	// second derivative is discontinuous at every lattice boundary, and a
-	// coverage threshold turns those creases into straight visible seams the
-	// moment the layer is viewed at a grazing angle.
-	vec2 fade = fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0);
-	float corner00 = dot(dnc_cloud_gradient(lattice, seed), fraction);
-	float corner10 = dot(
-		dnc_cloud_gradient(lattice + vec2(1.0, 0.0), seed), fraction - vec2(1.0, 0.0));
-	float corner01 = dot(
-		dnc_cloud_gradient(lattice + vec2(0.0, 1.0), seed), fraction - vec2(0.0, 1.0));
-	float corner11 = dot(
-		dnc_cloud_gradient(lattice + vec2(1.0, 1.0), seed), fraction - vec2(1.0, 1.0));
-	float value = mix(
-		mix(corner00, corner10, fade.x),
-		mix(corner01, corner11, fade.x),
-		fade.y);
-	// Two-dimensional gradient noise spans roughly -0.707..0.707.
-	return clamp(value * 0.7071 + 0.5, 0.0, 1.0);
-}
-
-
-float dnc_cloud_field(vec2 point, float seed) {
-	float total = 0.0;
-	float amplitude = 0.5;
-	float normalization = 0.0;
-	vec2 sample_point = point;
-	for (int octave = 0; octave < 4; octave++) {
-		total += dnc_cloud_noise(sample_point, seed) * amplitude;
-		normalization += amplitude;
-		// Each octave is rotated as well as scaled. Sharing one lattice
-		// orientation across octaves lets their grids reinforce into a visible
-		// direction; an irrational-looking rotation leaves them nothing to agree
-		// on. The lacunarity is deliberately not exactly two either: whole-number
-		// steps line the octaves up on the same lattice and print a grid.
-		sample_point = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8)) * sample_point;
-		sample_point = sample_point * 2.03 + vec2(37.0, 17.0);
-		amplitude *= 0.5;
-	}
-	return total / normalization;
-}
-
-
-// [param edge_scale] widens the coverage threshold, which is how the layer
-// stops aliasing as it stretches towards the horizon: it is the cheap stand-in
-// for the mip level a texture lookup would have picked. Pass 1.0 for a lookup
-// that is not being minified.
-float dnc_cloud_density(vec4 params, vec4 motion, vec2 world_xz, float edge_scale) {
-	if (params.y <= 0.0) {
-		return 0.0;
-	}
-	float raw = dnc_cloud_field((world_xz + motion.xz) * params.y, motion.y);
-	float edge = max(params.w * edge_scale, 0.001);
-	return smoothstep(params.z - edge, params.z + edge, raw);
-}
-
-
-// Fraction of the sun a world position loses to the layer overhead.
-float dnc_cloud_shadow(
-		vec4 params,
-		vec4 motion,
-		vec3 world_position,
-		vec3 direction_to_sun) {
-	// Under a grazing sun the ray runs almost parallel to the layer and the
-	// travel distance explodes, so the shadow is dropped rather than smeared
-	// out to the horizon.
-	if (params.y <= 0.0 || motion.w <= 0.0 || direction_to_sun.y <= 0.05) {
-		return 0.0;
-	}
-	float travel = (params.x - world_position.y) / direction_to_sun.y;
-	if (travel <= 0.0) {
-		return 0.0;
-	}
-	vec2 hit = world_position.xz + direction_to_sun.xz * travel;
-	return dnc_cloud_density(params, motion, hit, 1.0) * motion.w;
-}
-
 vec2 stalk_center_for(vec2 cell, vec2 random_value) {
 	return (cell + vec2(0.5) + (random_value - vec2(0.5)) * 0.45) / u_density;
 }
@@ -249,11 +96,6 @@ void vertex() {
 	base_world_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 	vec2 system_xz = base_world_position.xz - u_system_origin_xz;
 	broad_color_noise = smooth_value_noise(system_xz / max(u_color_noise_patch_size, 0.001));
-	cloud_shadow_amount = dnc_cloud_shadow(
-		u_cloud_params,
-		u_cloud_motion,
-		base_world_position,
-		u_cloud_sun_direction);
 	VERTEX += NORMAL * (u_root_offset + shell_level * u_max_height);
 }
 
@@ -361,11 +203,6 @@ void fragment() {
 	}
 	color *= mix(0.72, 1.0, pow(h, 0.72));
 	color *= mix(0.88, 1.0, edge_coverage);
-	// Resolved from the same cloud layer the sky draws, and applied to the lit
-	// colour before the fog blend, so a shadowed canopy still fades to exactly
-	// u_fog_color at the streaming boundary. Interpolated from the vertex stage;
-	// see cloud_shadow_amount for why that is the right resolution for it.
-	color *= mix(vec3(1.0), u_cloud_shadow_tint, cloud_shadow_amount);
 	// Grass is unmanaged and forward-lit with no light() override, so fog is applied
 	// by attenuating ALBEDO (which scales both the diffuse and the ambient term) and
 	// adding the fog radiance back through EMISSION. That is exactly

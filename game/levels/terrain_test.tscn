@@ -107,6 +107,10 @@ terrain_material_override = ExtResource("6_terrain_material")
 terrain_mesh_group = &"retro_rt_managed"
 terrain_receiver_only_group = &"retro_rt_receiver_only"
 terrain_load_distance = 64.0
+lod_near_to_medium = 52.0
+lod_medium_to_near = 46.0
+lod_medium_to_far = 62.0
+lod_far_to_medium = 56.0
 terrain_unload_distance = 96.0
 grass_prefetch_distance = 64.0
 

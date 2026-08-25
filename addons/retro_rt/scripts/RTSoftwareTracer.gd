@@ -92,9 +92,6 @@ var _shading_counts := Vector4i.ZERO
 var _frame_settings := Vector4.ZERO
 var _miss_color := Color.BLACK
 var _fog_params := Vector4(0.0, 1.0, 1.0, 0.0)
-var _cloud_params := Vector4.ZERO
-var _cloud_motion := Vector4.ZERO
-var _cloud_sun_direction := Vector3.UP
 # Analytic ground layer, the only thing a reflection ray has to resolve the
 # ground against: streamed terrain is receiver-only and shell grass is
 # unmanaged, so neither is in the BVH. See RTSceneManager.configure_ground_layer.
@@ -315,21 +312,8 @@ func update(snapshot: Dictionary, _retro_settings: Dictionary = {}) -> String:
 		float(snapshot.get("fog_end", 1.0)),
 		float(snapshot.get("fog_curve", 1.0)),
 		1.0 if bool(snapshot.get("fog_enabled", false)) else 0.0)
-	var next_cloud_params: Vector4 = snapshot.get("cloud_params", Vector4.ZERO)
-	var next_cloud_motion: Vector4 = snapshot.get("cloud_motion", Vector4.ZERO)
-	var next_cloud_sun: Vector3 = snapshot.get("cloud_sun_direction", Vector3.UP)
-	if (next_cloud_params != _cloud_params
-			or next_cloud_motion != _cloud_motion
-			or next_cloud_sun != _cloud_sun_direction):
-		# Same reasoning as fog below: a sky shadow is a lighting term, not part
-		# of the packed material settings that rebuild the shading atlas.
-		_cloud_params = next_cloud_params
-		_cloud_motion = next_cloud_motion
-		_cloud_sun_direction = next_cloud_sun
-		_frame_uniforms_dirty = true
-	# Same reasoning as the cloud layer above: the ground a reflection resolves
-	# against is a lighting term, not part of the packed material settings that
-	# rebuild the shading atlas.
+	# A lighting term, not part of the packed material settings that rebuild the
+	# shading atlas, so it does not force one.
 	var next_ground_texture: Texture2D = snapshot.get("ground_map")
 	var next_ground_params: Vector4 = snapshot.get("ground_params", Vector4.ZERO)
 	var next_ground_bounds: Vector4 = snapshot.get("ground_bounds", Vector4.ZERO)
@@ -490,9 +474,6 @@ func shutdown() -> void:
 	_frame_settings = Vector4.ZERO
 	_miss_color = Color.BLACK
 	_fog_params = Vector4(0.0, 1.0, 1.0, 0.0)
-	_cloud_params = Vector4.ZERO
-	_cloud_motion = Vector4.ZERO
-	_cloud_sun_direction = Vector3.UP
 	_ground_texture = null
 	_ground_params = Vector4.ZERO
 	_ground_bounds = Vector4.ZERO
@@ -1201,9 +1182,6 @@ func _sync_frame_uniforms() -> void:
 		clone.set_shader_parameter(&"swrt_frame_settings", _frame_settings)
 		clone.set_shader_parameter(&"swrt_miss_color", _miss_color)
 		clone.set_shader_parameter(&"swrt_fog_params", _fog_params)
-		clone.set_shader_parameter(&"swrt_cloud_params", _cloud_params)
-		clone.set_shader_parameter(&"swrt_cloud_motion", _cloud_motion)
-		clone.set_shader_parameter(&"swrt_cloud_sun_direction", _cloud_sun_direction)
 		clone.set_shader_parameter(&"swrt_ground_params", _ground_params)
 		clone.set_shader_parameter(&"swrt_ground_bounds", _ground_bounds)
 		clone.set_shader_parameter(&"swrt_ground_ambient", _ground_ambient)

@@ -45,10 +45,6 @@ var _bound_player: Player
 
 func _ready() -> void:
 	_place_static_content_on_terrain()
-	# The shell grass is unmanaged forward geometry, so it resolves its own cloud
-	# shadow from the layer the sky draws. TerrainGrass3D builds its materials in
-	# its own _ready, which runs before this one.
-	day_night.register_cloud_shadow_material(terrain.get_grass_material())
 	_bind_existing_or_spawn_standalone.call_deferred()
 
 

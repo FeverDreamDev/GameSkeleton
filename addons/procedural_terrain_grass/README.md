@@ -99,17 +99,6 @@ lighting contract. The generated palette is stored in vertex colour, so a
 replacement shader must consume `COLOR` if it should retain the height/slope
 variation.
 
-A host that pushes a cloud layer onto the grass material — `u_cloud_params`,
-`u_cloud_motion`, `u_cloud_sun_direction` — gets its shadow resolved **per
-vertex**, not per fragment. That function is four octaves of gradient noise, and
-paid per fragment across up to sixteen shell layers it was the most expensive
-thing in the shader by a wide margin. One tile of the layer covers hundreds of
-metres while these vertices sit a metre apart, so a triangle spans a tiny
-fraction of the smallest feature the field can produce and interpolating it is
-not a difference you can see; it was measured at eight pixels out of 3.7 million,
-one code apart. If you drive those uniforms with something genuinely
-high-frequency, that assumption is yours to re-check.
-
 **Terrain Mesh Group** and **Terrain Receiver Only Group** optionally add each
 generated ground mesh to integration groups before it enters the scene tree.
 They are empty by default and do not couple this add-on to a renderer. The host
@@ -170,6 +159,20 @@ Low and Off cost the same, so Low is the better floor — the four-shell variant
 already close to free. Off is worth keeping in the enum for a host that wants to
 hide grass for its own reasons, but it is not a performance tier, and an options
 menu is usually better off not offering it.
+
+## LOD bands and distance fog
+
+The LOD distances default to `26 / 52 / 86`, which suit the default
+`terrain_load_distance` of 96. **Retune them whenever you change the streaming
+radius**, because a band that falls in clear air is a visible seam: a chunk
+dropping to fewer shells reveals more dark ground between blades, and that reads
+as a hard line of darker terrain across the field.
+
+The rule is to put every transition where the fog has already taken over. In the
+host project, streaming is 64 m and fog runs 32 → 64 m, so the default first band
+at 26 m sat in front of the fog entirely; moving the bands to `52 / 62` puts the
+first step at 68% fog and the second at 96%, and cost about 0.3 ms of a 5.4 ms
+frame because distant chunks cover so little of the screen.
 
 ## Constraints
 

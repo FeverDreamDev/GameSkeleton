@@ -134,8 +134,6 @@ var day_length_seconds: float = 1200.0
 ## Distance at which the layer fades into the horizon haze, in metres. Without
 ## it the flat layer would compress into a hard line at the skyline.
 @export_range(100.0, 40000.0, 10.0) var cloud_fade_distance: float = 5200.0
-## How much of the sun a fully covered patch blocks, 0 none to 1 all of it.
-@export_range(0.0, 1.0, 0.01) var cloud_shadow_strength: float = 0.8
 ## How much an overcast sky lifts the ambient fill. A real overcast day is not
 ## a sunny one with the sun switched off: the cloud deck becomes the light
 ## source. Without this, full cover leaves shadowed surfaces at clear-sky
@@ -172,10 +170,6 @@ var day_length_seconds: float = 1200.0
 ## time of day. Their authored value is kept as the daylight reference, so a
 ## material tuned by hand still looks exactly as authored at noon.
 @export var ambient_materials: Array[ShaderMaterial] = []
-## Unmanaged materials that sample the cloud layer to resolve their own shadow.
-## They must run the canonical dnc_cloud_shadow() and declare its uniforms; see
-## the README. Managed Blinn-Phong surfaces get theirs from Retro RT instead.
-@export var cloud_shadow_materials: Array[ShaderMaterial] = []
 ## Colour movement, per channel, needed before a push. Gating matters: every
 ## Environment write costs an RT environment revision, and every material write
 ## costs a material-table re-upload.
@@ -222,7 +216,6 @@ var _rt_lookup_cooldown: int = 0
 var _day_rng := RandomNumberGenerator.new()
 var _registered_materials: Array[ShaderMaterial] = []
 var _material_base_ambient: PackedColorArray = PackedColorArray()
-var _cloud_shadow_targets: Array[ShaderMaterial] = []
 
 var _pushed_horizon := Color(-1.0, -1.0, -1.0)
 var _pushed_ambient := Color(-1.0, -1.0, -1.0)
@@ -306,8 +299,6 @@ func _build() -> void:
 
 	for material: ShaderMaterial in ambient_materials:
 		register_ambient_material(material)
-	for shadowed: ShaderMaterial in cloud_shadow_materials:
-		register_cloud_shadow_material(shadowed)
 
 	_built = true
 	_reseed_day()
@@ -475,11 +466,10 @@ func _push_cloud_layer(
 	# holding blazing white clouds against a black background.
 	lit = horizon.lerp(lit, clampf(energy, 0.0, 1.0))
 
-	# The shadow only makes sense under the sun, so its strength falls away with
-	# the sun rather than letting the moon cast one.
 	var params := _cloud_params()
-	var motion := _cloud_motion(
-		cloud_shadow_strength * smoothstep(0.40, 0.55, sun_height))
+	# The layer casts no shadow: the strength slot is kept at zero so the sky
+	# shader still gets its scroll and seed from the same vector.
+	var motion := _cloud_motion(0.0)
 
 	var material := _sky.sky_material
 	material.set_shader_parameter(&"u_cloud_params", params)
@@ -489,26 +479,6 @@ func _push_cloud_layer(
 	material.set_shader_parameter(&"u_cloud_shade", cloud_shade)
 	material.set_shader_parameter(&"u_cloud_fade_distance", cloud_fade_distance)
 	material.set_shader_parameter(&"u_cloud_sun_direction", direction)
-
-	# Every surface that resolves its own shadow reads the same two vectors.
-	# Both naming conventions are pushed because Retro RT's own shaders leave
-	# their uniforms unprefixed while this add-on and the grass use u_; an
-	# unknown parameter name is simply stored and ignored.
-	for shadowed: ShaderMaterial in _cloud_shadow_targets:
-		if shadowed == null or not is_instance_valid(shadowed):
-			continue
-		shadowed.set_shader_parameter(&"u_cloud_params", params)
-		shadowed.set_shader_parameter(&"u_cloud_motion", motion)
-		shadowed.set_shader_parameter(&"u_cloud_sun_direction", to_sun)
-		shadowed.set_shader_parameter(&"cloud_params", params)
-		shadowed.set_shader_parameter(&"cloud_motion", motion)
-		shadowed.set_shader_parameter(&"cloud_sun_direction", to_sun)
-
-	_resolve_rt_manager()
-	# Managed Blinn-Phong surfaces are lit by Retro RT, not by their own shader,
-	# so the layer has to reach the renderer instead of the material.
-	if _rt_manager != null and _rt_manager.has_method(&"configure_cloud_layer"):
-		_rt_manager.call(&"configure_cloud_layer", params, motion, to_sun)
 
 
 ## Keeps the mirror reflecting the sky this add-on draws.
@@ -844,7 +814,7 @@ func _resolve_rt_manager() -> void:
 
 
 func _find_rt_manager(node: Node) -> Node:
-	if node.has_method(&"configure_cloud_layer") and node.has_method(&"get_active_rt_backend"):
+	if node.has_method(&"set_reflection_panorama") and node.has_method(&"get_active_rt_backend"):
 		return node
 	for child: Node in node.get_children():
 		var found := _find_rt_manager(child)
@@ -1143,25 +1113,6 @@ func register_ambient_material(material: ShaderMaterial) -> void:
 	_pushed_ambient_energy = -1.0
 
 
-## Registers an unmanaged material that resolves its own cloud shadow. Safe to
-## call more than once with the same material.
-func register_cloud_shadow_material(material: ShaderMaterial) -> void:
-	if material == null or _cloud_shadow_targets.has(material):
-		return
-	_cloud_shadow_targets.append(material)
-
-
-func unregister_cloud_shadow_material(material: ShaderMaterial) -> void:
-	var index := _cloud_shadow_targets.find(material)
-	if index < 0:
-		return
-	if is_instance_valid(material):
-		# Hand it back unshadowed rather than frozen under whatever the layer
-		# happened to be doing.
-		material.set_shader_parameter(&"u_cloud_shadow_strength", 0.0)
-	_cloud_shadow_targets.remove_at(index)
-
-
 func unregister_ambient_material(material: ShaderMaterial) -> void:
 	var index := _registered_materials.find(material)
 	if index < 0:
@@ -1232,22 +1183,31 @@ func get_sky_state() -> Dictionary:
 ## Save contract for the [code]saveable[/code] group. The day number is part of
 ## the payload because the stars and the cloud layout are derived from it, so a
 ## reloaded save comes back under the same sky it was written under.
+##
+## A save records where the sky [i]is[/i] -- the hour, the day, the weather --
+## but not how fast it runs. [member day_length_seconds], [member time_scale] and
+## [member time_running] are pace, and pace is authored configuration.
+## Persisting it means a save written before you retuned the cycle silently
+## reinstates the old rate the next time it loads, so the value you just typed
+## into the inspector appears to do nothing at all. That is a genuinely baffling
+## thing to debug: the sun crawls at the old speed, night never arrives, and the
+## only sign anything happened is the clock snapping to the saved hour on load.
+##
+## A game that changes pace as part of its own state -- a spell that stops time,
+## say -- should save that with its own data and re-apply it through
+## [method set_time_scale] once the level is installed.
 func save_state() -> Dictionary:
 	return {
 		"time_of_day": _time_of_day,
 		"day_number": _day_number,
-		"day_length_seconds": day_length_seconds,
 		"cloud_coverage": cloud_coverage,
-		"time_running": time_running,
-		"time_scale": time_scale,
 	}
 
 
 func load_state(state: Dictionary) -> void:
-	day_length_seconds = maxf(float(state.get("day_length_seconds", day_length_seconds)), 0.001)
+	# Pace is deliberately not restored, including from older saves that still
+	# carry it -- see save_state. The authored values win.
 	cloud_coverage = clampf(float(state.get("cloud_coverage", cloud_coverage)), 0.0, 1.0)
-	time_running = bool(state.get("time_running", time_running))
-	time_scale = maxf(float(state.get("time_scale", time_scale)), 0.0)
 	_time_of_day = fposmod(float(state.get("time_of_day", _time_of_day)), HOURS_PER_DAY)
 	_day_number = int(state.get("day_number", _day_number))
 	_reseed_day()

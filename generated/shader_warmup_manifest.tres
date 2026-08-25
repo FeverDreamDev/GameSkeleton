@@ -65,9 +65,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_hq4cd"]
 resource_name = "Example Prop Blinn-Phong"
@@ -92,9 +89,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_knj3i"]
 resource_name = "ShaderMaterial_myinc"
@@ -119,9 +113,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_4swyu"]
 resource_name = "ShaderMaterial_8tn2x"
@@ -146,9 +137,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_ux7tk"]
 resource_name = "ShaderMaterial_standard_cyl"
@@ -173,9 +161,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_8ifgs"]
 resource_name = "ShaderMaterial_standard_torus"
@@ -200,9 +185,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_h14yv"]
 resource_name = "ShaderMaterial_njov2"
@@ -227,9 +209,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_3i7qk"]
 resource_name = "ShaderMaterial_2au82"
@@ -254,9 +233,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_dcn6r"]
 resource_name = "Terrain Blinn-Phong"
@@ -281,9 +257,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_pv62b"]
 resource_name = "Terrain Test Caster Blinn-Phong"
@@ -308,9 +281,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_14so5"]
 resource_name = "Terrain Test Reflector Blinn-Phong"
@@ -335,9 +305,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_62r3d"]
 resource_name = "Runtime Grass Shell Warmup"
@@ -367,10 +334,6 @@ shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
 shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/u_fog_color = Vector3(0, 0, 0)
-shader_parameter/u_cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
-shader_parameter/u_cloud_shadow_tint = Color(0.62, 0.66, 0.76, 1)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_5f0mj"]
 resource_name = "Runtime Grass Shell Warmup"
@@ -400,10 +363,6 @@ shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
 shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/u_fog_color = Vector3(0, 0, 0)
-shader_parameter/u_cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
-shader_parameter/u_cloud_shadow_tint = Color(0.62, 0.66, 0.76, 1)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_68idg"]
 resource_name = "RT Warmup BlinnPhong"
@@ -428,9 +387,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_imjdj"]
 resource_name = "Runtime Grass Shell Warmup"
@@ -460,10 +416,6 @@ shader_parameter/u_flatten_response = 1.0
 shader_parameter/u_min_flatten = 0.3
 shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
 shader_parameter/u_fog_color = Vector3(0, 0, 0)
-shader_parameter/u_cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/u_cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/u_cloud_sun_direction = Vector3(0, 1, 0)
-shader_parameter/u_cloud_shadow_tint = Color(0.62, 0.66, 0.76, 1)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_h4hbv"]
 resource_name = "Player RT Shadow Proxy"
@@ -488,9 +440,6 @@ shader_parameter/rt_pipeline_active = false
 shader_parameter/rt_material_id = 0
 shader_parameter/rt_has_albedo_texture = false
 shader_parameter/rt_has_normal_texture = false
-shader_parameter/cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/cloud_sun_direction = Vector3(0, 1, 0)
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_1lix6"]
 resource_name = "day_night_sky"
@@ -674,9 +623,6 @@ shader_parameter/swrt_shading_counts = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_frame_settings = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_miss_color = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
-shader_parameter/swrt_cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/swrt_cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/swrt_cloud_sun_direction = Vector3(0, 1, 0)
 shader_parameter/swrt_ground_params = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_ground_bounds = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_ground_sun_direction = Vector4(0, 1, 0, 0)
@@ -727,9 +673,6 @@ shader_parameter/swrt_shading_counts = Vector4i(0, 0, 0, 0)
 shader_parameter/swrt_frame_settings = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_miss_color = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_fog_params = Vector4(0, 1, 1, 0)
-shader_parameter/swrt_cloud_params = Vector4(0, 0, 0, 0)
-shader_parameter/swrt_cloud_motion = Vector4(0, 0, 0, 0)
-shader_parameter/swrt_cloud_sun_direction = Vector3(0, 1, 0)
 shader_parameter/swrt_ground_params = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_ground_bounds = Vector4(0, 0, 0, 0)
 shader_parameter/swrt_ground_sun_direction = Vector4(0, 1, 0, 0)
@@ -757,5 +700,5 @@ sources = PackedStringArray("res://addons/day_night_cycle/examples/DayNightExamp
 pair_material_indices = PackedInt32Array(0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 8, 14, 15)
 pair_vertex_formats = PackedInt64Array(4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4127, 4119, 4111, 4127, 4119)
 pair_flags = PackedInt32Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-generated_at = "2026-08-25 04:03:37"
-fingerprint = "40694b45e9f0861761eafb8ca8c1acffccbb1f9bf89835b97daa01b316193b6d"
+generated_at = "2026-08-25 05:36:39"
+fingerprint = "1affa6b1a0f71d908b139955f8aba40552eda039683c8edb19274ee4285ac20d"

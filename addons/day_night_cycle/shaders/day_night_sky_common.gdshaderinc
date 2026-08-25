@@ -74,12 +74,10 @@ uniform vec3 u_cloud_sun_direction = vec3(0.0, 1.0, 0.0);
 
 
 
-// Canonical day_night_cycle cloud layer. Keep every function below
-// byte-identical in each copy: addons/day_night_cycle/shaders/day_night_sky.gdshader,
-// addons/procedural_terrain_grass/shaders/grass_shell.gdshader,
-// addons/retro_rt/shaders/BlinnPhong.gdshader,
-// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
-// addons/retro_rt/shaders/rt_shadow_reflect.glsl.
+// The cloud layer. This is now the only copy: the field used to be duplicated
+// into the grass and both Retro RT shaders so every surface could resolve its
+// own shadow from it, and that shadow has been removed. Clouds are drawn here
+// and nowhere else.
 // Normative text: addons/day_night_cycle/README.md, "The cloud layer".
 //
 // The layer is one flat plane of fractal noise. That is the whole reason a
@@ -180,27 +178,6 @@ float dnc_cloud_density(vec4 params, vec4 motion, vec2 world_xz, float edge_scal
 	float raw = dnc_cloud_field((world_xz + motion.xz) * params.y, motion.y);
 	float edge = max(params.w * edge_scale, 0.001);
 	return smoothstep(params.z - edge, params.z + edge, raw);
-}
-
-
-// Fraction of the sun a world position loses to the layer overhead.
-float dnc_cloud_shadow(
-		vec4 params,
-		vec4 motion,
-		vec3 world_position,
-		vec3 direction_to_sun) {
-	// Under a grazing sun the ray runs almost parallel to the layer and the
-	// travel distance explodes, so the shadow is dropped rather than smeared
-	// out to the horizon.
-	if (params.y <= 0.0 || motion.w <= 0.0 || direction_to_sun.y <= 0.05) {
-		return 0.0;
-	}
-	float travel = (params.x - world_position.y) / direction_to_sun.y;
-	if (travel <= 0.0) {
-		return 0.0;
-	}
-	vec2 hit = world_position.xz + direction_to_sun.xz * travel;
-	return dnc_cloud_density(params, motion, hit, 1.0) * motion.w;
 }
 
 

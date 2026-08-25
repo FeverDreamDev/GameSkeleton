@@ -2,7 +2,7 @@
 
 A dynamic day/night cycle for Godot 4.7+: a sun and a moon that rise and set on
 a tilted arc and drive the directional lighting, a procedural sky with a fresh
-star field every night, and a drifting cloud layer that shadows the world
+star field every night, and a drifting cloud layer overhead. The clouds are
 beneath it — grass, terrain and props alike.
 
 One node does all of it. Drop a `DayNightCycle3D` into a level in place of its
@@ -23,10 +23,9 @@ absolute `res://addons/day_night_cycle/...` strings.
 ## Requirements
 
 - **Godot 4.7 or newer.**
-- **Retro RT is optional.** The sky, the stars, the sun and moon, the clouds and
-  their shadows on unmanaged geometry all work without it. Retro RT is only
-  needed for the two things it owns: cloud shadows on *managed* Blinn-Phong
-  surfaces, and the sky reflected in a mirror.
+- **Retro RT is optional.** The sky, the stars, the sun, the moon and the clouds
+  all work without it. Retro RT is only needed for the one thing it owns: the sky
+  reflected in a mirror.
 - The effective `Environment` must use `BG_COLOR`. See **Why there is no Sky
   resource**; this is a deliberate design constraint, not an oversight.
 
@@ -53,32 +52,29 @@ Clouds are **one flat plane of fractal noise** at `cloud_altitude`, drawn by
 intersecting the eye ray with that plane. Intersecting rather than painting is
 what gives the layer parallax as you move, instead of pinning it to the dome.
 
-Because it is a plane and not a volume, **any surface can resolve its own shadow
-analytically**: intersect the sun ray with the same plane, sample the same
-noise. There is nothing to march and no geometry to trace, so the sky and the
-ground agree by construction rather than by being kept in sync. Nothing is added
-to any acceleration structure, and a moving cloud never dirties a TLAS.
+Nothing is added to any acceleration structure, and a moving cloud never dirties
+a TLAS.
 
-The contract is two vectors, and every consumer reads exactly these:
+The layer **casts no shadow on the world**. Because it is a plane rather than a
+volume, any surface once resolved its own shadow analytically from the same
+noise, and the field was duplicated into the grass and both Retro RT shaders to
+let it. That is gone: it read as a soft modern lighting effect against a
+deliberately hard-edged retro image, and it was the most expensive term in the
+grass shader. Clouds are now drawn by the sky and nowhere else, which is why
+`dnc_cloud_shadow()` no longer exists and the field has exactly one copy.
+
+The contract is two vectors, and the sky reads exactly these:
 
 | | x | y | z | w |
 | --- | --- | --- | --- | --- |
 | `cloud_params` | altitude | 1 / tile size in metres, zero disables | coverage threshold | edge softness |
-| `cloud_motion` | scroll x | seed | scroll z | shadow strength |
+| `cloud_motion` | scroll x | seed | scroll z | unused, kept at zero |
 
-The functions that consume them live in `dnc_cloud_*` and are **duplicated
-byte-identically** across five files, the way Retro RT duplicates
-`rt_fog_factor`:
-
-- `addons/day_night_cycle/shaders/day_night_sky_common.gdshaderinc`
-- `addons/procedural_terrain_grass/shaders/grass_shell.gdshader`
-- `addons/retro_rt/shaders/BlinnPhong.gdshader`
-- `addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc`
-- `addons/retro_rt/shaders/rt_shadow_reflect.glsl`
-
-`day_night_smoke.gd` fails if any copy drifts. There is a sixth, in GDScript, on
-`DayNightCycle3D` itself: it backs `get_sun_occlusion()` so gameplay can ask
-whether the player is under a cloud and get the same answer the shaders drew.
+The functions that consume them live in `dnc_cloud_*`, in one place:
+`addons/day_night_cycle/shaders/day_night_sky_common.gdshaderinc`. There is a
+second implementation, in GDScript, on `DayNightCycle3D` itself: it backs
+`get_sun_occlusion()` so gameplay can ask whether the player is under a cloud and
+get the same answer the sky drew.
 
 Three details in that shared code are load-bearing, all of them found by
 chasing straight lines across the sky, and all of them easy to undo by accident:
@@ -158,18 +154,10 @@ coherent colour instead of a hole.
 ## Grass, terrain, and anything else unmanaged
 
 Retro RT suppresses the native shadow map of every light it discovers, so
-unmanaged forward geometry receives no engine shadow at all. Managed surfaces
-are lit by the renderer rather than by their own material. The cloud layer
-therefore has to arrive by two different routes, and both are wired here:
-
-- **Unmanaged materials** declare the `dnc_cloud_*` uniforms and call
-  `dnc_cloud_shadow()` themselves. Register them with
-  `register_cloud_shadow_material()`; the shipped level does this for the shell
-  grass in `game/levels/terrain_test.gd`.
-- **Managed Blinn-Phong surfaces** get theirs from the renderer.
-  `DayNightCycle3D` pushes the layer to `RTSceneManager.configure_cloud_layer()`
-  and it rides along in the frame state next to the fog, reaching the hardware
-  compute path, the software path and the raster fallback alike.
+unmanaged forward geometry receives no engine shadow at all, and managed surfaces
+are lit by the renderer rather than by their own material. Nothing here needs to
+reach either of them any more: the cloud layer casts no shadow, so it is drawn by
+the sky and read by nothing else.
 
 `cloud_ambient_lift` exists because an overcast day is not a sunny one with the
 sun switched off: the cloud deck becomes the light source. Without it, full
@@ -229,15 +217,22 @@ value a material already holds is captured as its **daylight reference**: a
 hand-tuned material is left exactly as authored at noon and scaled down and
 blue-shifted from there.
 
-`register_cloud_shadow_material()` / `unregister_cloud_shadow_material()` —
-unmanaged materials that resolve their own cloud shadow.
-
 ### Persistence
 
 `save_state()` / `load_state(state)` match the host project's `saveable` group
 contract. The day number is in the payload because the stars and the cloud field
 are derived from it, so a reloaded save comes back under exactly the sky it was
 written under. A partial or empty payload loads without error.
+
+A save records **where the sky is** — hour, day, cloud cover — and deliberately
+not how fast it runs. `day_length_seconds`, `time_scale` and `time_running` are
+authored configuration and are never restored. Persisting pace makes a save
+written before you retuned the cycle quietly reinstate the old rate, so the value
+you just typed into the inspector appears to do nothing: the sun crawls at the
+old speed, night never arrives, and the only sign anything happened is the clock
+snapping to the saved hour on load. If your game changes pace as part of its own
+state, save that with your own data and re-apply it through `set_time_scale()`
+after the level is installed.
 
 ## Exports worth knowing
 

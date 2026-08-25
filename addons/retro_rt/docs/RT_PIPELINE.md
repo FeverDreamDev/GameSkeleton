@@ -643,7 +643,7 @@ square window in world XZ:
   stands on it. The reflected surface is therefore the canopy, and grass appears
   in mirrors without one blade being traced.
 
-Six `vec4`s carry the rest, riding in `FrameData` next to the cloud layer:
+Six `vec4`s carry the rest, riding in `FrameData`:
 
 | | x | y | z | w |
 |---|---|---|---|---|
@@ -654,7 +654,7 @@ Six `vec4`s carry the rest, riding in `FrameData` next to the cloud layer:
 | `ground_ambient` | ambient radiance | | | unused |
 | `ground_grass` | blade cells per metre | detail strength | ramp depth | detail fade distance |
 
-`ground_params.w` doubles as the disable switch, the way `cloud_params.y` does:
+`ground_params.w` doubles as the disable switch:
 a zero step count leaves the miss path byte-identical to what it was before the
 layer existed. The step count and the march distance are ray budget the manager
 owns rather than values the producer chooses, so both are resolved when the
@@ -692,12 +692,11 @@ Fading to the flat fog colour instead leaves a visible step at the fog boundary,
 because below the horizon a sky is free to draw something other than its horizon
 band, and a mirror shows both sides of that boundary at once.
 
-Both shadow terms — the cloud layer and the ray below — attenuate that
-directional term and leave the ambient alone, which is what the primary paths do
-when they scale `direct` and add ambient separately. Scaling the whole lit value
-instead takes the ambient with it, and under an overcast sky that drops the
-reflected ground to pure black while the terrain and grass it stands in for stay
-plainly visible.
+The shadow ray below attenuates that directional term and leaves the ambient
+alone, which is what the primary paths do when they scale `direct` and add
+ambient separately. Scaling the whole lit value instead takes the ambient with
+it, and wherever the sun is occluded that drops the reflected ground to pure
+black while the terrain and grass it stands in for stay plainly visible.
 
 Tracing and shading are two calls, not one, because a real ray belongs between
 them. When the reflector sets `reflection_shadows_enabled`, the caller traces one
@@ -723,8 +722,8 @@ of it are load-bearing rather than tuning:
   at full strength to the fog boundary crawls as the camera turns.
 - **The hash calls no trig.** Cell indices reach the thousands at blade pitch
   across the window, and `sin()` of an argument that large loses enough 32-bit
-  precision to print axis-aligned rectangles — the same failure documented for
-  the cloud layer, which is why the hash is the same integer-mixing shape.
+  precision to print axis-aligned rectangles, which is why the hash mixes integers
+  rather than calling trig.
 
 This is still a stand-in for ground rather than a second renderer. The detail is
 texture on one smooth marched surface: it cannot silhouette, the blades cast

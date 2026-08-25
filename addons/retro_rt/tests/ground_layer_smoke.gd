@@ -101,18 +101,18 @@ func _check_canonical_block() -> void:
 	_check(reference.contains("float sun_visibility) {")
 			and reference.contains("n_dot_l * sun_visibility"),
 		"a shaded ground hit takes the caller's sun visibility")
-	# Both shadow terms belong on the sun and nowhere near the ambient. Scaling
-	# the whole lit value drops the reflected ground to black under an overcast
-	# sky while the terrain and grass it stands in for stay plainly visible.
+	# Shadow belongs on the sun and nowhere near the ambient. Scaling the whole
+	# lit value drops the reflected ground to black wherever the sun is occluded,
+	# while the terrain and grass it stands in for stay plainly visible.
 	_check(reference.contains("vec3 lit = albedo * (ambient.rgb + sun_radiance.rgb * sun);")
-			and not reference.contains("lit *= 1.0 - dnc_cloud_shadow"),
-		"cloud and ray shadows attenuate the sun only, leaving ambient intact")
+			and not reference.contains("dnc_cloud"),
+		"shadow attenuates the sun only, leaving ambient intact")
 	# Blade detail without the distance fade crawls: nothing in this renderer
 	# filters temporally, and a mirror shows a lot of distance in few pixels.
 	_check(reference.contains("clamp(1.0 - hit_distance / grass.w, 0.0, 1.0)"),
 		"blade detail fades out with distance rather than shimmering")
 	# sin() of a cell index in the thousands loses enough 32-bit precision to
-	# print axis-aligned rectangles, which is why the cloud layer avoids it too.
+	# print axis-aligned rectangles.
 	# Scanned with comments stripped: the comment explaining the rule names the
 	# function it forbids.
 	var code := ""
@@ -123,7 +123,7 @@ func _check_canonical_block() -> void:
 	_check(not code.contains("sin(") and not code.contains("cos("),
 		"the blade hash uses no trigonometry")
 	_check(code.contains("vec3(0.1031, 0.1030, 0.0973)"),
-		"the blade hash mixes integers the way the cloud hash does")
+		"the blade hash mixes integers rather than calling trig")
 	for index in range(1, CANONICAL_COPIES.size()):
 		var path: String = CANONICAL_COPIES[index]
 		var copy := _extract_canonical(path)
@@ -152,9 +152,9 @@ func _check_backend_bindings() -> void:
 	# The frame UBO is std140 and every field is a vec4, so the float count has
 	# to keep pace with the struct or the tail reads garbage.
 	var effect := _read_text("res://addons/retro_rt/scripts/RTLightingEffect.gd")
-	_check(effect.contains("const FRAME_UBO_FLOATS := 104"),
+	_check(effect.contains("const FRAME_UBO_FLOATS := 92"),
 		"the frame UBO is sized for the six ground vec4s")
-	_check(effect.contains("_set_frame_vec4(100,"),
+	_check(effect.contains("_set_frame_vec4(88,"),
 		"the last ground vec4 is packed at the offset the struct puts it")
 	# The shadow ray deliberately lives outside the canonical block, one copy per
 	# backend, so nothing but this notices when only one of them grows it. Both

@@ -323,16 +323,6 @@ var _snapshot_max_distance := 10000.0
 var _snapshot_max_lights := MAX_SUPPORTED_LIGHTS
 var _snapshot_profiling_enabled := false
 var _snapshot_fog := Vector4.ZERO
-# Cloud layer pushed by a sky system through configure_cloud_layer(). Managed
-# surfaces are lit here rather than by their own material, so an analytic sky
-# shadow has to arrive with the rest of the frame state. See
-# addons/day_night_cycle, "The cloud layer".
-var _cloud_params := Vector4.ZERO
-var _cloud_motion := Vector4.ZERO
-var _cloud_sun_direction := Vector3.UP
-var _snapshot_cloud_params := Vector4.ZERO
-var _snapshot_cloud_motion := Vector4.ZERO
-var _snapshot_cloud_sun := Vector3.UP
 # Analytic ground layer pushed by a terrain system through
 # configure_ground_layer(). Streamed terrain is registered receiver-only so
 # chunk churn never rebuilds the TLAS, and shell grass is vertex-deformed and
@@ -1472,13 +1462,6 @@ func configure_distance_fog(
 	_mark_fog_dirty()
 
 
-## Everything an unmanaged forward shader needs to match the RT paths exactly.
-## Runtime push for a sky system that owns an analytic cloud layer, so managed
-## surfaces can resolve the same shadow their unmanaged neighbours already do.
-## Managed geometry is lit here rather than by its own material, which is why
-## this cannot simply be a shader parameter on the material.
-##
-## [param params] is (altitude, 1/tile size, coverage threshold, edge softness),
 ## Replaces the reflection-miss radiance without touching the visible background
 ## or the fog. A sky system that draws its own dome keeps the Environment on
 ## BG_COLOR, because that is the branch with no panorama bake and the branch
@@ -1522,28 +1505,6 @@ func _apply_reflection_panorama_override(snapshot: Dictionary) -> void:
 	snapshot["height"] = _reflection_override.get_height()
 	snapshot["bytes"] = _reflection_override.get_width() * _reflection_override.get_height() * 16
 	snapshot["bake_source"] = &"reflection_override"
-
-
-## with a zero tile size disabling the layer. [param motion] is (scroll x, seed,
-## scroll z, shadow strength). Both are consumed by the canonical
-## dnc_cloud_shadow(); see addons/day_night_cycle/README.md.
-func configure_cloud_layer(
-		params: Vector4,
-		motion: Vector4,
-		sun_direction: Vector3) -> void:
-	_cloud_params = params
-	_cloud_motion = motion
-	_cloud_sun_direction = sun_direction
-
-
-## Everything a shader needs to resolve the same cloud shadow this renderer
-## applies to its managed surfaces.
-func get_cloud_layer() -> Dictionary:
-	return {
-		"params": _cloud_params,
-		"motion": _cloud_motion,
-		"sun_direction": _cloud_sun_direction,
-	}
 
 
 ## Replaces what a reflection ray resolves when it misses the acceleration
@@ -3639,9 +3600,6 @@ func _publish_snapshot() -> void:
 		or max_scene_lights != _snapshot_max_lights
 		or profiling_enabled != _snapshot_profiling_enabled
 		or next_fog != _snapshot_fog
-		or _cloud_params != _snapshot_cloud_params
-		or _cloud_motion != _snapshot_cloud_motion
-		or _cloud_sun_direction != _snapshot_cloud_sun
 		or _ground_revision != _snapshot_ground_revision
 		or next_ground_params != _snapshot_ground_params
 		or next_ground_bounds != _snapshot_ground_bounds
@@ -3676,9 +3634,6 @@ func _publish_snapshot() -> void:
 	_snapshot_max_lights = max_scene_lights
 	_snapshot_profiling_enabled = profiling_enabled
 	_snapshot_fog = next_fog
-	_snapshot_cloud_params = _cloud_params
-	_snapshot_cloud_motion = _cloud_motion
-	_snapshot_cloud_sun = _cloud_sun_direction
 	_snapshot_ground_texture = _ground_texture
 	_snapshot_ground_params = next_ground_params
 	_snapshot_ground_bounds = next_ground_bounds
@@ -3752,9 +3707,6 @@ func _commit_current_snapshot() -> void:
 		"fog_end": _snapshot_fog.y,
 		"fog_curve": _snapshot_fog.z,
 		"fog_enabled": _snapshot_fog.w >= 0.5,
-		"cloud_params": _snapshot_cloud_params,
-		"cloud_motion": _snapshot_cloud_motion,
-		"cloud_sun_direction": _snapshot_cloud_sun,
 		"ground_map": _snapshot_ground_texture,
 		"ground_params": _snapshot_ground_params,
 		"ground_bounds": _snapshot_ground_bounds,

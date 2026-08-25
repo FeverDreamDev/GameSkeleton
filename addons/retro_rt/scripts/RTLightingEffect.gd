@@ -13,10 +13,10 @@ const INDEX_STRIDE := 4
 const INSTANCE_RECORD_SIZE := 64
 const MATERIAL_RECORD_SIZE := 128
 const MAX_LIGHT_RECORDS := 256
-# std140 FrameData is one mat4 at offset 0 plus 22 vec4, so 26 vec4 of floats.
+# std140 FrameData is one mat4 at offset 0 plus 19 vec4, so 23 vec4 of floats.
 # Keep in step with the FrameData block in rt_shadow_reflect.glsl; a mismatch
 # fails loudly in _update_frame_ubo.
-const FRAME_UBO_FLOATS := 104
+const FRAME_UBO_FLOATS := 92
 
 const PROFILE_TLAS_BEGIN := "RetroRT/TLAS begin"
 const PROFILE_TLAS_END := "RetroRT/TLAS end"
@@ -895,31 +895,25 @@ func _update_frame_ubo(
 		float(snapshot.get("fog_end", 1.0)),
 		float(snapshot.get("fog_curve", 1.0)),
 		1.0 if bool(snapshot.get("fog_enabled", false)) else 0.0))
-	# The cloud layer a sky system pushed through configure_cloud_layer(). Zero
-	# by default, which the canonical dnc_cloud_shadow() reads as no layer.
-	_set_frame_vec4(68, snapshot.get("cloud_params", Vector4.ZERO))
-	_set_frame_vec4(72, snapshot.get("cloud_motion", Vector4.ZERO))
-	var cloud_sun: Vector3 = snapshot.get("cloud_sun_direction", Vector3.UP)
-	_set_frame_vec4(76, Vector4(cloud_sun.x, cloud_sun.y, cloud_sun.z, 0.0))
 	# The ground layer a terrain system pushed through configure_ground_layer().
 	# Zero by default, and the canonical rt_ground_trace() reads a zero step
 	# count in ground_params.w as no layer, so a scene without terrain resolves
 	# its reflection misses against the environment exactly as it did before.
-	_set_frame_vec4(80, snapshot.get("ground_params", Vector4.ZERO))
-	_set_frame_vec4(84, snapshot.get("ground_bounds", Vector4.ZERO))
+	_set_frame_vec4(68, snapshot.get("ground_params", Vector4.ZERO))
+	_set_frame_vec4(72, snapshot.get("ground_bounds", Vector4.ZERO))
 	var ground_sun: Vector3 = snapshot.get("ground_sun_direction", Vector3.UP)
-	_set_frame_vec4(88, Vector4(
+	_set_frame_vec4(76, Vector4(
 		ground_sun.x,
 		ground_sun.y,
 		ground_sun.z,
 		1.0 if bool(snapshot.get("ground_sun_enabled", false)) else 0.0))
 	var ground_sun_radiance: Color = snapshot.get("ground_sun_radiance", Color.BLACK)
-	_set_frame_vec4(92, Vector4(
+	_set_frame_vec4(80, Vector4(
 		ground_sun_radiance.r, ground_sun_radiance.g, ground_sun_radiance.b, 0.0))
 	var ground_ambient: Color = snapshot.get("ground_ambient", Color.BLACK)
-	_set_frame_vec4(96, Vector4(
+	_set_frame_vec4(84, Vector4(
 		ground_ambient.r, ground_ambient.g, ground_ambient.b, 0.0))
-	_set_frame_vec4(100, snapshot.get("ground_grass", Vector4.ZERO))
+	_set_frame_vec4(88, snapshot.get("ground_grass", Vector4.ZERO))
 	var bytes := _frame_values_cache.to_byte_array()
 	if rd.buffer_update(frame_ubo, 0, bytes.size(), bytes) != OK:
 		_fail("Unable to update the RT frame UBO.")

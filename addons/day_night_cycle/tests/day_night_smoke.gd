@@ -73,17 +73,16 @@ func _run() -> void:
 
 
 
-## The cloud layer is duplicated byte-identically across five shaders, the way
-## Retro RT duplicates rt_fog_factor. Nothing but a test can hold that.
+## The cloud field used to be duplicated byte-identically across five shaders so
+## every surface could resolve its own shadow from it. The shadow is gone and so
+## are the copies -- clouds are drawn by the sky and nowhere else -- but the
+## properties below are still load-bearing for how the field looks, and still
+## easy to undo by accident.
 const CANONICAL_COPIES := [
 	"res://addons/day_night_cycle/shaders/day_night_sky_common.gdshaderinc",
-	"res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader",
-	"res://addons/retro_rt/shaders/BlinnPhong.gdshader",
-	"res://addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc",
-	"res://addons/retro_rt/shaders/rt_shadow_reflect.glsl",
 ]
-const CANONICAL_START := "// Canonical day_night_cycle cloud layer."
-const CANONICAL_END := "float dnc_cloud_shadow("
+const CANONICAL_START := "// The cloud layer."
+const CANONICAL_END := "float dnc_cloud_density("
 
 
 func _extract_canonical(path: String) -> String:
@@ -140,14 +139,15 @@ func _code_of(block: String) -> String:
 func _check_canonical_block() -> void:
 	var reference := _extract_canonical(CANONICAL_COPIES[0])
 	_check(not reference.is_empty(),
-		"the canonical cloud block is found in %s" % CANONICAL_COPIES[0])
+		"the cloud block is found in %s" % CANONICAL_COPIES[0])
 	if reference.is_empty():
 		return
 	_check(reference.contains("dnc_cloud_hash")
 			and reference.contains("dnc_cloud_field")
-			and reference.contains("dnc_cloud_density")
-			and reference.contains("dnc_cloud_shadow"),
-		"the canonical block holds every function it is supposed to")
+			and reference.contains("dnc_cloud_density"),
+		"the cloud block holds every function it is supposed to")
+	_check(not reference.contains("dnc_cloud_shadow"),
+		"the shadow function is gone, not merely unused")
 	# Both of these are load-bearing and easy to undo by accident.
 	# Only the hash: dnc_cloud_gradient turns a hash into an angle and does call
 	# sin, which is safe because the argument is bounded to one turn.
@@ -433,6 +433,26 @@ func _check_persistence(cycle: DayNightCycle3D) -> void:
 	var replayed: float = cycle.get_sky_state()["cloud_seed"]
 	_check(is_equal_approx(replayed, restored),
 		"the same day reproduces the same cloud field")
+
+	# Pace is authored configuration, not world state. A save that still carries
+	# it -- every save written before this rule existed does -- must not put the
+	# old rate back, or retuning the cycle in the inspector silently does nothing
+	# and the sun keeps crawling at whatever the save remembered.
+	cycle.set_day_length_seconds(120.0)
+	cycle.set_time_scale(2.0)
+	cycle.set_time_running(true)
+	cycle.load_state({
+		"time_of_day": 6.0,
+		"day_number": 3,
+		"day_length_seconds": 1200.0,
+		"time_scale": 1.0,
+		"time_running": false,
+	})
+	_close(cycle.day_length_seconds, 120.0, 0.0001,
+		"a save does not overwrite the authored day length")
+	_close(cycle.time_scale, 2.0, 0.0001, "a save does not overwrite the time scale")
+	_check(cycle.time_running, "a save does not overwrite whether the clock runs")
+	_close(cycle.get_time_of_day(), 6.0, 0.0001, "the hour still comes from the save")
 
 	# A partial payload must not throw: GameApp tolerates saves written before
 	# this node existed.

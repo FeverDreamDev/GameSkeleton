@@ -17,13 +17,14 @@ extends SceneTree
 ##   PERF_GRASS_QUALITY=n
 ##                   grass tier: 0 off, 1 low, 2 medium, 3 high
 ##   PERF_SKY=0      hide the day/night sky dome
-##   PERF_CLOUDS=0   cloud shadow strength to zero (the per-fragment noise field)
 ##   PERF_SMAA=0     disable the three SMAA passes
 ##   PERF_GRADE=0    disable the RetroGrade present pass
 ##   PERF_RT=0       stop ray tracing entirely
 ##   PERF_WARMUP=n   warmup frames, default 300
 ##   PERF_FRAMES=n   measured frames, default 1200
 ##   PERF_LABEL=str  printed with the result so a sweep is readable
+##   PERF_LOD=a,b     grass LOD band distances in metres (near->medium, medium->far)
+##   PERF_PITCH=deg   camera pitch override, for framing a distant LOD seam
 ##
 ## Run at the project's authored resolution, which is what the RT stack sizes
 ## itself from:
@@ -115,6 +116,12 @@ func _run() -> void:
 	# every band past the streaming radius pins all visible grass to the near
 	# variant, which makes a capture reproducible. It changes what is measured, so
 	# it is opt-in and never on for a timing run.
+	var bands := OS.get_environment("PERF_LOD").split(",", false)
+	if bands.size() == 2:
+		terrain.lod_near_to_medium = float(bands[0])
+		terrain.lod_medium_to_near = float(bands[0]) - 6.0
+		terrain.lod_medium_to_far = float(bands[1])
+		terrain.lod_far_to_medium = float(bands[1]) - 6.0
 	if OS.get_environment("PERF_PIN_LOD") == "1":
 		terrain.lod_near_to_medium = 4096.0
 		terrain.lod_medium_to_far = 5120.0
@@ -133,7 +140,8 @@ func _run() -> void:
 		VIEW_POSITION.z)
 	player.rotation.y = deg_to_rad(VIEW_YAW_DEGREES)
 	var view = player.get_node("ViewRoot")
-	view.apply_view(deg_to_rad(VIEW_PITCH_DEGREES))
+	var pitch := OS.get_environment("PERF_PITCH")
+	view.apply_view(deg_to_rad(float(pitch) if pitch.is_valid_float() else VIEW_PITCH_DEGREES))
 
 	# Streaming has to settle before the warmup, or the measured window includes
 	# mesh commits that a later run will not have.
@@ -211,8 +219,6 @@ func _apply_toggles(terrain, day_night) -> void:
 		var dome := day_night.find_child("SkyDome", true, false) as MeshInstance3D
 		if dome != null:
 			dome.visible = false
-	if not _env_flag("PERF_CLOUDS"):
-		day_night.cloud_shadow_strength = 0.0
 	if not _env_flag("PERF_SMAA"):
 		_shell.rt_manager.post_anti_aliasing_enabled = false
 	if not _env_flag("PERF_GRADE"):
@@ -239,7 +245,7 @@ func _report(terrain) -> void:
 		label = "default"
 
 	var toggles: PackedStringArray = []
-	for name in ["PERF_GRASS", "PERF_SKY", "PERF_CLOUDS", "PERF_SMAA", "PERF_GRADE", "PERF_RT"]:
+	for name in ["PERF_GRASS", "PERF_SKY", "PERF_SMAA", "PERF_GRADE", "PERF_RT"]:
 		if not _env_flag(name):
 			toggles.append(name.trim_prefix("PERF_").to_lower() + "=off")
 	if toggles.is_empty():
