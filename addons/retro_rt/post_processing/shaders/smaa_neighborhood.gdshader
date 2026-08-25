@@ -33,9 +33,19 @@ vec4 decode_scene_texel(ivec2 pixel) {
 		? straight_srgb
 		: rt_srgb_to_linear(straight_srgb);
 	vec2 pixel_uv = (vec2(pixel) + vec2(0.5)) / vec2(scene_size);
-	vec3 visible_linear = linear_rgb * coverage
-		+ rt_post_sample_environment(rt_post_camera_world_ray(pixel_uv))
+	vec3 visible_linear = linear_rgb * coverage;
+	// The environment is only visible where geometry is not. A fully covered
+	// texel multiplies the reconstruction by exactly zero, and
+	// rt_post_sample_environment() is always finite -- it returns either a
+	// uniform or a mix of texelFetch results -- so skipping it there is an
+	// equivalence, not an approximation. It saves an atan, an acos and a
+	// four-tap panorama fetch. A scene that draws its background as geometry
+	// rather than leaving it to the environment, such as a sky dome, takes this
+	// branch on every pixel of every frame.
+	if (coverage < 1.0) {
+		visible_linear += rt_post_sample_environment(rt_post_camera_world_ray(pixel_uv))
 			* (1.0 - coverage);
+	}
 	// This is the one HDR-to-SDR scene boundary. SMAA consumes and blends the
 	// same normalized visible color on every renderer; artistic grading follows.
 	return vec4(rt_post_sdr_boundary(visible_linear), 1.0);
@@ -70,7 +80,13 @@ vec4 neighborhood_blend(vec2 uv) {
 	weights.w = center.r;
 
 	if (dot(weights, vec4(1.0)) < 0.00001) {
-		return sample_scene(uv);
+		// No blend weight means no edge, which is the large majority of the
+		// frame. sample_scene() would still run its four-tap bilinear here, and
+		// at 1:1 those weights are exactly zero -- three of its four
+		// decode_scene_texel() calls, each with its own panorama reconstruction,
+		// are computed and then multiplied away. This is the same exact texel
+		// decode the aa_enabled == false branch below already presents with.
+		return decode_scene_texel(ivec2(floor(uv * max(viewport_size, vec2(1.0)))));
 	}
 
 	bool horizontal = max(weights.x, weights.z) > max(weights.y, weights.w);

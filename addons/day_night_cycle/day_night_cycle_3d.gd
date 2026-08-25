@@ -539,6 +539,8 @@ func _update_reflection_panorama() -> void:
 		_reflection_pending -= 1
 		if _reflection_pending == 0:
 			_bake_reflection_panorama()
+			# Back to sleep until the sun has moved far enough to arm another.
+			_reflection_host.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		return
 
 	var to_sun := get_direction_to_sun()
@@ -567,7 +569,6 @@ func _arm_reflection_bake(to_sun: Vector3) -> void:
 		_reflection_host.name = "ReflectionBakeWorld"
 		_reflection_host.size = Vector2i(4, 4)
 		_reflection_host.own_world_3d = true
-		_reflection_host.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		add_child(_reflection_host)
 		var host_environment := WorldEnvironment.new()
 		host_environment.environment = environment
@@ -585,6 +586,11 @@ func _arm_reflection_bake(to_sun: Vector3) -> void:
 			_reflection_material.set_shader_parameter(parameter_name, value)
 	_reflection_sun = to_sun
 	_reflection_pending = REFLECTION_BAKE_DELAY_FRAMES
+	# Woken only for the frames a bake actually needs. Left on UPDATE_ALWAYS this
+	# private world renders its own sky, and its radiance cubemap, every frame
+	# forever -- for a 4x4 target that nothing samples between bakes, which are
+	# eight degrees of sun travel apart.
+	_reflection_host.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 
 
 func _bake_reflection_panorama() -> void:

@@ -26,9 +26,14 @@ vec3 sample_source(vec2 uv, vec2 texel_offset) {
 			? straight_srgb
 			: rt_srgb_to_linear(straight_srgb)) * coverage;
 	vec2 sample_uv = uv + texel_offset / viewport_size;
-	vec3 visible_linear = geometry_linear
-		+ rt_post_sample_environment(rt_post_camera_world_ray(sample_uv))
+	vec3 visible_linear = geometry_linear;
+	// Skipped where geometry covers the pixel completely, because the term is
+	// multiplied by exactly zero there and rt_post_sample_environment() is
+	// always finite. Same equivalence as the resolve pass; see the note there.
+	if (coverage < 1.0) {
+		visible_linear += rt_post_sample_environment(rt_post_camera_world_ray(sample_uv))
 			* (1.0 - coverage);
+	}
 	// HDR is kept through lighting/reflection and clamped at the common SMAA
 	// boundary so edge thresholds see exactly the visible SDR scene.
 	return rt_post_sdr_boundary(visible_linear);

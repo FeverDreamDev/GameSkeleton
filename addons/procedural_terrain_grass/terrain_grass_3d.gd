@@ -763,7 +763,10 @@ func _apply_visual_settings() -> void:
 		_grass_material.set_shader_parameter("u_wind_speed", wind_speed)
 		_grass_material.set_shader_parameter("u_wind_strength", wind_strength)
 		_grass_material.set_shader_parameter("u_wind_enabled", wind_enabled)
-		_grass_material.set_shader_parameter("u_interaction_enabled", dynamic_interaction_enabled)
+		# u_interaction_enabled is deliberately absent here. GrassInteractionManager
+		# owns it, because the useful answer is not whether interaction is authored
+		# on but whether any interactor actually exists to iterate -- and only it
+		# knows that. It is re-pushed below, after this material is rebuilt.
 		_grass_material.set_shader_parameter("u_color_noise_enabled", grass_color_noise_enabled)
 		_grass_material.set_shader_parameter("u_color_noise_seed", grass_color_noise_seed)
 		_grass_material.set_shader_parameter("u_color_noise_patch_size", grass_color_noise_patch_size)
@@ -780,6 +783,9 @@ func _apply_visual_settings() -> void:
 		_grass_material.set_shader_parameter("u_fog_color", _fog_color)
 	if _interaction_manager != null:
 		_interaction_manager.dynamic_interaction_enabled = dynamic_interaction_enabled
+		# The material above was just rewritten from its authored defaults, which
+		# do not know what the manager last pushed for u_interaction_enabled.
+		_interaction_manager.refresh_interaction_state()
 	if _terrain_manager != null:
 		_terrain_manager.set_grass_cull_height(grass_height)
 

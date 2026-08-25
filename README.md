@@ -77,3 +77,29 @@ The generator writes the exact runtime terrain/grass vertex-format proxies and
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/ground_layer_smoke.gd
 ```
+
+## Frame-time probe
+
+`game/tests/perf_probe.gd` boots the shell, enters the terrain level, parks the
+player at a fixed viewpoint and reports the median and p95 frame interval. Run it
+at the authored resolution, because the RT stack sizes every pass from it:
+
+```powershell
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
+```
+
+`PERF_GRASS=0`, `PERF_SKY=0`, `PERF_CLOUDS=0`, `PERF_SMAA=0`, `PERF_GRADE=0` and
+`PERF_RT=0` switch a subsystem off so its share of the frame can be read off the
+difference. `PERF_PROFILE=1` adds the RT manager's main-thread cost and its
+snapshot counters.
+
+`PERF_SHOT=<path>` writes the viewpoint to a PNG, and `PERF_REF=<path>` compares
+against an earlier one and reports how many pixels differ, plus an amplified
+difference image. That is the acceptance test for any change that claims to be
+free. Two things must be pinned for it to mean anything, and the probe does both
+only when capturing: wind (the cloud layer scrolls and the grass sways
+independently of the clock) and, with `PERF_PIN_LOD=1`, the grass LOD bands —
+their hysteresis otherwise settles two different ways and swamps the comparison
+at ~5% of pixels. Even pinned, the grass mask build is not bit-reproducible
+between launches; roughly 1000 pixels at 1/255 is the floor. Hide the grass to
+get an exactly reproducible frame.

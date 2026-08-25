@@ -50,6 +50,18 @@ varying vec3 base_world_normal;
 varying float shell_level;
 varying vec2 fine_mask_bytes;
 varying float broad_color_noise;
+// Resolved per vertex, not per fragment. dnc_cloud_shadow() is four octaves of
+// gradient noise -- sixteen lattice hashes and thirty-two transcendentals -- and
+// it was by a wide margin the most expensive thing in this shader, paid on every
+// surviving blade fragment of every one of up to sixteen shell layers.
+//
+// Interpolating it is safe because of the scale it works at: one tile of the
+// layer covers cloud_world_size metres (420 by default) while these vertices sit
+// one metre apart, so a triangle spans about a four-hundredth of the smallest
+// feature the field can produce. The canopy is also the wrong surface to want
+// per-pixel cloud detail on -- it is already being multiplied into blades a few
+// centimetres wide.
+varying float cloud_shadow_amount;
 
 vec2 hash22(vec2 p) {
 	p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
@@ -237,6 +249,11 @@ void vertex() {
 	base_world_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 	vec2 system_xz = base_world_position.xz - u_system_origin_xz;
 	broad_color_noise = smooth_value_noise(system_xz / max(u_color_noise_patch_size, 0.001));
+	cloud_shadow_amount = dnc_cloud_shadow(
+		u_cloud_params,
+		u_cloud_motion,
+		base_world_position,
+		u_cloud_sun_direction);
 	VERTEX += NORMAL * (u_root_offset + shell_level * u_max_height);
 }
 
@@ -344,15 +361,11 @@ void fragment() {
 	}
 	color *= mix(0.72, 1.0, pow(h, 0.72));
 	color *= mix(0.88, 1.0, edge_coverage);
-	// Resolved per pixel from the same cloud layer the sky draws, and applied to
-	// the lit colour before the fog blend, so a shadowed canopy still fades to
-	// exactly u_fog_color at the streaming boundary.
-	float cloud_shadow = dnc_cloud_shadow(
-		u_cloud_params,
-		u_cloud_motion,
-		base_world_position,
-		u_cloud_sun_direction);
-	color *= mix(vec3(1.0), u_cloud_shadow_tint, cloud_shadow);
+	// Resolved from the same cloud layer the sky draws, and applied to the lit
+	// colour before the fog blend, so a shadowed canopy still fades to exactly
+	// u_fog_color at the streaming boundary. Interpolated from the vertex stage;
+	// see cloud_shadow_amount for why that is the right resolution for it.
+	color *= mix(vec3(1.0), u_cloud_shadow_tint, cloud_shadow_amount);
 	// Grass is unmanaged and forward-lit with no light() override, so fog is applied
 	// by attenuating ALBEDO (which scales both the diffuse and the ambient term) and
 	// adding the fog radiance back through EMISSION. That is exactly

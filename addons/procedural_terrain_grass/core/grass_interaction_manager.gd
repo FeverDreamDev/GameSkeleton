@@ -24,6 +24,7 @@ var _discovered_bodies: Dictionary = {}
 var _selected_interactors: Array[Dictionary] = []
 var _interactor_uniforms: Array[Vector4] = []
 var _uploaded_uniforms: Array[Vector4] = []
+var _uploaded_interaction_enabled: bool = true
 var _discovery_timer: float = 0.0
 var _static_poll_timer: float = 0.0
 var _selection_timer: float = INF
@@ -281,6 +282,7 @@ func _upload_interactors() -> void:
 			continue
 		var world_position := _node_position(node)
 		_interactor_uniforms[index] = Vector4(world_position.x, world_position.z, float(candidate["radius"]), float(candidate["strength"]))
+	_push_interaction_enabled()
 	if grass_material == null or _interactor_uniforms == _uploaded_uniforms:
 		return
 	# Uploading an unchanged array still costs a material parameter write and a
@@ -288,6 +290,30 @@ func _upload_interactors() -> void:
 	# material is handed the copy so it never aliases the array mutated above.
 	_uploaded_uniforms = _interactor_uniforms.duplicate()
 	grass_material.set_shader_parameter("grass_interactors", _uploaded_uniforms)
+
+
+## The shader's interactor loop is a fixed eight iterations, so it costs eight
+## uniform-buffer reads and eight compares on every grass fragment whether or not
+## anything is pushing the grass around. A scene with no interactor -- the common
+## case, and the case until something registers one -- pays that across the full
+## shell overdraw for a result that cannot change. [member dynamic_interaction_enabled]
+## is authored intent; this is whether there is anything for the loop to find.
+func _push_interaction_enabled() -> void:
+	if grass_material == null:
+		return
+	var active := dynamic_interaction_enabled and not _selected_interactors.is_empty()
+	if active == _uploaded_interaction_enabled:
+		return
+	_uploaded_interaction_enabled = active
+	grass_material.set_shader_parameter("u_interaction_enabled", active)
+
+
+## Called when the owner rebuilds its material, whose authored uniform defaults
+## do not know what this manager last pushed.
+func refresh_interaction_state() -> void:
+	_uploaded_interaction_enabled = not (
+		dynamic_interaction_enabled and not _selected_interactors.is_empty())
+	_push_interaction_enabled()
 
 
 func _node_position(node: Node3D) -> Vector3:

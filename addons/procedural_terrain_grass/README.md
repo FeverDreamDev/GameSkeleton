@@ -99,6 +99,17 @@ lighting contract. The generated palette is stored in vertex colour, so a
 replacement shader must consume `COLOR` if it should retain the height/slope
 variation.
 
+A host that pushes a cloud layer onto the grass material — `u_cloud_params`,
+`u_cloud_motion`, `u_cloud_sun_direction` — gets its shadow resolved **per
+vertex**, not per fragment. That function is four octaves of gradient noise, and
+paid per fragment across up to sixteen shell layers it was the most expensive
+thing in the shader by a wide margin. One tile of the layer covers hundreds of
+metres while these vertices sit a metre apart, so a triangle spans a tiny
+fraction of the smallest feature the field can produce and interpolating it is
+not a difference you can see; it was measured at eight pixels out of 3.7 million,
+one code apart. If you drive those uniforms with something genuinely
+high-frequency, that assumption is yours to re-check.
+
 **Terrain Mesh Group** and **Terrain Receiver Only Group** optionally add each
 generated ground mesh to integration groups before it enters the scene tree.
 They are empty by default and do not couple this add-on to a renderer. The host

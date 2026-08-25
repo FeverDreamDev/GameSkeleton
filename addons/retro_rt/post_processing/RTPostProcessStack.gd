@@ -600,6 +600,15 @@ func _make_viewport(viewport_name: String, size: Vector2i) -> SubViewport:
 func _make_canvas_pass(pass_name: String, size: Vector2i, material: Material) -> SubViewport:
 	var viewport := _make_viewport(pass_name, size)
 	viewport.disable_3d = true
+	# Every canvas pass is one full-rect ColorRect running a blend_disabled shader
+	# that assigns all four channels of COLOR, so it defines every texel of its
+	# target before anything reads it -- including the first frame after an
+	# allocation or a resize. Clearing first is a second full-target write for
+	# nothing, and at 2560x1440 RGBA16F these are 28 MB each.
+	#
+	# The scene capture keeps its clear: it is a real 3D render into a transparent
+	# target, where uncovered pixels are the point.
+	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_NEVER
 	# The SMAA blend pass stores a real directional weight in alpha. Compatibility
 	# ignores HDR 2D, so a transparent target is also required there to guarantee
 	# an RGBA (rather than RGB-only) data surface.

@@ -338,6 +338,25 @@ reads across an edge at a fractional offset and is intrinsic to the algorithm.
 It is a same-resolution filter and must never become a resolution-changing
 resample again.
 
+It applies to edge pixels only. A pixel with no blend weight — the large majority
+of a frame — takes the exact 1:1 texel decode instead, which is the same path the
+pass presents with when custom AA is disabled and what the reference algorithm
+returns for that case. The four-tap read is not merely unnecessary there: at 1:1
+its weights are zero, so three of its four `decode_scene_texel()` calls, each with
+its own environment reconstruction, were computed and then multiplied away.
+
+That environment reconstruction is itself now skipped wherever geometry covers
+the pixel completely, in both the resolve and the edge detector. The term is
+`rt_post_sample_environment(...) * (1.0 - coverage)`, `rt_post_scene_coverage()`
+returns exactly `1.0` for opaque raster and for the recovered managed case, and
+`rt_post_sample_environment()` is always finite — so this is an equivalence
+rather than an approximation, and it was verified as a zero-pixel difference over
+a full frame. A scene that draws its background as geometry rather than leaving it
+to the environment, such as the day/night sky dome, takes that branch everywhere:
+the reconstruction exists for backgrounds that show through, and there it never
+contributes. Together the two removed roughly 0.85 ms of a 6.8 ms frame at
+2560x1440 on an RTX 4060.
+
 The edge detector uses the maximum RGB color delta and the reference local
 contrast adaptation, rather than luminance-only edges or Forward+-only depth,
 normal, or G-buffer predication. It reconstructs the visible environment before
