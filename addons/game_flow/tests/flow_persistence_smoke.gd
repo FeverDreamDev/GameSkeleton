@@ -97,6 +97,12 @@ func _test_flow_state_boundary() -> void:
 	State.current_level = &"arena"
 	State.current_spawn = &"north"
 	State.set_flag(&"boss_awake")
+	State.set_flag(&"temporary_flag")
+	_check(State.has_flag(&"temporary_flag"),
+		"set_flag On stores a present, true story flag")
+	State.set_flag(&"temporary_flag", false)
+	_check(not State.has_flag(&"temporary_flag"),
+		"set_flag Off removes the story flag and reads false")
 
 	var original := {"phase": 2, "arrivals": [&"north", &"south"]}
 	_check(State.try_set_value(&"boss", original), "FlowState accepts safe values")
@@ -124,6 +130,13 @@ func _test_flow_state_boundary() -> void:
 		"existing level and spawn payload keys are unchanged")
 	_check("boss_awake" in (payload[State.KEY_FLAGS] as Array),
 		"existing flag payload behavior is unchanged")
+	_check("temporary_flag" not in (payload[State.KEY_FLAGS] as Array),
+		"an Off story flag is absent from the save payload")
+
+	State.reset()
+	State.from_dict(payload)
+	_check(State.has_flag(&"boss_awake") and not State.has_flag(&"temporary_flag"),
+		"the On/Off flag model survives a FlowState save round trip")
 
 	State.from_dict({
 		State.KEY_LEVEL: "restored_arena",

@@ -11,14 +11,14 @@ SMAA, and FSR add-ons.
 - **New Game** resets the run and starts the application-owned master graph at
   `res://game/flow/master_game_flow.tres`. That graph is the single source of truth for the
   pre-intro checkpoint, 1.2-second skippable black intro, post-intro checkpoint, initial level
-  change, progress flag, gameplay autosave, and failure paths.
+  change, gameplay autosave, and failure paths.
 - The application shell still owns menus, save-slot selection, world reconstruction, and the
   button that starts or restores the graph. It does not duplicate the graph's story sequence.
 - Continue, Load, pause-menu Save/Load, corrupt-save reporting, and Return to Main Menu are
   wired through the persistent application shell at `res://game/app/main.tscn`.
-- Save payloads contain their schema version and resume phase, `FlowState`, resumable graph
-  tokens/waits/subgraphs, the persistent player state, and scene-relative state from nodes in the
-  `saveable` group.
+- Save payloads contain their current schema version, `FlowState`, resumable graph
+  tokens/waits/subgraphs, whether the world must be reconstructed before graph resume, the
+  persistent player state, and scene-relative state from nodes in the `saveable` group.
 
 For visual authoring instructions and the complete designer-facing node reference, see
 [`docs/GAMEFLOW_NODE_TUTORIAL.md`](docs/GAMEFLOW_NODE_TUTORIAL.md).

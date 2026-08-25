@@ -184,7 +184,8 @@ func validate_detailed(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"unknown_node_type",
-				"'%s' uses a step type that is not available in this project." % node.display_title(),
+				"'%s' is not a built-in GameFlow step. Put game-specific behavior in Run Game Action." \
+						% node.display_title(),
 				graph_id,
 				node.node_id
 			))

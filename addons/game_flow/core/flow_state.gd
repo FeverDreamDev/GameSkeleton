@@ -52,9 +52,6 @@ static func set_flag(flag: StringName, value: bool = true) -> void:
 static func has_flag(flag: StringName) -> bool:
 	return _flags.has(flag)
 
-static func clear_flag(flag: StringName) -> void:
-	_flags.erase(flag)
-
 ## Every flag that is set, in alphabetical order. For the debug window and for tests.
 ##
 ## Sorted as strings and converted back, because [StringName] compares by pointer rather than

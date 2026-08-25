@@ -81,16 +81,6 @@ func custom_action_ids() -> Array[StringName]:
 		out.append(StringName(action_name))
 	return out
 
-## The id whose entry points at [param path]. Lets a save written before the registry existed --
-## one that recorded a raw scene path -- still resolve to a level.
-func level_id_for_path(path: String) -> StringName:
-	_ensure_index()
-	for id: StringName in _level_index:
-		var entry: FlowLevelEntry = _level_index[id]
-		if entry.scene_path == path:
-			return id
-	return &""
-
 #endregion
 
 #region Index
@@ -163,7 +153,7 @@ func validate() -> Array[String]:
 	return problems
 
 ## Structured registry and graph validation for editor presentation and automated checks.
-## [method validate] remains the backwards-compatible string API and includes these messages.
+## [method validate] is the plain-text API and includes these messages.
 func validate_graphs() -> Array[FlowValidationIssue]:
 	rebuild_index()
 	return _validate_graphs(true)
@@ -316,13 +306,6 @@ func _validate_custom_action_catalog(issues: Array[FlowValidationIssue]) -> void
 			))
 		else:
 			seen[entry.action_id] = true
-		if entry.persistence_policy == FlowNodeDescriptor.PersistencePolicy.RESUMABLE:
-			issues.append(FlowValidationIssue.make(
-				FlowValidationIssue.Severity.ERROR,
-				&"custom_action_resumable_reserved",
-				"custom action '%s' claims RESUMABLE, but provider snapshots are not supported in v1; use INSTANT or SAVE_BLOCKING" \
-						% entry.action_id
-			))
 
 func _validate_subgraph_contracts(issues: Array[FlowValidationIssue]) -> void:
 	var called_graphs := {}

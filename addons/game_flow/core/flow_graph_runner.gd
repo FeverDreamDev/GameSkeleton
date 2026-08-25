@@ -341,10 +341,6 @@ func _step_token(token_id: StringName) -> void:
 			FlowState.set_flag(node.flag_id, node.flag_value)
 			_advance_from_port(token_id, &"out")
 
-		&"clear_flag":
-			FlowState.clear_flag(node.flag_id)
-			_advance_from_port(token_id, &"out")
-
 		&"set_value":
 			if not FlowState.try_set_value(node.value_key, node.value):
 				_fail_token(token_id, "value for '%s' is not persistable" % node.value_key)
@@ -1054,10 +1050,8 @@ func restore_from_dict(state: Dictionary, keep_suspended: bool = true) -> bool:
 					or _tokens[owner_token_id]["instance_id"] != instance_id:
 				return _reject_restore("snapshot input lease '%s' has an unresolved owner" % key)
 			owners.append(owner_token_id)
-		# Early snapshot-v1 files stored one instance-scoped owner without token IDs. Keep accepting
-		# those files; the first matching Enable Input releases that older owner.
 		if owners.is_empty():
-			owners.append(&"")
+			return _reject_restore("snapshot input lease '%s' has no owners" % key)
 		_owned_input_leases[key] = {
 			"instance_id": instance_id,
 			"owners": owners,
@@ -1277,9 +1271,6 @@ func _release_token_input_lease(
 	var lease: Dictionary = _owned_input_leases[lease_key]
 	var owners: Array[StringName] = lease["owners"]
 	owners.erase(token_id)
-	# Compatibility with snapshots written before token-level ownership was recorded.
-	if owners.has(&""):
-		owners.erase(&"")
 	if owners.is_empty():
 		_owned_input_leases.erase(lease_key)
 		FlowSystem.release_gameplay_input(lease_key)

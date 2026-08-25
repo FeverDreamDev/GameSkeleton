@@ -2,10 +2,11 @@
 class_name FlowNodeCatalog
 extends RefCounted
 
-## Shared registry used by graph validation and the editor node palette.
+## Fixed catalog of the fundamental flow steps implemented by [FlowGraphRunner].
 ##
-## Games may register additional FlowGraphNode scripts without editing a central enum. Runtime
-## action implementations remain keyed separately by FlowInvokeActionNode.action_id.
+## This supplies validation and editor-palette metadata; it is deliberately not an executor
+## registry. Adding a [FlowGraphNode] script cannot add runtime semantics on its own. Games expose
+## their own behavior through **Run Game Action** and a provider registered with [FlowSystem].
 
 const BUILTIN_NODE_SCRIPTS: Array[Script] = [
 	preload("res://addons/game_flow/data/flow_game_start_node.gd"),
@@ -18,7 +19,6 @@ const BUILTIN_NODE_SCRIPTS: Array[Script] = [
 	preload("res://addons/game_flow/data/flow_subgraph_exit_node.gd"),
 	preload("res://addons/game_flow/data/flow_call_subgraph_node.gd"),
 	preload("res://addons/game_flow/data/flow_set_flag_node.gd"),
-	preload("res://addons/game_flow/data/flow_clear_flag_node.gd"),
 	preload("res://addons/game_flow/data/flow_set_value_node.gd"),
 	preload("res://addons/game_flow/data/flow_wait_timer_node.gd"),
 	preload("res://addons/game_flow/data/flow_wait_event_node.gd"),
@@ -34,49 +34,6 @@ const BUILTIN_NODE_SCRIPTS: Array[Script] = [
 
 static var _descriptors: Dictionary = {}
 static var _builtins_ready: bool = false
-
-
-static func register_descriptor(descriptor: FlowNodeDescriptor, replace: bool = false) -> bool:
-	if descriptor == null or not descriptor.is_valid():
-		push_warning("FlowNodeCatalog: refusing an invalid descriptor.")
-		return false
-	if _descriptors.has(descriptor.type_id) and not replace:
-		push_warning("FlowNodeCatalog: type_id '%s' is already registered." % descriptor.type_id)
-		return false
-	_descriptors[descriptor.type_id] = descriptor
-	return true
-
-
-static func register_node_script(
-		node_script: Script,
-		category: String = "Custom",
-		description: String = "",
-		replace: bool = false,
-		persistence_policy: FlowNodeDescriptor.PersistencePolicy = \
-				FlowNodeDescriptor.PersistencePolicy.SAVE_BLOCKING,
-		exclusivity_group: StringName = &""
-) -> bool:
-	if node_script == null or not node_script.can_instantiate():
-		push_warning("FlowNodeCatalog: node script cannot be instantiated.")
-		return false
-	var prototype := node_script.new() as FlowGraphNode
-	if prototype == null or prototype.type_id().is_empty() or prototype.type_id() == &"base":
-		push_warning("FlowNodeCatalog: node script must create a concrete FlowGraphNode with a type_id.")
-		return false
-	var descriptor := FlowNodeDescriptor.new()
-	descriptor.type_id = prototype.type_id()
-	descriptor.display_name = prototype.display_title()
-	descriptor.category = category
-	descriptor.description = description
-	descriptor.node_script = node_script
-	descriptor.persistence_policy = persistence_policy
-	descriptor.exclusivity_group = exclusivity_group
-	return register_descriptor(descriptor, replace)
-
-
-static func unregister_type(type_id: StringName) -> void:
-	_ensure_builtins()
-	_descriptors.erase(type_id)
 
 
 static func get_descriptor(type_id: StringName) -> FlowNodeDescriptor:
@@ -114,28 +71,21 @@ static func create_node(type_id: StringName) -> FlowGraphNode:
 	return descriptor.create_node() if descriptor != null else null
 
 
-static func reset_custom_descriptors() -> void:
-	_descriptors.clear()
-	_builtins_ready = false
-	_ensure_builtins()
-
-
 static func _ensure_builtins() -> void:
 	if _builtins_ready:
 		return
 	_builtins_ready = true
 	for node_script: Script in BUILTIN_NODE_SCRIPTS:
 		var prototype := node_script.new() as FlowGraphNode
-		if prototype == null:
+		if prototype == null or prototype.type_id().is_empty() or prototype.type_id() == &"base":
 			continue
-		register_node_script(
-			node_script,
-			_builtin_category(prototype.type_id()),
-			_builtin_description(prototype.type_id()),
-			false,
-			_builtin_persistence_policy(prototype.type_id()),
-			_builtin_exclusivity_group(prototype.type_id())
-		)
+		var descriptor := FlowNodeDescriptor.new()
+		descriptor.type_id = prototype.type_id()
+		descriptor.display_name = prototype.display_title()
+		descriptor.category = _builtin_category(prototype.type_id())
+		descriptor.description = _builtin_description(prototype.type_id())
+		descriptor.node_script = node_script
+		_descriptors[descriptor.type_id] = descriptor
 
 
 static func _builtin_category(type_id: StringName) -> String:
@@ -146,7 +96,7 @@ static func _builtin_category(type_id: StringName) -> String:
 			return "Choices & Paths"
 		&"subgraph_entry", &"subgraph_exit", &"call_subgraph":
 			return "Subgraphs"
-		&"set_flag", &"clear_flag", &"set_value":
+		&"set_flag", &"set_value":
 			return "Story State"
 		&"wait_timer", &"wait_event", &"emit_event":
 			return "Events & Timing"
@@ -182,9 +132,7 @@ static func _builtin_description(type_id: StringName) -> String:
 		&"call_subgraph":
 			return "Runs a reusable subgraph, waits for it to finish, then continues through its result."
 		&"set_flag":
-			return "Turns a named story flag On or Off so later conditions can remember the choice."
-		&"clear_flag":
-			return "Removes a named story flag, making it unset rather than On or Off."
+			return "Sets a story flag On or Off. On remembers it; Off removes it and conditions read false."
 		&"set_value":
 			return "Stores a named story value such as a chapter number, score, phase, or relationship level."
 		&"wait_timer":
@@ -208,20 +156,3 @@ static func _builtin_description(type_id: StringName) -> String:
 		&"invoke_action":
 			return "Asks a game-owned system to perform an action. GameFlow controls when; game code controls how."
 	return ""
-
-
-static func _builtin_persistence_policy(
-		type_id: StringName
-) -> FlowNodeDescriptor.PersistencePolicy:
-	match type_id:
-		&"wait_timer", &"wait_event", &"call_subgraph":
-			return FlowNodeDescriptor.PersistencePolicy.RESUMABLE
-		&"play_cutscene", &"load_level", &"invoke_action":
-			return FlowNodeDescriptor.PersistencePolicy.SAVE_BLOCKING
-	return FlowNodeDescriptor.PersistencePolicy.INSTANT
-
-
-static func _builtin_exclusivity_group(type_id: StringName) -> StringName:
-	if type_id == &"play_cutscene" or type_id == &"load_level":
-		return &"major_flow"
-	return &""

@@ -104,7 +104,7 @@ func friendly_label_for(object: Object, property_name: String) -> String:
 		"flag_id":
 			return "Story Flag"
 		"flag_value":
-			return "Turn Flag On"
+			return "Flag Is On"
 		"value_key":
 			return "Story Value Name"
 		"value":
@@ -175,7 +175,7 @@ func friendly_help_for(object: Object, property_name: String) -> String:
 		"flag_id":
 			return "A memorable story-state name, such as met_mayor or bridge_repaired."
 		"flag_value":
-			return "On means true; Off means false. Clear Story Flag removes the flag entirely."
+			return "On = the flag is set. Off = the flag is removed and conditions treat it as false."
 		"value_key":
 			return "A memorable story-state name, such as chapter_number or boss_phase."
 		"value":

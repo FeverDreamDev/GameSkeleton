@@ -179,8 +179,9 @@ A flag is a yes/no fact:
 - `warehouse_boss_dead`
 - `secret_door_open`
 
-Use **Set Story Flag** with **Turn Flag On** enabled to remember “yes.” Use **Clear Story Flag** to
-forget it or return it to “no.”
+**Set Story Flag** is the only node that changes a flag. Set **Flag Is On** to **On** to remember
+“yes.” Set it to **Off** to remove that flag, which means the graph considers it false. Flags are
+simple yes/no facts: there is no separate third state to manage.
 
 ### Story values
 
@@ -216,8 +217,7 @@ Open **Condition**, then use **Where to Look**, **Name to Check**, **Comparison*
 - **Story Flag** for a remembered yes/no fact.
 - **Story Value** for a remembered number or piece of text.
 - **Event Detail** for information attached to the event that started or resumed this path.
-- **Path Value** only when a programmer-provided game action or extension supplies temporary path
-  information.
+- **Path Value** only when a programmer-provided game action supplies temporary path information.
 
 Useful comparisons include:
 
@@ -226,8 +226,8 @@ Useful comparisons include:
 - **Less Than**, **At Most**, **Greater Than**, and **At Least** for numbers.
 - **Is Set** / **Is Not Set** when the presence of a value matters.
 
-Use a custom node title that reads like a question, such as **Has The Fuse?** or **Boss Below 30%?**.
-That makes the Yes and No wires understandable without opening the inspector.
+Give the node a custom title that reads like a question, such as **Has The Fuse?** or
+**Boss Below 30%?**. That makes the Yes and No wires understandable without opening the inspector.
 
 ## 8. Time, parallel paths, and random choices
 
@@ -365,6 +365,18 @@ Choose a registered game action and fill in its designer-facing options. Wire bo
 The graph coordinates the encounter. The encounter system still owns enemy scenes, formations,
 spawn timing, AI, health, and combat. If the action you need is not in the picker, ask a programmer
 to register it once; do not add gameplay implementation to the graph itself.
+
+For programmers, **Run Game Action** is the normal extension point. Register a stable action name
+and its game-owned provider, and add that name to the Flow Database's game-action list so designers
+can choose it and validation can catch mistakes. The graph stores only the action name and safe
+options; it never stores the provider or a live scene object.
+
+The fundamental flow steps—such as **Check Condition**, **Wait**, **Start Multiple Paths**,
+**Choose Random Path**, and **Run Subgraph**—are implemented by GameFlow itself. Adding a
+`FlowGraphNode` script or palette descriptor alone does not teach the runtime how to execute a new
+kind of step. A genuinely new flow-control concept is a framework change and must be implemented
+and tested in the graph runner and validator. Most game-specific requests should remain game
+actions instead.
 
 ## 11. Building and calling subgraphs
 
@@ -539,8 +551,7 @@ belongs in `game/flow`.
 | Subgraphs | **Subgraph Starts Here** | Required starting point inside a subgraph. |
 | Subgraphs | **Finish Subgraph** | Ends the called subgraph and returns a named result. |
 | Subgraphs | **Run Subgraph** | Runs a registered subgraph and waits for its result. |
-| Story State | **Set Story Flag** | Remembers a yes/no story fact as yes. |
-| Story State | **Clear Story Flag** | Removes a remembered story fact. |
+| Story State | **Set Story Flag** | On remembers a yes; Off removes the flag and means false. |
 | Story State | **Set Story Value** | Remembers a number, text value, or other small safe value. |
 | Events & Timing | **Wait _n_ Seconds** | Pauses this path for a duration. |
 | Events & Timing | **Wait Until Event** | Pauses this path until the next chosen event. |

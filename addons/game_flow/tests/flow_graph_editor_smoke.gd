@@ -61,6 +61,10 @@ func _run() -> void:
 			and _palette_contains(palette, "Choices & Paths  ›  Check Condition") \
 			and _palette_contains(palette, "Player  ›  Lock Player Controls"),
 		"palette uses approachable game-design names and categories")
+	_check(NodeCatalogScript.has_type(&"set_flag") \
+			and not NodeCatalogScript.has_type(&"clear_flag") \
+			and not _palette_contains(palette, "Clear Story Flag"),
+		"Set Story Flag is the only flag-writing step in the catalog and palette")
 	var catalog_descriptions_complete := true
 	for descriptor in NodeCatalogScript.descriptors():
 		if descriptor.display_name.is_empty() or descriptor.category.is_empty() \
@@ -113,6 +117,11 @@ func _run() -> void:
 				"Equals", "Is Not", "Less Than", "At Most", "Greater Than", "At Least",
 				"Is On", "Is Off", "Is Set", "Is Not Set"]),
 		"condition comparisons have friendly choices in their stable numeric order")
+	var set_flag = preload("res://addons/game_flow/data/flow_set_flag_node.gd").new()
+	_check(friendly_inspector.friendly_label_for(set_flag, "flag_value") == "Flag Is On" \
+			and friendly_inspector.friendly_help_for(set_flag, "flag_value").contains(
+				"Off = the flag is removed"),
+		"Set Story Flag explains the present/absent flag model in designer language")
 	condition.key = &"boss_health"
 	condition.operator = ConditionScript.Operator.LESS
 	condition.value = 0.3

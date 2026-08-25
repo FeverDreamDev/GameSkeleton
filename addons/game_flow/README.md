@@ -82,6 +82,9 @@ checkpoints, player-control locks, and **Run Game Action**. Connections are exec
 wires. More than one connection from an output creates independent execution tokens, so a story
 wait, ambient timer, secret trigger and boss threshold can all remain active at once.
 
+**Set Story Flag** handles both sides of a yes/no fact: **On** stores the flag; **Off** removes it,
+so conditions consider it false.
+
 `FlowGraphRunner` drains immediate work in deterministic connection order. Timers use timeout
 callbacks and event waits are indexed by event ID—there is no per-frame graph polling. Emitted
 events enter a non-reentrant inbox; existing waiters resume before **When Event Happens** steps
@@ -99,7 +102,7 @@ Structured subgraphs contain one **Subgraph Starts Here** step and named **Finis
 **Run Subgraph** creates a child instance and suspends only its caller. Reaching a result cancels
 the child's remaining paths and resumes the parent through the matching named outcome.
 **When Event Happens** listeners exist only while their graph instance exists. Recursion is
-rejected by validation in v1.
+currently rejected by validation.
 
 ### Random outcomes
 
@@ -136,6 +139,18 @@ misspelled action IDs. No provider Node or Callable is stored in a graph or save
 formations, spawning, combat and boss health remain owned by encounter/boss systems; those systems
 emit `FlowEvents` such as `wave_cleared` or `boss_defeated` for the graph to coordinate.
 
+`FlowNodeCatalog` and `FlowNodeDescriptor` describe the built-in node palette, authored Resource
+types, ports and validation metadata. They are not a dynamic executor registry. Registering a
+`FlowGraphNode` script or descriptor by itself does **not** add runtime semantics to
+`FlowGraphRunner`. Fundamental control-flow concepts—conditions, waits, parallel paths, random
+choices and subgraph calls—remain built into the framework and require coordinated runner,
+validator and editor work when they change.
+
+For ordinary game extensions, add a stable `FlowCustomActionEntry`, register its transient
+provider with `FlowSystem.register_action()`, and author a **Run Game Action** step. This is the
+supported path for verbs such as Start Tunnel Encounter, Open Blast Door, Start Boss and Change
+Weather.
+
 ### Keep decisions in the graph
 
 Gameplay systems should emit `FlowEvents`; **When Event Happens** and **Wait Until Event** steps
@@ -161,8 +176,8 @@ observe traffic. They are not a second story executor.
 | `flow_loader.gd` | `FlowLoader` | Threaded loading and preloading. |
 | `flow_present.gd` | `FlowPresent` | Fades and error dialogs. **The only file that names `win98_ui`.** |
 
-**`data/`** — what you author: `FlowGraph`, typed graph nodes,
-`FlowGraphConnection`, `FlowCondition`, registries/descriptors and structured validation issues.
+**`data/`** — what you author: `FlowGraph`, built-in typed graph nodes,
+`FlowGraphConnection`, `FlowCondition`, palette descriptors and structured validation issues.
 
 **`editor/`** — editor-only visual graph UI. Runtime files do not import it.
 

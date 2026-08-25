@@ -303,7 +303,7 @@ func _refresh_gameplay_input_state() -> void:
 ##
 ## Returns false and leaves the game where it was if the level is unknown, fails to load, or
 ## another major action is already running. Authored game flow should use a Load Level node; this
-## direct verb exists for host integration such as restoring older save formats.
+## direct verb exists so the host can install a saved world before resuming its graph snapshot.
 static func transition_to_level(
 		level_id: StringName,
 		spawn_id: StringName = &"",

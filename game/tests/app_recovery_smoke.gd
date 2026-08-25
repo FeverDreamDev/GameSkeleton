@@ -56,34 +56,21 @@ func _run() -> void:
 	_check(not paused, "the main menu does not leave the SceneTree paused")
 	_check(UISystem.is_cursor_visible(), "the main menu owns a visible cursor")
 
-	# An intro-pending recovery point replays the intro before it builds the world.
-	_check(UISave.save_slot(&"slot_1", _recovery_payload(&"intro_pending")) == OK,
-		"intro_pending fixture save writes")
-	app.call("_load_slot", &"slot_1")
+	# Establish one current graph-based run. All later menu and pause loads use snapshots written by
+	# that graph.
+	app.call("_on_new_game_pressed")
 	_check(await _wait_for(_stable_gameplay.bind(app), 35.0),
-		"intro_pending load reaches stable gameplay")
+		"New Game reaches stable gameplay through the master graph")
 	_check(_cutscenes_started == [&"intro_blank"],
-		"intro_pending load replays intro_blank exactly once")
+		"the master graph plays intro_blank exactly once")
 	_check(_levels_entered == [&"terrain_test"],
-		"intro_pending load enters the saved level exactly once")
-	_check(UISave.load_slot(&"slot_1").get("resume_phase", "") == "level_pending",
-		"finishing a recovered intro advances its source slot to level_pending")
-
-	app.call("_return_to_main_menu")
-	_check(await _wait_for(_stable_menu.bind(app), 10.0),
-		"direct recovery reset returns to a stable menu")
-
-	# A level-pending recovery point has already paid the cutscene cost.
-	_check(UISave.save_slot(&"slot_2", _recovery_payload(&"level_pending")) == OK,
-		"level_pending fixture save writes")
-	var cutscene_count_before_level_pending := _cutscenes_started.size()
-	app.call("_load_slot", &"slot_2")
-	_check(await _wait_for(_stable_gameplay.bind(app), 35.0),
-		"level_pending load reaches stable gameplay")
-	_check(_cutscenes_started.size() == cutscene_count_before_level_pending,
-		"level_pending load bypasses the intro")
-	_check(_levels_entered.size() == 2,
-		"level_pending load enters terrain_test once")
+		"the master graph enters terrain_test exactly once")
+	var gameplay_payload := UISave.load_slot(UISave.autosave_id)
+	_check(gameplay_payload.get("flow_graph", {}) is Dictionary
+		and not (gameplay_payload.get("flow_graph", {}) as Dictionary).is_empty(),
+		"the graph-owned gameplay autosave contains a current graph snapshot")
+	_check(bool(gameplay_payload.get("world_active", false)),
+		"the gameplay snapshot records that its world must be reconstructed before resume")
 
 	# Pause -> Save keeps the world frozen, then cancel restores gameplay and capture.
 	app.call("_open_pause_menu")
@@ -160,11 +147,14 @@ func _run() -> void:
 	var load_browser := _find_modal(SaveBrowser) as SaveBrowser
 	_check(load_browser != null and load_browser.mode == SaveBrowser.Mode.LOAD,
 		"Pause Load opens the save browser in LOAD mode")
+	var cutscene_count_before_pause_load := _cutscenes_started.size()
 	if load_browser != null:
 		load_browser.call("_on_row_toggled", true, &"slot_3")
 		load_browser.call("_on_action_pressed")
 	_check(await _wait_for(_stable_gameplay.bind(app), 35.0),
 		"Pause Load returns to stable gameplay")
+	_check(_cutscenes_started.size() == cutscene_count_before_pause_load,
+		"Pause Load resumes the saved graph without restarting the master sequence")
 	_check(not paused, "Pause Load thaws the SceneTree")
 	_check(app.get("_pause_menu") == null, "Pause Load clears the stale PauseMenu reference")
 	_check(app.player.input_enabled, "Pause Load restores FPS input ownership")
@@ -189,20 +179,20 @@ func _run() -> void:
 
 	# Continue must ignore unreadable files and choose the newest readable slot.
 	await create_timer(1.05, true).timeout
-	_check(UISave.save_slot(&"slot_4", _recovery_payload(&"intro_pending")) == OK,
-		"newest Continue fixture save writes")
+	_check(UISave.save_slot(&"slot_4", gameplay_payload) == OK,
+		"newest current-graph Continue fixture writes")
 	_write_corrupt_slot(&"slot_5")
 	_check(UISave.newest_slot() == &"slot_4",
 		"UISave chooses the newest readable slot and ignores corrupt rows")
 	var cutscenes_before_continue := _cutscenes_started.size()
 	app.call("_on_continue_pressed")
 	_check(await _wait_for(_stable_gameplay.bind(app), 35.0),
-		"Continue loads its selected recovery point")
-	_check(_cutscenes_started.size() == cutscenes_before_continue + 1,
-		"Continue chose the newest intro_pending save")
+		"Continue restores its selected graph snapshot")
+	_check(_cutscenes_started.size() == cutscenes_before_continue,
+		"Continue does not restart the master graph")
 
-	# A second New Game resets the static event bus. The graph must request its two recovery
-	# checkpoints and one entered-level autosave exactly once each, while the entered event is
+	# A second New Game resets the static event bus. The graph must request its two checkpoints and
+	# one entered-level autosave exactly once each, while the entered event is
 	# recorded once rather than once per prior run.
 	app.call("_return_to_main_menu")
 	_check(await _wait_for(_stable_menu.bind(app), 10.0),
@@ -219,8 +209,6 @@ func _run() -> void:
 			entered_history_count += 1
 	_check(entered_history_count == 1,
 		"the reset FlowEvents bus records one entered_terrain_test event")
-	_check(FlowState.has_flag(&"app_master_bootstrap_complete"),
-		"the second run records completed master-graph bootstrap")
 
 	# Exercise the application's supported teardown path before freeing the test
 	# tree. This also keeps the dummy headless renderer from observing managed
@@ -231,21 +219,6 @@ func _run() -> void:
 	app.queue_free()
 	await process_frame
 	_finish()
-
-
-func _recovery_payload(phase: StringName) -> Dictionary:
-	return {
-		"version": 1,
-		"resume_phase": String(phase),
-		"flow": {
-			FlowState.KEY_LEVEL: "terrain_test",
-			FlowState.KEY_SPAWN: "default",
-			FlowState.KEY_FLAGS: [],
-			FlowState.KEY_VALUES: {},
-		},
-		"player": {},
-		"world": {},
-	}
 
 
 func _stable_gameplay(app: GameApp) -> bool:

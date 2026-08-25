@@ -19,7 +19,8 @@ const OUTPUT_PORT := &"out"
 @export var enabled: bool = true
 
 
-## Stable registration id used by the runtime executor and editor palette.
+## Stable built-in execution id used by [FlowGraphRunner] and the editor palette.
+## Defining a new id does not add runtime behavior; game extensions use **Run Game Action**.
 func type_id() -> StringName:
 	return &"base"
 

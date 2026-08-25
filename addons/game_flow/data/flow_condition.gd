@@ -2,7 +2,7 @@
 class_name FlowCondition
 extends Resource
 
-## A property-based condition for an IF node. There are no typed data wires in v1.
+## A property-based condition for an IF node. The graph intentionally uses execution wires only.
 
 enum Source {
 	FLOW_STATE_FLAG,

@@ -2,6 +2,7 @@
 class_name FlowSetFlagNode
 extends FlowGraphNode
 
+## A story flag has two states: On is present; Off removes it and conditions read it as false.
 @export var flag_id: StringName = &""
 @export var flag_value: bool = true
 

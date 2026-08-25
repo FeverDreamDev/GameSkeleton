@@ -2,35 +2,18 @@
 
 [ext_resource type="Script" uid="uid://cr6oecaqsnhyd" path="res://addons/game_flow/data/flow_graph.gd" id="1_graph"]
 [ext_resource type="Script" uid="uid://dc8ny6j42j0fh" path="res://addons/game_flow/data/flow_game_start_node.gd" id="2_start"]
-[ext_resource type="Script" uid="uid://cfvgwjyrn6vim" path="res://addons/game_flow/data/flow_if_node.gd" id="3_if"]
-[ext_resource type="Script" uid="uid://d0pti6jwh8qf7" path="res://addons/game_flow/data/flow_condition.gd" id="4_condition"]
 [ext_resource type="Script" uid="uid://5g2ei0on17p4" path="res://addons/game_flow/data/flow_end_node.gd" id="5_end"]
 [ext_resource type="Script" uid="uid://dbf0tkluut5a0" path="res://addons/game_flow/data/flow_request_save_node.gd" id="6_save"]
 [ext_resource type="Script" uid="uid://beivg5su28pdd" path="res://addons/game_flow/data/flow_play_cutscene_node.gd" id="8_cutscene"]
 [ext_resource type="Script" uid="uid://dg1pa8dwiqvak" path="res://addons/game_flow/data/flow_load_level_node.gd" id="9_level"]
-[ext_resource type="Script" uid="uid://bsjy0slwu6hbp" path="res://addons/game_flow/data/flow_set_flag_node.gd" id="10_flag"]
 [ext_resource type="Script" uid="uid://q5i2pjocea1i" path="res://addons/game_flow/data/flow_emit_event_node.gd" id="11_emit"]
 [ext_resource type="Script" uid="uid://nx2pmqhvcwf2" path="res://addons/game_flow/data/flow_graph_connection.gd" id="13_connection"]
 [ext_resource type="Script" uid="uid://lk58ndbj617m" path="res://addons/game_flow/data/flow_graph_node.gd" id="14_node"]
 
-[sub_resource type="Resource" id="Connection_start_if"]
+[sub_resource type="Resource" id="Connection_start_save"]
 script = ExtResource("13_connection")
 connection_id = &"24df7139-a96a-4e9c-8af4-1a89d20e51cd"
 from_node_id = &"16885a2d-9cf8-44d3-b847-53c5b52054bd"
-to_node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
-
-[sub_resource type="Resource" id="Connection_if_restored"]
-script = ExtResource("13_connection")
-connection_id = &"f65783fc-2a76-4db4-a5ac-9af108b56dad"
-from_node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
-from_port_id = &"true"
-to_node_id = &"5bd9565a-b195-41d9-bab6-67ab3df1e65d"
-
-[sub_resource type="Resource" id="Connection_if_new"]
-script = ExtResource("13_connection")
-connection_id = &"020e35c0-faf9-44f1-b2dd-37c38beefc60"
-from_node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
-from_port_id = &"false"
 to_node_id = &"63c273b6-1cb7-44f9-99b9-67b36d0c886d"
 
 [sub_resource type="Resource" id="Connection_save_initial_wait"]
@@ -64,7 +47,7 @@ script = ExtResource("13_connection")
 connection_id = &"a9ee2f4b-40b5-45ca-8b5c-4d68794417e5"
 from_node_id = &"d719aec5-b9bb-4ef6-a976-02a2db42cc03"
 from_port_id = &"completed"
-to_node_id = &"ca435435-4812-4f0d-a2e2-a171290e6f70"
+to_node_id = &"62e1cb38-c942-44ce-a2ec-5ac6126e2cca"
 
 [sub_resource type="Resource" id="Connection_level_failure"]
 script = ExtResource("13_connection")
@@ -72,12 +55,6 @@ connection_id = &"409d0a30-7c94-4116-a09d-aeec66267f8d"
 from_node_id = &"d719aec5-b9bb-4ef6-a976-02a2db42cc03"
 from_port_id = &"failed"
 to_node_id = &"b70b64ae-b58c-4cf9-92c1-bd431779ecb0"
-
-[sub_resource type="Resource" id="Connection_complete_autosave"]
-script = ExtResource("13_connection")
-connection_id = &"107df61a-2ae9-49bd-b8cf-982a269f9b14"
-from_node_id = &"ca435435-4812-4f0d-a2e2-a171290e6f70"
-to_node_id = &"62e1cb38-c942-44ce-a2ec-5ac6126e2cca"
 
 [sub_resource type="Resource" id="Connection_autosave_ready"]
 script = ExtResource("13_connection")
@@ -109,31 +86,11 @@ node_id = &"16885a2d-9cf8-44d3-b847-53c5b52054bd"
 editor_position = Vector2(-60, 120)
 title_override = "When New Game Starts"
 
-[sub_resource type="Resource" id="FlowCondition_bootstrap_complete"]
-script = ExtResource("4_condition")
-source = 0
-key = &"app_master_bootstrap_complete"
-operator = 6
-value = null
-
-[sub_resource type="Resource" id="FlowIf_bootstrap_complete"]
-script = ExtResource("3_if")
-condition = SubResource("FlowCondition_bootstrap_complete")
-node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
-editor_position = Vector2(220, 120)
-title_override = "Is New Game Setup Complete?"
-
-[sub_resource type="Resource" id="FlowEnd_restored_bootstrap"]
-script = ExtResource("5_end")
-node_id = &"5bd9565a-b195-41d9-bab6-67ab3df1e65d"
-editor_position = Vector2(540, 20)
-title_override = "Continue Loaded Game"
-
 [sub_resource type="Resource" id="FlowRequestSave_new_game"]
 script = ExtResource("6_save")
 reason = &"new_game"
 node_id = &"63c273b6-1cb7-44f9-99b9-67b36d0c886d"
-editor_position = Vector2(530, 170)
+editor_position = Vector2(220, 120)
 title_override = "Checkpoint: Before Intro"
 
 [sub_resource type="Resource" id="FlowPlayCutscene_intro"]
@@ -143,14 +100,14 @@ context = {
 "new_game": true
 }
 node_id = &"4a8867b7-0823-4346-9375-2dbbd1802f91"
-editor_position = Vector2(790, 170)
+editor_position = Vector2(500, 120)
 title_override = "Play Introduction"
 
 [sub_resource type="Resource" id="FlowRequestSave_intro_complete"]
 script = ExtResource("6_save")
 reason = &"intro_complete"
 node_id = &"e39a1011-a613-4931-97f7-b46079456b48"
-editor_position = Vector2(1060, 170)
+editor_position = Vector2(780, 120)
 title_override = "Checkpoint: Intro Complete"
 
 [sub_resource type="Resource" id="FlowLoadLevel_terrain"]
@@ -158,35 +115,28 @@ script = ExtResource("9_level")
 level_id = &"terrain_test"
 spawn_id = &"default"
 node_id = &"d719aec5-b9bb-4ef6-a976-02a2db42cc03"
-editor_position = Vector2(1340, 170)
+editor_position = Vector2(1060, 120)
 title_override = "Enter Terrain Test"
-
-[sub_resource type="Resource" id="FlowSetFlag_bootstrap_complete"]
-script = ExtResource("10_flag")
-flag_id = &"app_master_bootstrap_complete"
-node_id = &"ca435435-4812-4f0d-a2e2-a171290e6f70"
-editor_position = Vector2(1610, 170)
-title_override = "Remember Setup Is Complete"
 
 [sub_resource type="Resource" id="FlowRequestSave_entered"]
 script = ExtResource("6_save")
 reason = &"entered_terrain_test"
 node_id = &"62e1cb38-c942-44ce-a2ec-5ac6126e2cca"
-editor_position = Vector2(1870, 170)
+editor_position = Vector2(1340, 120)
 title_override = "Autosave Gameplay"
 
 [sub_resource type="Resource" id="FlowEmitEvent_ready"]
 script = ExtResource("11_emit")
 event_id = &"app_master_flow_ready"
 node_id = &"82f7c5b8-a340-4a09-af06-29d3e42e4a2f"
-editor_position = Vector2(2130, 170)
+editor_position = Vector2(1620, 120)
 title_override = "Tell Game: Gameplay Ready"
 
 [sub_resource type="Resource" id="FlowEnd_ready"]
 script = ExtResource("5_end")
 node_id = &"ac9e2c59-1e73-43e6-ac78-e96eff890f6b"
-editor_position = Vector2(2390, 170)
-title_override = "Gameplay"
+editor_position = Vector2(1900, 120)
+title_override = "Stop This Path"
 
 [sub_resource type="Resource" id="FlowEmitEvent_cutscene_failed"]
 script = ExtResource("11_emit")
@@ -195,7 +145,7 @@ data = {
 "stage": "intro_cutscene"
 }
 node_id = &"81381473-80df-4f46-b1f1-b663d646e340"
-editor_position = Vector2(1060, 370)
+editor_position = Vector2(780, 340)
 title_override = "Report Intro Failure"
 
 [sub_resource type="Resource" id="FlowEmitEvent_level_failed"]
@@ -205,20 +155,20 @@ data = {
 "stage": "terrain_test_load"
 }
 node_id = &"b70b64ae-b58c-4cf9-92c1-bd431779ecb0"
-editor_position = Vector2(1610, 370)
+editor_position = Vector2(1340, 340)
 title_override = "Report Level Failure"
 
 [sub_resource type="Resource" id="FlowEnd_failed"]
 script = ExtResource("5_end")
 node_id = &"e77fa25e-d4cc-4c4d-be06-237f19f8afea"
-editor_position = Vector2(1870, 430)
+editor_position = Vector2(1620, 400)
 title_override = "Stop After Failure"
 
 [resource]
 script = ExtResource("1_graph")
 display_name = "Main Game"
 description = "Application-owned master flow: durable New Game checkpoints, introduction, terrain installation, gameplay autosave, and readiness/failure routing."
-nodes = Array[ExtResource("14_node")]([SubResource("FlowGameStart_master"), SubResource("FlowIf_bootstrap_complete"), SubResource("FlowEnd_restored_bootstrap"), SubResource("FlowRequestSave_new_game"), SubResource("FlowPlayCutscene_intro"), SubResource("FlowRequestSave_intro_complete"), SubResource("FlowLoadLevel_terrain"), SubResource("FlowSetFlag_bootstrap_complete"), SubResource("FlowRequestSave_entered"), SubResource("FlowEmitEvent_ready"), SubResource("FlowEnd_ready"), SubResource("FlowEmitEvent_cutscene_failed"), SubResource("FlowEmitEvent_level_failed"), SubResource("FlowEnd_failed")])
-connections = Array[ExtResource("13_connection")]([SubResource("Connection_start_if"), SubResource("Connection_if_restored"), SubResource("Connection_if_new"), SubResource("Connection_save_initial_wait"), SubResource("Connection_intro_success"), SubResource("Connection_intro_failure"), SubResource("Connection_save_level_wait"), SubResource("Connection_level_success"), SubResource("Connection_level_failure"), SubResource("Connection_complete_autosave"), SubResource("Connection_autosave_ready"), SubResource("Connection_ready_end"), SubResource("Connection_intro_fail_end"), SubResource("Connection_level_fail_end")])
+nodes = Array[ExtResource("14_node")]([SubResource("FlowGameStart_master"), SubResource("FlowRequestSave_new_game"), SubResource("FlowPlayCutscene_intro"), SubResource("FlowRequestSave_intro_complete"), SubResource("FlowLoadLevel_terrain"), SubResource("FlowRequestSave_entered"), SubResource("FlowEmitEvent_ready"), SubResource("FlowEnd_ready"), SubResource("FlowEmitEvent_cutscene_failed"), SubResource("FlowEmitEvent_level_failed"), SubResource("FlowEnd_failed")])
+connections = Array[ExtResource("13_connection")]([SubResource("Connection_start_save"), SubResource("Connection_save_initial_wait"), SubResource("Connection_intro_success"), SubResource("Connection_intro_failure"), SubResource("Connection_save_level_wait"), SubResource("Connection_level_success"), SubResource("Connection_level_failure"), SubResource("Connection_autosave_ready"), SubResource("Connection_ready_end"), SubResource("Connection_intro_fail_end"), SubResource("Connection_level_fail_end")])
 editor_scroll_offset = Vector2(-251.83916, -236)
 editor_zoom = 0.44395858

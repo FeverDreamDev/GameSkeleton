@@ -28,6 +28,7 @@ const WaitTimerNodeScript := preload("res://addons/game_flow/data/flow_wait_time
 const WaitEventNodeScript := preload("res://addons/game_flow/data/flow_wait_event_node.gd")
 const IfNodeScript := preload("res://addons/game_flow/data/flow_if_node.gd")
 const ConditionScript := preload("res://addons/game_flow/data/flow_condition.gd")
+const SetFlagNodeScript := preload("res://addons/game_flow/data/flow_set_flag_node.gd")
 const PlayCutsceneNodeScript := preload("res://addons/game_flow/data/flow_play_cutscene_node.gd")
 const LoadLevelNodeScript := preload("res://addons/game_flow/data/flow_load_level_node.gd")
 const RequestSaveNodeScript := preload("res://addons/game_flow/data/flow_request_save_node.gd")
@@ -46,6 +47,7 @@ const LEVEL_ID := &"runtime_smoke_level"
 const LEVEL_SPAWN_ID := &"smoke_spawn"
 const SAVE_REASON := &"runtime_smoke_checkpoint"
 const SHARED_INPUT_LEASE_ID := &"shared_parallel_control"
+const GRAPH_FLAG_ID := &"runtime_smoke_graph_flag"
 
 const CUTSCENE_SCENE_PATH := "res://addons/game_flow/tests/fixtures/runtime_smoke_cutscene.tscn"
 const LEVEL_SCENE_PATH := "res://addons/game_flow/tests/fixtures/runtime_smoke_level.tscn"
@@ -197,6 +199,21 @@ func _build_master_graph():
 	var false_action = _action_node(&"false_action", MARKER_FALSE_BRANCH)
 	var false_probe_end = _end_node(&"false_probe_end")
 
+	# The graph itself writes both flag states. On is captured while this path waits and Off removes
+	# the flag when the saved event wait resumes.
+	var flag_on := SetFlagNodeScript.new()
+	flag_on.node_id = &"flag_on"
+	flag_on.flag_id = GRAPH_FLAG_ID
+	flag_on.flag_value = true
+	var flag_wait := WaitEventNodeScript.new()
+	flag_wait.node_id = &"flag_wait"
+	flag_wait.event_id = WAIT_EVENT_ID
+	var flag_off := SetFlagNodeScript.new()
+	flag_off.node_id = &"flag_off"
+	flag_off.flag_id = GRAPH_FLAG_ID
+	flag_off.flag_value = false
+	var flag_end = _end_node(&"flag_end")
+
 	# The injected sample of 0.999 falls in the final 1% branch. This proves authored weighting,
 	# stable named ports, deterministic runtime injection, and exactly-one-output traversal.
 	var random := RandomNodeScript.new()
@@ -234,6 +251,7 @@ func _build_master_graph():
 		call_subgraph, subgraph_parent_action, subgraph_failed_action,
 		subgraph_end, subgraph_failed_end,
 		false_probe, false_true, false_action, false_probe_end,
+		flag_on, flag_wait, flag_off, flag_end,
 		random, random_common_end, random_rare_end,
 		play_cutscene, load_level, request_save, operation_complete, operation_failed,
 		operation_end, operation_failed_end,
@@ -278,6 +296,11 @@ func _build_master_graph():
 	_wire(graph, &"false_true_failed_end", &"false_true", &"failed", &"false_probe_end")
 	_wire(graph, &"false_action_end", &"false_action", &"completed", &"false_probe_end")
 	_wire(graph, &"false_action_failed_end", &"false_action", &"failed", &"false_probe_end")
+
+	_wire(graph, &"fork_flag", &"fork", &"out", &"flag_on", 6)
+	_wire(graph, &"flag_on_wait", &"flag_on", &"out", &"flag_wait")
+	_wire(graph, &"flag_wait_off", &"flag_wait", &"out", &"flag_off")
+	_wire(graph, &"flag_off_end", &"flag_off", &"out", &"flag_end")
 
 	_wire(graph, &"fork_random", &"fork", &"out", &"random_probe", 5)
 	_wire(graph, &"random_common", &"random_probe", &"common", RANDOM_COMMON_END)
@@ -591,6 +614,8 @@ func _exercise_runtime_and_restore() -> void:
 		"Random chooses exactly one weighted output from the injected deterministic sample")
 	_check(not SystemScript.is_gameplay_input_enabled(),
 		"overlapping graph input leases disable gameplay input")
+	_check(StateScript.has_flag(GRAPH_FLAG_ID),
+		"Set Story Flag = On stores the flag before its path suspends")
 
 	var snapshot := SystemScript.graph_state_to_dict()
 	_check(not snapshot.is_empty(), "a waiting graph produces a runtime snapshot")
@@ -606,8 +631,8 @@ func _exercise_runtime_and_restore() -> void:
 	var snapshot_statuses := _snapshot_status_counts(snapshot)
 	_check(int(snapshot_statuses.get("timer", 0)) == 2,
 		"the snapshot records both independent timer waits")
-	_check(int(snapshot_statuses.get("event", 0)) == 1,
-		"the snapshot records the event wait")
+	_check(int(snapshot_statuses.get("event", 0)) == 2,
+		"the snapshot records both independent event waits")
 	_check(int(snapshot_statuses.get("subgraph", 0)) == 1,
 		"the snapshot records the structured parent subgraph wait")
 
@@ -622,15 +647,17 @@ func _exercise_runtime_and_restore() -> void:
 	_check(_system.graph_runner.is_suspended(), "restored execution remains suspended on request")
 	_check(not SystemScript.is_gameplay_input_enabled(),
 		"restored input leases re-establish disabled input")
-	_check(_system.graph_runner.active_token_count() == 4,
+	_check(_system.graph_runner.active_token_count() == 5,
 		"restore recreates each waiting token exactly once")
+	_check(StateScript.has_flag(GRAPH_FLAG_ID),
+		"the graph-authored On flag remains set across suspended graph restoration")
 
 	# Let the abandoned pre-restore timers expire. Their generation callbacks must be inert, while
 	# restored timers remain paused until resume().
 	await create_timer(0.45, true).timeout
 	_check(_provider_counts == before_restore_counts,
 		"cancelled timers and suspended restored timers do not advance paths")
-	_check(_system.graph_runner.active_token_count() == 4,
+	_check(_system.graph_runner.active_token_count() == 5,
 		"suspension preserves all restored waits")
 
 	SystemScript.resume_graph()
@@ -646,8 +673,8 @@ func _exercise_runtime_and_restore() -> void:
 		"the structured call does not take its failure output")
 	_check(not SystemScript.is_gameplay_input_enabled(),
 		"releasing the timer lease leaves input disabled while the event lease remains")
-	_check(_system.graph_runner.active_token_count() == 1,
-		"only the restored event waiter remains active")
+	_check(_system.graph_runner.active_token_count() == 2,
+		"only the two restored event waiters remain active")
 
 	# Emitting twice in one turn must consume the saved wait only once.
 	EventsScript.emit(WAIT_EVENT_ID, {"source_id": "runtime_smoke"})
@@ -662,6 +689,8 @@ func _exercise_runtime_and_restore() -> void:
 		"an existing waiter resumes before the same-event entry activates")
 	_check(SystemScript.is_gameplay_input_enabled(),
 		"input returns only after the final overlapping lease is released")
+	_check(not StateScript.has_flag(GRAPH_FLAG_ID),
+		"Set Story Flag = Off removes the flag and reads false")
 
 	_check(_entered(&"timer_wait") == 1,
 		"restoring a timer wait does not re-enter its authored node")
@@ -706,6 +735,13 @@ func _test_restore_rejections(snapshot: Dictionary) -> void:
 		(changed_type_rows[0] as Dictionary)["node_type_id"] = "changed_fixture_type"
 	_check(_restore_is_rejected_cleanly(changed_node_type),
 		"restore rejects a changed node type id instead of guessing compatibility")
+
+	var ownerless_input_lease := snapshot.duplicate(true)
+	var lease_rows: Array = ownerless_input_lease.get("input_leases", [])
+	if not lease_rows.is_empty() and lease_rows[0] is Dictionary:
+		(lease_rows[0] as Dictionary)["owners"] = []
+	_check(_restore_is_rejected_cleanly(ownerless_input_lease),
+		"restore rejects input leases without required token owners")
 
 
 func _restore_is_rejected_cleanly(snapshot: Dictionary) -> bool:
@@ -790,12 +826,13 @@ func _initial_wait_shape_ready() -> bool:
 		return false
 	var counts := _debug_status_counts()
 	return (
-		_system.graph_runner.active_token_count() == 4
+		_system.graph_runner.active_token_count() == 5
 		and int(counts.get("timer", 0)) == 2
-		and int(counts.get("event", 0)) == 1
+		and int(counts.get("event", 0)) == 2
 		and int(counts.get("subgraph", 0)) == 1
 		and _count(MARKER_FALSE_BRANCH) == 1
 		and _count(MARKER_OPERATION_COMPLETE) == 1
+		and StateScript.has_flag(GRAPH_FLAG_ID)
 	)
 
 
@@ -804,12 +841,16 @@ func _timer_and_subgraph_finished() -> bool:
 		_count(MARKER_TIMER) == 1
 		and _count(MARKER_SUBGRAPH) == 1
 		and _count(MARKER_SUBGRAPH_PARENT) == 1
-		and _system.graph_runner.active_token_count() == 1
+		and _system.graph_runner.active_token_count() == 2
 	)
 
 
 func _all_paths_finished() -> bool:
-	return _count(MARKER_EVENT_TRUE) == 1 and _system.graph_runner.active_token_count() == 0
+	return (
+		_count(MARKER_EVENT_TRUE) == 1
+		and not StateScript.has_flag(GRAPH_FLAG_ID)
+		and _system.graph_runner.active_token_count() == 0
+	)
 
 
 func _debug_status_counts() -> Dictionary:

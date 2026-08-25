@@ -4,12 +4,10 @@ extends SceneTree
 ## godot --path . --rendering-method gl_compatibility --script res://game/tests/app_flow_smoke.gd
 
 const TEST_SAVE_DIRECTORY_PREFIX := "res://.godot/app_flow_smoke_saves"
-const MASTER_BOOTSTRAP_FLAG := &"app_master_bootstrap_complete"
 const ROUND_TRIP_FLAG := &"app_flow_smoke_round_trip"
 const ROUND_TRIP_VALUE := &"app_flow_smoke_value"
 const ROUND_TRIP_SLOT := &"slot_2"
-const INTRO_PENDING_SLOT := &"slot_3"
-const LEVEL_PENDING_SLOT := &"slot_4"
+const PRE_INTRO_SLOT := &"slot_3"
 
 var _failures: PackedStringArray = []
 var _previous_save_directory: String
@@ -19,6 +17,7 @@ var _cutscenes_finished: Array[StringName] = []
 var _cutscenes_skipped: Array[bool] = []
 var _cutscene_start_payloads: Array[Dictionary] = []
 var _levels_entered: Array[StringName] = []
+var _graph_suspended_when_level_entered: Array[bool] = []
 
 
 func _initialize() -> void:
@@ -57,8 +56,9 @@ func _run() -> void:
 
 	app.flow_system.cutscene_started.connect(_on_cutscene_started)
 	app.flow_system.cutscene_finished.connect(_on_cutscene_finished)
-	app.flow_system.level_entered.connect(
-		func(id: StringName, _spawn: StringName) -> void: _levels_entered.append(id))
+	app.flow_system.level_entered.connect(func(id: StringName, _spawn: StringName) -> void:
+		_levels_entered.append(id)
+		_graph_suspended_when_level_entered.append(app.flow_system.graph_runner.is_suspended()))
 
 	_check(await _wait_for(
 		func() -> bool: return FlowSystem.get_mode() == FlowSystem.Mode.MENU,
@@ -71,6 +71,8 @@ func _run() -> void:
 	_check(master_graph != null
 		and master_graph.resource_path == "res://game/flow/master_game_flow.tres",
 		"the production master graph is application-owned outside addons")
+	_check(app.flow_system.database.validate().is_empty(),
+		"the simplified application database and master graph validate cleanly")
 	_check(app.flow_system.get_node_or_null("FlowGraphRunner") == app.flow_system.graph_runner,
 		"FlowGraphRunner is the high-level flow executor")
 
@@ -83,8 +85,6 @@ func _run() -> void:
 	_check(not pre_intro_payload.is_empty(),
 		"New Game autosave is readable when cutscene_started fires")
 	_check(pre_intro_payload.get("version", 0) == 2, "initial save carries the game version")
-	_check(pre_intro_payload.get("resume_phase", "") == "intro_pending",
-		"cutscene_started observes the intro_pending recovery phase")
 	_check(pre_intro_payload.get("flow", {}) is Dictionary,
 		"initial save carries FlowState")
 	_check(pre_intro_payload.get("flow_graph", {}) is Dictionary,
@@ -113,12 +113,8 @@ func _run() -> void:
 		"the FPS player remains a persistent actor")
 	_check(level != null and level.find_children("*", "Player", true, false).is_empty(),
 		"the streamed level does not create a second Player")
-	_check(FlowState.has_flag(MASTER_BOOTSTRAP_FLAG),
-		"the master graph records that application bootstrap completed")
 
 	var gameplay_payload := UISave.load_slot(UISave.autosave_id)
-	_check(gameplay_payload.get("resume_phase", "") == "gameplay",
-		"entered_terrain_test overwrites the recovery save as gameplay")
 	_check(gameplay_payload.get("player", {}) is Dictionary
 		and not (gameplay_payload.get("player", {}) as Dictionary).is_empty(),
 		"gameplay autosave captures the persistent player")
@@ -126,11 +122,6 @@ func _run() -> void:
 		"gameplay autosave carries the world payload")
 	_check(bool(gameplay_payload.get("world_active", false)),
 		"gameplay autosave records that its streamed world must be restored")
-	var gameplay_flow: Dictionary = gameplay_payload.get("flow", {})
-	var gameplay_flags: Array = gameplay_flow.get(FlowState.KEY_FLAGS, [])
-	_check(String(MASTER_BOOTSTRAP_FLAG) in gameplay_flags,
-		"gameplay autosave persists the master bootstrap guard")
-
 	_check(await _wait_for(
 		func() -> bool:
 			return int(app.rt_manager.get_profile_snapshot().get(
@@ -182,7 +173,9 @@ func _run() -> void:
 	_check(round_trip_world.has("TestReflector"),
 		"round-trip save uses the reflector's level-relative node path")
 
-	FlowState.clear_flag(ROUND_TRIP_FLAG)
+	FlowState.set_flag(ROUND_TRIP_FLAG, false)
+	_check(not FlowState.has_flag(ROUND_TRIP_FLAG),
+		"Set Story Flag = Off removes the flag and makes it false")
 	FlowState.erase_value(ROUND_TRIP_VALUE)
 	app.player.global_position += Vector3(3.0, 4.0, -2.0)
 	app.player.rotation.y = deg_to_rad(-52.0)
@@ -217,47 +210,30 @@ func _run() -> void:
 		and not reflector.visible,
 		"load restores TestReflector scene-relative transform and visibility")
 	_check(_cutscenes_started == [&"intro_blank"],
-		"a gameplay-phase rich load does not replay the intro")
+		"restoring a gameplay graph snapshot does not restart the master graph or replay the intro")
 	_check(_levels_entered == [&"terrain_test", &"terrain_test"],
-		"a gameplay-phase rich load reinstalls the saved level once")
+		"a gameplay graph snapshot reinstalls the saved level once")
+	_check(_graph_suspended_when_level_entered.size() >= 2
+		and _graph_suspended_when_level_entered[1],
+		"world restoration completes while graph execution is still suspended")
 
-	_check(UISave.save_slot(INTRO_PENDING_SLOT, pre_intro_payload) == OK,
-		"intro-pending recovery payload writes to an isolated slot")
-	app.call("_load_slot", INTRO_PENDING_SLOT)
+	_check(UISave.save_slot(PRE_INTRO_SLOT, pre_intro_payload) == OK,
+		"pre-intro graph checkpoint writes to an isolated slot")
+	app.call("_load_slot", PRE_INTRO_SLOT)
 	_check(await _wait_for(
 		func() -> bool: return _cutscenes_started.size() == 2,
-		900), "intro_pending load reaches its replayed intro")
+		900), "restoring the pre-intro graph continuation reaches its saved cutscene node")
 	if app.flow_system.is_playing_cutscene():
 		FlowSystem.skip_cutscene()
 	_check(await _wait_for(
 		func() -> bool: return _stable_gameplay(app),
-		3000), "intro_pending load replays the intro and reaches gameplay")
+		3000), "the restored pre-intro graph continuation reaches gameplay")
 	_check(_cutscenes_started == [&"intro_blank", &"intro_blank"]
 		and _cutscenes_finished == [&"intro_blank", &"intro_blank"]
 		and _cutscenes_skipped == [false, true],
-		"intro_pending routing replays and skips exactly one intro")
+		"the restored continuation executes its pending intro exactly once")
 	_check(_levels_entered.size() == 3,
-		"intro_pending routing installs terrain once after its intro")
-
-	# Graph snapshots are authoritative continuations, so changing only their version-1 resume_phase
-	# must not redirect them. Exercise level_pending through a genuine version-1 fixture instead.
-	var level_pending_payload := {
-		"version": 1,
-		"resume_phase": "level_pending",
-		"flow": (pre_intro_payload.get("flow", {}) as Dictionary).duplicate(true),
-		"player": {},
-		"world": {},
-	}
-	_check(UISave.save_slot(LEVEL_PENDING_SLOT, level_pending_payload) == OK,
-		"level-pending recovery payload writes to an isolated slot")
-	app.call("_load_slot", LEVEL_PENDING_SLOT)
-	_check(await _wait_for(
-		func() -> bool: return _stable_gameplay(app),
-		2400), "level_pending load reaches gameplay")
-	_check(_cutscenes_started.size() == 2,
-		"level_pending routing does not replay the intro")
-	_check(_levels_entered.size() == 4,
-		"level_pending routing installs terrain exactly once")
+		"the restored continuation installs terrain once after its intro")
 
 	_write_corrupt_slot(&"slot_1")
 	var corrupt_browser := SaveBrowser.new()

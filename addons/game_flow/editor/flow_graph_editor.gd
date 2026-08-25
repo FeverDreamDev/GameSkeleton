@@ -687,7 +687,7 @@ func _apply_palette_filter(filter_text: String) -> void:
 	for descriptor: Variant in _palette_entries:
 		var type_id := StringName(str(_read_value(descriptor, &"type_id", "")))
 		var display_name := str(_read_value(descriptor, &"display_name", type_id))
-		var category := str(_read_value(descriptor, &"category", "Custom"))
+		var category := str(_read_value(descriptor, &"category", "Other"))
 		var description := str(_read_value(descriptor, &"description", ""))
 		var haystack := "%s %s %s %s" % [type_id, display_name, category, description]
 		if not needle.is_empty() and not haystack.to_lower().contains(needle):
@@ -695,7 +695,7 @@ func _apply_palette_filter(filter_text: String) -> void:
 		var item_index := _palette.add_item("%s  ›  %s" % [category, display_name])
 		_palette.set_item_metadata(item_index, descriptor)
 		_palette.set_item_tooltip(item_index,
-			description if not description.is_empty() else "Custom game-flow step")
+			description if not description.is_empty() else "Game-flow step")
 	_palette_add.disabled = _graph == null or _palette.get_selected_items().is_empty()
 	if _palette.item_count == 0 and _palette_entries.is_empty():
 		_status.text = "No game-flow steps are available."
@@ -707,30 +707,7 @@ func _catalog_descriptors() -> Array:
 		var raw: Variant = catalog_script.call(&"descriptors")
 		if raw is Array:
 			return raw.duplicate()
-
-	# Extension fallback: discover globally named FlowGraphNode subclasses. This also keeps custom
-	# nodes authorable if a project intentionally omits the optional catalog helper.
-	var discovered: Array = []
-	var classes: Array[Dictionary] = ProjectSettings.get_global_class_list()
-	for entry: Dictionary in classes:
-		var class_name_text := StringName(str(entry.get("class", "")))
-		if class_name_text == &"FlowGraphNode" or not _inherits_global_class(class_name_text, &"FlowGraphNode", classes):
-			continue
-		var path := str(entry.get("path", ""))
-		var script: Variant = load(path) if not path.is_empty() else null
-		if script == null or not script.can_instantiate():
-			continue
-		var node: Variant = script.new()
-		if not node is Resource:
-			continue
-		discovered.append({
-			"type_id": _call_if_present(node, &"type_id", class_name_text),
-			"display_name": _call_if_present(node, &"display_title", class_name_text),
-			"category": "Custom",
-			"description": "",
-			"node_script": script,
-		})
-	return discovered
+	return []
 
 
 func _create_node_from_descriptor(descriptor: Variant) -> Resource:
@@ -744,11 +721,6 @@ func _create_node_from_descriptor(descriptor: Variant) -> Resource:
 		var from_catalog: Variant = catalog_script.call(&"create_node", type_id)
 		if from_catalog is Resource:
 			return from_catalog
-	var node_script: Variant = _read_value(descriptor, &"node_script", null)
-	if node_script != null and node_script.has_method(&"new"):
-		var from_script: Variant = node_script.call(&"new")
-		if from_script is Resource:
-			return from_script
 	return null
 
 
@@ -2521,22 +2493,6 @@ func _global_class_script(class_name_to_find: StringName) -> Script:
 func _new_global_class_instance(class_name_to_create: StringName) -> Object:
 	var script := _global_class_script(class_name_to_create)
 	return script.new() if script != null and script.can_instantiate() else null
-
-
-func _inherits_global_class(candidate: StringName, target: StringName, classes: Array[Dictionary]) -> bool:
-	var current := candidate
-	var visited: Dictionary = {}
-	while not current.is_empty() and not visited.has(current):
-		visited[current] = true
-		var base := StringName()
-		for entry: Dictionary in classes:
-			if StringName(str(entry.get("class", ""))) == current:
-				base = StringName(str(entry.get("base", "")))
-				break
-		if base == target:
-			return true
-		current = base
-	return false
 
 
 func _new_stable_id(prefix: StringName, additional_used: Dictionary = {}) -> StringName:
