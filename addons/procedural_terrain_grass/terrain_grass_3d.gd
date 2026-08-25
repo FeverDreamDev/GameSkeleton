@@ -120,7 +120,14 @@ signal grass_rebuilt(coord: Vector2i)
 # Keep in sync with TerrainSettings.
 @export var terrain_low_color: Color = Color(0.0040, 0.0278, 0.0008)
 @export var terrain_high_color: Color = Color(0.0054, 0.0376, 0.0011)
-@export var terrain_steep_color: Color = Color("665f55")
+# Scene-linear like the two above, and deliberately inside their ramp. It was an
+# sRGB hex swatch until it was measured against them: ARRAY_COLOR is never
+# sRGB-decoded, so #665f55 arrived as (0.400, 0.373, 0.333) radiance -- about
+# thirteen times the flat-ground green and warm with it, which painted every
+# slope a bright cream that showed straight through the blades. Grass grows on
+# these slopes too, so the rule the flats obey applies here unchanged: whatever
+# is authored has to disappear under the canopy. See TerrainGenerator.terrain_color.
+@export var terrain_steep_color: Color = Color(0.0047, 0.0327, 0.0010)
 @export var terrain_height_color_min: float = -10.0
 @export var terrain_height_color_max: float = 16.0
 @export_range(0.0, 1.0, 0.01) var terrain_steep_normal_y: float = 0.82
@@ -161,6 +168,17 @@ signal grass_rebuilt(coord: Vector2i)
 ## their shell to the top, so reflecting the full height reads as a step up out
 ## of the ground.
 @export_range(0.0, 1.0, 0.01) var grass_canopy_fill: float = 0.8
+## Strength of the blade-scale variation a mirror sees on the reflected canopy.
+## The published colour is an average of the blade gradient, and averaging is
+## what makes a reflected field read as a flat painted plane next to grass that
+## visibly has blades in it; this puts the spread back per pixel. Zero publishes
+## the average unchanged. It is texture on a stand-in surface, not traced grass,
+## so it cannot silhouette and pushing it high reads as noise rather than detail.
+@export_range(0.0, 1.0, 0.01) var reflection_grass_detail: float = 0.55
+## How far towards a blade's shaded base the darkest reflected cell reaches.
+## The default is the depth of the shell shader's own base-to-tip value ramp,
+## which is what keeps the two looking like the same grass.
+@export_range(0.0, 1.0, 0.01) var reflection_grass_ramp_depth: float = 0.28
 ## Left empty, the node finds the manager by group and then by tree search.
 @export_node_path("Node") var rt_scene_manager_path: NodePath = ^""
 
@@ -1012,6 +1030,21 @@ func _publish_reflection_ground() -> void:
 		_ground_bake_result["window_size"],
 		height_range,
 		_reflection_ground_ambient())
+	# Pushed alongside the layer rather than baked into it: the march resolves
+	# one smooth canopy and this is the per-pixel spread the bake averaged away,
+	# so it belongs to the shader that shades the surface, not to the surface.
+	# Blade frequency is grass_density unchanged, because that is the same grid
+	# grass_shell.gdshader lays its stalks on -- reflected blades landing on a
+	# different pitch than the real ones is what would read as noise. The fade
+	# reach is the load distance: past it there is no streamed grass to stand in
+	# for, and fog has closed over whatever the mirror shows there anyway.
+	if _rt_manager.has_method(&"configure_ground_grass"):
+		_rt_manager.call(
+			&"configure_ground_grass",
+			grass_density,
+			reflection_grass_detail if grass_enabled else 0.0,
+			reflection_grass_ramp_depth,
+			terrain_load_distance)
 	_ground_layer_published = true
 	_ground_bake_result = {}
 

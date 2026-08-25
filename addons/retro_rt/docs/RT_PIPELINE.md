@@ -624,7 +624,7 @@ square window in world XZ:
   stands on it. The reflected surface is therefore the canopy, and grass appears
   in mirrors without one blade being traced.
 
-Five `vec4`s carry the rest, riding in `FrameData` next to the cloud layer:
+Six `vec4`s carry the rest, riding in `FrameData` next to the cloud layer:
 
 | | x | y | z | w |
 |---|---|---|---|---|
@@ -633,6 +633,7 @@ Five `vec4`s carry the rest, riding in `FrameData` next to the cloud layer:
 | `ground_sun_direction` | direction to sun | | | 1 when lit |
 | `ground_sun_radiance` | colour scaled by energy | | | unused |
 | `ground_ambient` | ambient radiance | | | unused |
+| `ground_grass` | blade cells per metre | detail strength | ramp depth | detail fade distance |
 
 `ground_params.w` doubles as the disable switch, the way `cloud_params.y` does:
 a zero step count leaves the miss path byte-identical to what it was before the
@@ -641,7 +642,10 @@ owns rather than values the producer chooses, so both are resolved when the
 snapshot commits. The march is capped at `fog_end`, because past it the ground
 has already resolved to what the sky shows there.
 
-`rt_ground_reflection()` is duplicated byte-identically in
+`ground_grass.y` is the second disable switch: a zero detail strength publishes
+the baked canopy unchanged, which is what a scene with no grass gets.
+
+`rt_ground_shade()` and the rest of the block are duplicated byte-identically in
 `addons/retro_rt/shaders/rt_shadow_reflect.glsl` and
 `addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc`, for the same
 reason `rt_fog_factor` is: an `RDShaderFile` cannot include a `.gdshaderinc`.
@@ -663,15 +667,49 @@ Three properties of the march are load-bearing rather than tuning:
   reflector is inside the layer. Marching on would find no crossing and let sky
   out through the underside of the reflector.
 
-A ground hit is shaded with ambient plus one directional term, takes the same
-`dnc_cloud_shadow()` the real ground does, and then fades on `rt_fog_factor` into
-exactly what the ray would have returned had it missed. Fading to the flat fog
-colour instead leaves a visible step at the fog boundary, because below the
-horizon a sky is free to draw something other than its horizon band, and a mirror
-shows both sides of that boundary at once.
+A ground hit is shaded with ambient plus one directional term and then fades on
+`rt_fog_factor` into exactly what the ray would have returned had it missed.
+Fading to the flat fog colour instead leaves a visible step at the fog boundary,
+because below the horizon a sky is free to draw something other than its horizon
+band, and a mirror shows both sides of that boundary at once.
 
-This is a stand-in for ground, not a second renderer. It has no blade detail, no
-shadows cast onto it, and no reflection of its own.
+Both shadow terms — the cloud layer and the ray below — attenuate that
+directional term and leave the ambient alone, which is what the primary paths do
+when they scale `direct` and add ambient separately. Scaling the whole lit value
+instead takes the ambient with it, and under an overcast sky that drops the
+reflected ground to pure black while the terrain and grass it stands in for stay
+plainly visible.
+
+Tracing and shading are two calls, not one, because a real ray belongs between
+them. When the reflector sets `reflection_shadows_enabled`, the caller traces one
+occlusion ray from the ground hit towards the sun with traversal mask `0x01`,
+bounded by the same fog-capped march distance, and passes the result to
+`rt_ground_shade()` as `sun_visibility`. That is what puts a cube's shadow onto
+the ground a mirror shows. The ray cannot live inside the canonical block: the
+two backends trace with `traceRayEXT` and `swrt_trace_scene` respectively, and
+the block has to stay byte-identical. Nothing can self-intersect here, because
+the ground is not in the acceleration structure at all. A caller that traces no
+ray passes `1.0` and gets the pre-shadow result exactly.
+
+Blade detail is the other half. The producer bakes an *average* of the blade
+gradient into RGB, and averaging is precisely what makes a reflected field read
+as a flat painted plane beside grass that visibly has blades in it, so
+`rt_ground_blade_detail()` puts the spread back per pixel: one cell hash on the
+hit's world XZ at the producer's own blade pitch, shaped by the same
+base-to-tip value ramp `grass_shell.gdshader` gives a real blade. Two properties
+of it are load-bearing rather than tuning:
+
+- **It fades out with distance.** Nothing in this renderer filters temporally
+  and a mirror shows a great deal of distance in very few pixels, so detail held
+  at full strength to the fog boundary crawls as the camera turns.
+- **The hash calls no trig.** Cell indices reach the thousands at blade pitch
+  across the window, and `sin()` of an argument that large loses enough 32-bit
+  precision to print axis-aligned rectangles — the same failure documented for
+  the cloud layer, which is why the hash is the same integer-mixing shape.
+
+This is still a stand-in for ground rather than a second renderer. The detail is
+texture on one smooth marched surface: it cannot silhouette, the blades cast
+nothing, and the layer has no reflection of its own.
 
 ## Shared rays, lighting, and materials
 
@@ -683,9 +721,11 @@ shadows cast onto it, and no reflection of its own.
 - Mirror pixels launch one sharp reflection ray. A hit receives ambient,
   emission, and direct lighting but cannot launch a second reflection.
 - `reflection_shadows_enabled` is a default-off per-mirror option. When enabled,
+  a reflection that resolves against the analytic ground layer also traces one
+  sun-visibility ray, so a mirror shows shadows on reflected ground as well, and
   a reflection hit may select one eligible light for one additional shadow ray.
-- Disabled/zero-strength mirrors, misses, and reflection hits without an
-  eligible light do not launch a reflected-shadow ray.
+- Disabled/zero-strength mirrors, environment misses, and reflection hits
+  without an eligible light do not launch a reflected-shadow ray.
 - Area lights intentionally use a hard center-point approximation.
 - Ray origin bias and maximum distance, cull/receiver layers, instance masks,
   `cast_shadow`, reflected lighting, normal transforms, and texture rules are

@@ -13,9 +13,10 @@ const INDEX_STRIDE := 4
 const INSTANCE_RECORD_SIZE := 64
 const MATERIAL_RECORD_SIZE := 128
 const MAX_LIGHT_RECORDS := 256
-# std140 FrameData is mat4 + 16 vec4 = 20 vec4. Keep in step with the FrameData
-# block in rt_shadow_reflect.glsl; a mismatch fails loudly in _update_frame_ubo.
-const FRAME_UBO_FLOATS := 100
+# std140 FrameData is one mat4 at offset 0 plus 22 vec4, so 26 vec4 of floats.
+# Keep in step with the FrameData block in rt_shadow_reflect.glsl; a mismatch
+# fails loudly in _update_frame_ubo.
+const FRAME_UBO_FLOATS := 104
 
 const PROFILE_TLAS_BEGIN := "RetroRT/TLAS begin"
 const PROFILE_TLAS_END := "RetroRT/TLAS end"
@@ -918,6 +919,7 @@ func _update_frame_ubo(
 	var ground_ambient: Color = snapshot.get("ground_ambient", Color.BLACK)
 	_set_frame_vec4(96, Vector4(
 		ground_ambient.r, ground_ambient.g, ground_ambient.b, 0.0))
+	_set_frame_vec4(100, snapshot.get("ground_grass", Vector4.ZERO))
 	var bytes := _frame_values_cache.to_byte_array()
 	if rd.buffer_update(frame_ubo, 0, bytes.size(), bytes) != OK:
 		_fail("Unable to update the RT frame UBO.")

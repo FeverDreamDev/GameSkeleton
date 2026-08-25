@@ -93,7 +93,7 @@ Authored parameters:
 | `triplanar_enabled`, `triplanar_world_space`, `triplanar_scale`, `triplanar_offset`, `triplanar_sharpness` | | for UV-less geometry |
 | `shininess` | `1..256` | Blinn-Phong exponent |
 | `direct_specular_intensity` | `0..2` | |
-| `mirror_enabled`, `reflection_strength`, `reflection_shadows_enabled` | | per-material RT reflection controls |
+| `mirror_enabled`, `reflection_strength`, `reflection_shadows_enabled` | | per-material RT reflection controls; the shadow toggle covers reflected geometry and the analytic ground alike |
 
 `rt_pipeline_active`, `rt_material_id`, `rt_has_albedo_texture`,
 `rt_has_normal_texture` and the `rt_instance_id` instance uniform are written by

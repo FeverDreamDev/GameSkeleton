@@ -54,7 +54,7 @@ uniform vec4 swrt_cloud_motion = vec4(0.0);
 uniform vec3 swrt_cloud_sun_direction = vec3(0.0, 1.0, 0.0);
 // Analytic ground layer pushed by a terrain system, so a reflection that
 // misses the acceleration structure can still resolve the ground its streamed
-// chunks are deliberately kept out of. See rt_ground_reflection. The sampler
+// chunks are deliberately kept out of. See rt_ground_shade. The sampler
 // is filter_nearest for the same reason the panorama above is: the hardware
 // backend fetches texels and blends them itself, and a filtered sample here
 // would round differently on another driver and break that parity.
@@ -71,6 +71,10 @@ uniform vec4 swrt_ground_sun_direction = vec4(0.0, 1.0, 0.0, 0.0);
 uniform vec4 swrt_ground_sun_radiance = vec4(0.0);
 // rgb=ambient radiance the ground receives, w unused.
 uniform vec4 swrt_ground_ambient = vec4(0.0);
+// Blade detail for the reflected canopy, which the march resolves as one smooth
+// surface. x=blade cells per metre, y=detail strength (zero disables), z=value
+// ramp depth, w=fade distance in metres. See rt_ground_blade_detail.
+uniform vec4 swrt_ground_grass = vec4(0.0);
 uniform int swrt_environment_mode = 0;
 uniform vec3 swrt_environment_basis_x = vec3(1.0, 0.0, 0.0);
 uniform vec3 swrt_environment_basis_y = vec3(0.0, 1.0, 0.0);
@@ -280,6 +284,9 @@ float dnc_cloud_shadow(
 // step count (zero disables the layer).
 // bounds: x=lowest canopy height, y=highest canopy height, z=maximum march
 // distance, w=texel size in metres.
+// grass: x=blade cells per metre, y=blade detail strength (zero disables the
+// detail and leaves the reflected canopy exactly as the producer baked it),
+// z=value ramp depth, w=distance in metres over which the detail fades out.
 const int RT_GROUND_REFINE_STEPS = 4;
 
 
@@ -419,13 +426,62 @@ bool rt_ground_trace(
 }
 
 
-// One reflection miss resolved against the ground instead of the sky. Returns
-// false when the ray leaves the window without crossing the canopy, which is
-// the caller's signal to fall back to the environment exactly as before.
-bool rt_ground_reflection(
+// Blade-scale variation for the reflected canopy. The march resolves one
+// surface, so this is texture rather than geometry: the producer already baked
+// the average canopy radiance into RGB, and this puts back the spread between a
+// blade's shaded base and its lit tip that the averaging took out. Without it a
+// field of grass reflects as a flat painted plane, which is the one thing a
+// mirror makes obvious about a heightfield standing in for geometry.
+//
+// The distance fade is not a quality option. Nothing in this renderer filters
+// temporally, and a mirror shows a great deal of distance in very few pixels,
+// so a modulation held at full strength out to the fog boundary crawls as the
+// camera turns. Past grass.w the reflection is the flat canopy it was before.
+vec3 rt_ground_blade_detail(
+		vec4 grass,
+		vec3 albedo,
+		vec3 hit_position,
+		float hit_distance) {
+	if (grass.y <= 0.0 || grass.x <= 0.0) {
+		return albedo;
+	}
+	float fade = grass.w > 0.0
+		? clamp(1.0 - hit_distance / grass.w, 0.0, 1.0)
+		: 1.0;
+	if (fade <= 0.0) {
+		return albedo;
+	}
+	// Deliberately not the usual fract(sin(dot(...))) hash, for exactly the
+	// reason the cloud layer above avoids one: cell indices run into the
+	// thousands at blade frequency across the window, and sin() of an argument
+	// that large loses enough precision in 32-bit float that the hash prints
+	// axis-aligned rectangles across the reflection instead of blades.
+	vec2 cell = floor(hit_position.xz * grass.x);
+	vec3 scattered = fract(vec3(cell.x, cell.y, cell.x) * vec3(0.1031, 0.1030, 0.0973));
+	scattered += dot(scattered, vec3(scattered.y, scattered.z, scattered.x) + 33.33);
+	float random_value = fract((scattered.x + scattered.y) * scattered.z);
+	// The same shape the shell shader gives a blade up its height: darker at the
+	// base than at the tip. Reusing that curve rather than a symmetric noise is
+	// what makes this read as a field of blades rather than as grain.
+	float ramp = mix(1.0 - clamp(grass.z, 0.0, 1.0), 1.0, random_value);
+	return albedo * mix(1.0, ramp, clamp(grass.y, 0.0, 1.0) * fade);
+}
+
+
+// One reflection miss resolved against the ground instead of the sky, shaded
+// from a hit the caller already holds. Tracing and shading are separate calls
+// because the sun-visibility test that belongs between them is a real ray, and
+// the two backends trace a ray with different intrinsics. Keeping that one step
+// outside this block is what lets the block stay byte-identical in both copies.
+//
+// sun_visibility is 1.0 for an unoccluded ground hit and 0.0 for a shadowed one.
+// A caller that traces no shadow ray passes 1.0 and gets exactly what this
+// returned before the ray existed.
+vec3 rt_ground_shade(
 		sampler2D ground_map,
 		vec4 params,
 		vec4 bounds,
+		vec4 grass,
 		vec4 sun_direction,
 		vec4 sun_radiance,
 		vec4 ambient,
@@ -434,28 +490,31 @@ bool rt_ground_reflection(
 		vec3 cloud_sun_direction,
 		vec4 fog_params,
 		vec3 environment_radiance,
-		vec3 origin,
-		vec3 direction,
-		out vec3 radiance) {
-	radiance = vec3(0.0);
-	vec3 hit_position = origin;
-	float hit_distance = 0.0;
-	if (!rt_ground_trace(
-			ground_map, params, bounds, origin, direction, hit_position, hit_distance)) {
-		return false;
-	}
-	vec3 albedo = rt_ground_sample(ground_map, params, hit_position).rgb;
+		vec3 hit_position,
+		float hit_distance,
+		float sun_visibility) {
+	vec3 albedo = rt_ground_blade_detail(
+		grass,
+		rt_ground_sample(ground_map, params, hit_position).rgb,
+		hit_position,
+		hit_distance);
 	vec3 normal = rt_ground_normal(ground_map, params, bounds, hit_position);
 	float n_dot_l = max(dot(normal, sun_direction.xyz), 0.0) * sun_direction.w;
-	vec3 lit = albedo * (ambient.rgb + sun_radiance.rgb * n_dot_l);
-	lit *= 1.0 - dnc_cloud_shadow(cloud_params, cloud_motion, hit_position, cloud_sun_direction);
+	// Both shadow terms attenuate the sun and leave the ambient alone, which is
+	// what every managed surface does: the primary paths scale `direct` by the
+	// cloud and add ambient separately. Scaling the whole lit value instead --
+	// as this did until a dense cloud made it obvious -- takes ambient with it
+	// and drops the reflected ground to pure black under an overcast sky, while
+	// the terrain and grass it stands in for stay plainly visible.
+	float sun = n_dot_l * sun_visibility * (1.0 - dnc_cloud_shadow(
+		cloud_params, cloud_motion, hit_position, cloud_sun_direction));
+	vec3 lit = albedo * (ambient.rgb + sun_radiance.rgb * sun);
 	// Fades into exactly what this ray would have returned had it missed, which
 	// is what the caller passes in. Fading to the flat fog colour instead leaves
 	// a visible step at the fog boundary, because below the horizon a sky is
 	// free to draw something other than its horizon band, and the mirror shows
 	// both sides of that boundary at once.
-	radiance = mix(lit, environment_radiance, rt_fog_factor(fog_params, hit_distance));
-	return true;
+	return mix(lit, environment_radiance, rt_fog_factor(fog_params, hit_distance));
 }
 
 
@@ -803,10 +862,45 @@ void fragment() {
 				// the march finds no ground, and the target the ground fades into
 				// when it does, which keeps the two continuous at the fog boundary.
 				vec3 environment_radiance = sample_environment_miss(reflection_direction);
-				if (!rt_ground_reflection(
+				vec3 ground_hit;
+				float ground_distance;
+				if (rt_ground_trace(
 						swrt_ground_map,
 						swrt_ground_params,
 						swrt_ground_bounds,
+						reflection_origin,
+						reflection_direction,
+						ground_hit,
+						ground_distance)) {
+					// The ground is not in the BVH, so this ray can only ever find
+					// real managed geometry between the reflected ground and the
+					// sun -- there is nothing here to self-intersect with, and the
+					// bias exists only to keep the origin off the sun-facing plane.
+					// Bounded by the march distance the manager already fog-caps,
+					// so a reflected shadow never outruns the ground it lands on.
+					float sun_visibility = 1.0;
+					if (primary_material.emission_flags.w >= 0.5
+							&& swrt_ground_sun_direction.w >= 0.5) {
+						SWRTHit ground_shadow_hit;
+						bool ground_shadow_overflow;
+						bool ground_obstructed = swrt_trace_scene(
+							swrt_context,
+							ground_hit + swrt_ground_sun_direction.xyz * ray_bias,
+							swrt_ground_sun_direction.xyz,
+							ray_bias,
+							max(swrt_ground_bounds.z, ray_bias),
+							1u,
+							true,
+							ground_shadow_hit,
+							ground_shadow_overflow);
+						malformed = malformed || ground_shadow_overflow;
+						sun_visibility = ground_obstructed ? 0.0 : 1.0;
+					}
+					reflected_radiance = rt_ground_shade(
+						swrt_ground_map,
+						swrt_ground_params,
+						swrt_ground_bounds,
+						swrt_ground_grass,
 						swrt_ground_sun_direction,
 						swrt_ground_sun_radiance,
 						swrt_ground_ambient,
@@ -815,9 +909,10 @@ void fragment() {
 						swrt_cloud_sun_direction,
 						swrt_fog_params,
 						environment_radiance,
-						reflection_origin,
-						reflection_direction,
-						reflected_radiance)) {
+						ground_hit,
+						ground_distance,
+						sun_visibility);
+				} else {
 					reflected_radiance = environment_radiance;
 				}
 			}

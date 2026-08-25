@@ -338,17 +338,19 @@ var _snapshot_cloud_sun := Vector3.UP
 # chunk churn never rebuilds the TLAS, and shell grass is vertex-deformed and
 # so outside the managed contract entirely. Neither can be traced, which leaves
 # this heightfield as the only thing a reflection ray has to resolve the ground
-# against. See rt_ground_reflection in
+# against. See rt_ground_shade in
 # addons/retro_rt/shaders/rt_shadow_reflect.glsl.
 var _ground_texture: ImageTexture
 var _ground_params := Vector4.ZERO
 var _ground_bounds := Vector4.ZERO
 var _ground_ambient := Color.BLACK
+var _ground_grass := Vector4.ZERO
 var _ground_revision := 0
 var _snapshot_ground_texture: ImageTexture
 var _snapshot_ground_params := Vector4.ZERO
 var _snapshot_ground_bounds := Vector4.ZERO
 var _snapshot_ground_ambient := Color.BLACK
+var _snapshot_ground_grass := Vector4.ZERO
 var _snapshot_ground_revision := -1
 var _snapshot_ground_sun_direction := Vector3.UP
 var _snapshot_ground_sun_radiance := Color.BLACK
@@ -1615,6 +1617,39 @@ func configure_ground_layer(
 	_ground_revision += 1
 
 
+## Blade-scale variation for the reflected canopy, which the heightfield above
+## resolves as one smooth surface. The producer bakes an average of the blade
+## gradient into that surface's colour, and averaging is exactly what removes
+## the thing a mirror makes obvious: without this the reflected field is a flat
+## painted plane next to grass that visibly has blades in it.
+##
+## [param blade_frequency] is blade cells per metre, the same figure the grass
+## renderer lays its stalks on. [param detail_strength] is 0..1 and zero is the
+## off switch, leaving the reflected canopy exactly as it was baked.
+## [param ramp_depth] is how far towards a blade's shaded base the darkest cell
+## reaches. [param fade_distance] is where the detail has faded out completely;
+## it exists because nothing here filters temporally and an unfaded per-pixel
+## modulation crawls in the distance, so pass the reach the ground layer itself
+## is useful over rather than something larger.
+##
+## This is texture on a stand-in surface, not traced grass. It cannot silhouette,
+## cast, or receive anything.
+func configure_ground_grass(
+		blade_frequency: float,
+		detail_strength: float,
+		ramp_depth: float,
+		fade_distance: float) -> void:
+	var next_grass := Vector4(
+		maxf(blade_frequency, 0.0),
+		clampf(detail_strength, 0.0, 1.0),
+		clampf(ramp_depth, 0.0, 1.0),
+		maxf(fade_distance, 0.0))
+	if next_grass == _ground_grass:
+		return
+	_ground_grass = next_grass
+	_ground_revision += 1
+
+
 ## The producer supplies the window and the heights it baked; the march step
 ## count and the march distance are ray budget this manager owns, so they are
 ## resolved here rather than at configure_ground_layer() time. The snapshot and
@@ -1643,6 +1678,7 @@ func get_ground_layer() -> Dictionary:
 		"params": resolved[0],
 		"bounds": resolved[1],
 		"ambient": _ground_ambient,
+		"grass": _ground_grass,
 		"sun_direction": _snapshot_ground_sun_direction,
 		"sun_radiance": _snapshot_ground_sun_radiance,
 		"sun_enabled": _snapshot_ground_sun_enabled,
@@ -3610,6 +3646,7 @@ func _publish_snapshot() -> void:
 		or next_ground_params != _snapshot_ground_params
 		or next_ground_bounds != _snapshot_ground_bounds
 		or _ground_ambient != _snapshot_ground_ambient
+		or _ground_grass != _snapshot_ground_grass
 		or next_ground_sun_direction != _snapshot_ground_sun_direction
 		or next_ground_sun_radiance != _snapshot_ground_sun_radiance
 		or next_ground_sun_enabled != _snapshot_ground_sun_enabled
@@ -3646,6 +3683,7 @@ func _publish_snapshot() -> void:
 	_snapshot_ground_params = next_ground_params
 	_snapshot_ground_bounds = next_ground_bounds
 	_snapshot_ground_ambient = _ground_ambient
+	_snapshot_ground_grass = _ground_grass
 	_snapshot_ground_revision = _ground_revision
 	_snapshot_ground_sun_direction = next_ground_sun_direction
 	_snapshot_ground_sun_radiance = next_ground_sun_radiance
@@ -3721,6 +3759,7 @@ func _commit_current_snapshot() -> void:
 		"ground_params": _snapshot_ground_params,
 		"ground_bounds": _snapshot_ground_bounds,
 		"ground_ambient": _snapshot_ground_ambient,
+		"ground_grass": _snapshot_ground_grass,
 		"ground_revision": _snapshot_ground_revision,
 		"ground_sun_direction": _snapshot_ground_sun_direction,
 		"ground_sun_radiance": _snapshot_ground_sun_radiance,

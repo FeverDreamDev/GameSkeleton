@@ -3,6 +3,21 @@ extends FlowLevel
 
 ## Small integration level for the procedural terrain, grass, FPS controller,
 ## game-flow spawn contract, and the persistent Retro RT renderer.
+##
+## This scene deliberately holds no RTSceneManager, so the editor viewport shows
+## plain raster with Godot's own shadow maps. Soft, low-resolution shadows on the
+## test caster and reflector while editing are that, not an RT regression. The
+## manager is persistent and lives in the app shell (game/app/main.tscn) because
+## RT owns root-Viewport state across level transitions, and only one is allowed
+## per Viewport; a second one here would refuse to start the moment this level
+## was installed. Previewing it here would also stay half a picture regardless:
+## RTPostProcessStack.configure() sets disable_3d on the root and presents
+## through a CanvasLayer, which in the editor blanks the viewport and its gizmos,
+## so an editor preview is RT shadows and reflections with no SMAA, FSR or grade.
+##
+## The runtime is the authoritative image. GameApp._renderer_summary() reports
+## the live backend on the boot screen and under the main-menu title, which is
+## the quickest way to confirm RT actually started.
 
 const SPAWN_CLEARANCE := 0.08
 

@@ -102,6 +102,7 @@ var _ground_texture: Texture2D
 var _ground_params := Vector4.ZERO
 var _ground_bounds := Vector4.ZERO
 var _ground_ambient := Color.BLACK
+var _ground_grass := Vector4.ZERO
 var _ground_sun_direction := Vector3.UP
 var _ground_sun_radiance := Color.BLACK
 var _ground_sun_enabled := false
@@ -333,6 +334,7 @@ func update(snapshot: Dictionary, _retro_settings: Dictionary = {}) -> String:
 	var next_ground_params: Vector4 = snapshot.get("ground_params", Vector4.ZERO)
 	var next_ground_bounds: Vector4 = snapshot.get("ground_bounds", Vector4.ZERO)
 	var next_ground_ambient: Color = snapshot.get("ground_ambient", Color.BLACK)
+	var next_ground_grass: Vector4 = snapshot.get("ground_grass", Vector4.ZERO)
 	var next_ground_sun_direction: Vector3 = snapshot.get("ground_sun_direction", Vector3.UP)
 	var next_ground_sun_radiance: Color = snapshot.get("ground_sun_radiance", Color.BLACK)
 	var next_ground_sun_enabled := bool(snapshot.get("ground_sun_enabled", false))
@@ -340,6 +342,7 @@ func update(snapshot: Dictionary, _retro_settings: Dictionary = {}) -> String:
 			or next_ground_params != _ground_params
 			or next_ground_bounds != _ground_bounds
 			or next_ground_ambient != _ground_ambient
+			or next_ground_grass != _ground_grass
 			or next_ground_sun_direction != _ground_sun_direction
 			or next_ground_sun_radiance != _ground_sun_radiance
 			or next_ground_sun_enabled != _ground_sun_enabled):
@@ -347,6 +350,7 @@ func update(snapshot: Dictionary, _retro_settings: Dictionary = {}) -> String:
 		_ground_params = next_ground_params
 		_ground_bounds = next_ground_bounds
 		_ground_ambient = next_ground_ambient
+		_ground_grass = next_ground_grass
 		_ground_sun_direction = next_ground_sun_direction
 		_ground_sun_radiance = next_ground_sun_radiance
 		_ground_sun_enabled = next_ground_sun_enabled
@@ -493,6 +497,7 @@ func shutdown() -> void:
 	_ground_params = Vector4.ZERO
 	_ground_bounds = Vector4.ZERO
 	_ground_ambient = Color.BLACK
+	_ground_grass = Vector4.ZERO
 	_ground_sun_direction = Vector3.UP
 	_ground_sun_radiance = Color.BLACK
 	_ground_sun_enabled = false
@@ -1202,6 +1207,7 @@ func _sync_frame_uniforms() -> void:
 		clone.set_shader_parameter(&"swrt_ground_params", _ground_params)
 		clone.set_shader_parameter(&"swrt_ground_bounds", _ground_bounds)
 		clone.set_shader_parameter(&"swrt_ground_ambient", _ground_ambient)
+		clone.set_shader_parameter(&"swrt_ground_grass", _ground_grass)
 		clone.set_shader_parameter(&"swrt_ground_sun_direction", Vector4(
 			_ground_sun_direction.x,
 			_ground_sun_direction.y,

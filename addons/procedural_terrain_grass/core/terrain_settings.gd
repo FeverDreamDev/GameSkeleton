@@ -44,7 +44,7 @@ var height_amplitude: float = 14.0
 # Scene-linear, mirroring TerrainGrass3D. See TerrainGenerator.terrain_color.
 var terrain_low_color: Color = Color(0.0040, 0.0278, 0.0008)
 var terrain_high_color: Color = Color(0.0054, 0.0376, 0.0011)
-var terrain_steep_color: Color = Color("665f55")
+var terrain_steep_color: Color = Color(0.0047, 0.0327, 0.0010)
 var terrain_height_color_min: float = -10.0
 var terrain_height_color_max: float = 16.0
 var terrain_steep_normal_y: float = 0.82
