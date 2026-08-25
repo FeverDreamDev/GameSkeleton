@@ -8,7 +8,7 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "End"
+	return title_override if not title_override.is_empty() else "Stop This Path"
 
 
 func output_ports() -> Array[StringName]:

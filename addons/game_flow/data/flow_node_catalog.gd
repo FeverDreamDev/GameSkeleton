@@ -141,18 +141,21 @@ static func _ensure_builtins() -> void:
 static func _builtin_category(type_id: StringName) -> String:
 	match type_id:
 		&"game_start", &"event_entry", &"end":
-			return "Flow"
-		&"if", &"parallel", &"random", &"subgraph_entry", &"subgraph_exit", \
-				&"call_subgraph":
-			return "Control"
+			return "Start & Finish"
+		&"if", &"parallel", &"random":
+			return "Choices & Paths"
+		&"subgraph_entry", &"subgraph_exit", &"call_subgraph":
+			return "Subgraphs"
 		&"set_flag", &"clear_flag", &"set_value":
-			return "State"
+			return "Story State"
 		&"wait_timer", &"wait_event", &"emit_event":
 			return "Events & Timing"
-		&"play_cutscene", &"preload_level", &"load_level", &"request_save":
-			return "Game Flow"
+		&"play_cutscene", &"preload_level", &"load_level":
+			return "Levels & Cutscenes"
+		&"request_save":
+			return "Saving"
 		&"disable_input", &"enable_input":
-			return "Input"
+			return "Player"
 		&"invoke_action":
 			return "Game Actions"
 	return "Other"
@@ -160,14 +163,50 @@ static func _builtin_category(type_id: StringName) -> String:
 
 static func _builtin_description(type_id: StringName) -> String:
 	match type_id:
+		&"game_start":
+			return "Begins the master graph when a new game-flow run starts. Use exactly one."
+		&"event_entry":
+			return "Starts a new path whenever the named gameplay event happens."
+		&"end":
+			return "Ends only the path that reaches this step. Other active paths keep running."
+		&"if":
+			return "Checks a story condition and continues through Yes or No."
 		&"parallel":
-			return "Starts one independent execution path for every wire leaving its output."
+			return "Starts every connected path at the same time. Waiting on one path does not stop the others."
 		&"random":
-			return "Chooses one connected execution output using authored relative weights."
+			return "Chooses one connected outcome. A larger Chance Weight makes an outcome more likely."
+		&"subgraph_entry":
+			return "Marks where a reusable subgraph begins. Each subgraph needs exactly one."
+		&"subgraph_exit":
+			return "Finishes this subgraph and returns its named result to the graph that started it."
 		&"call_subgraph":
-			return "Runs a registered subgraph and resumes through its named exit."
+			return "Runs a reusable subgraph, waits for it to finish, then continues through its result."
+		&"set_flag":
+			return "Turns a named story flag On or Off so later conditions can remember the choice."
+		&"clear_flag":
+			return "Removes a named story flag, making it unset rather than On or Off."
+		&"set_value":
+			return "Stores a named story value such as a chapter number, score, phase, or relationship level."
+		&"wait_timer":
+			return "Pauses only this path for the chosen number of seconds. Other paths keep running."
+		&"wait_event":
+			return "Pauses only this path until the named gameplay event happens."
+		&"emit_event":
+			return "Sends a named event to waiting graph paths and gameplay systems."
+		&"play_cutscene":
+			return "Plays the chosen cutscene, waits for it to finish, then continues."
+		&"preload_level":
+			return "Prepares a level in the background so a later level change can be faster."
+		&"load_level":
+			return "Changes to the chosen level and continues after the new world is ready."
+		&"request_save":
+			return "Creates a safe save checkpoint before this path continues."
+		&"disable_input":
+			return "Locks player controls until a matching Unlock Player Controls step is reached."
+		&"enable_input":
+			return "Releases the matching player-control lock. Other active locks still apply."
 		&"invoke_action":
-			return "Invokes a game-registered action without adding a hardcoded flow-node enum case."
+			return "Asks a game-owned system to perform an action. GameFlow controls when; game code controls how."
 	return ""
 
 

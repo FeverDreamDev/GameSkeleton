@@ -10,7 +10,7 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "Enable Input"
+	return title_override if not title_override.is_empty() else "Unlock Player Controls"
 
 
 func validation_issues(

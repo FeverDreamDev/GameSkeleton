@@ -2,13 +2,11 @@
 class_name FlowDatabase
 extends Resource
 
-## Every story rule, graph, level and cutscene in the game, assigned to [FlowSystem].
+## Every graph, level, cutscene and custom-action definition in the game, assigned to [FlowSystem].
 ##
 ## The arrays are what you author; the dictionaries are built from them once and are what the
-## director actually reads, so routing an event is a hash lookup rather than a walk down a list
-## that grows with the size of the story.
+## graph runtime reads, so registry lookups remain constant-time as the game grows.
 
-@export var events: Array[FlowEvent] = []
 @export var levels: Array[FlowLevelEntry] = []
 @export var cutscenes: Array[FlowCutsceneEntry] = []
 
@@ -20,7 +18,6 @@ extends Resource
 ## Optional authoring catalog. Runtime Callables are registered separately on FlowSystem.
 @export var custom_actions: Array[FlowCustomActionEntry] = []
 
-var _event_index: Dictionary = {}
 var _level_index: Dictionary = {}
 var _cutscene_index: Dictionary = {}
 var _graph_index: Dictionary = {}
@@ -28,10 +25,6 @@ var _custom_action_index: Dictionary = {}
 var _indexed: bool = false
 
 #region Lookup
-
-func get_event(event_id: StringName) -> FlowEvent:
-	_ensure_index()
-	return _event_index.get(event_id)
 
 func get_level(level_id: StringName) -> FlowLevelEntry:
 	_ensure_index()
@@ -58,10 +51,6 @@ func get_custom_action(action_id: StringName) -> FlowCustomActionEntry:
 
 func has_custom_action_catalog() -> bool:
 	return not custom_actions.is_empty()
-
-func has_event(event_id: StringName) -> bool:
-	_ensure_index()
-	return _event_index.has(event_id)
 
 func level_ids() -> Array[StringName]:
 	_ensure_index()
@@ -113,15 +102,11 @@ func _ensure_index() -> void:
 ## Call after editing the arrays at runtime. Authoring in the inspector does not need it -- the
 ## index is built on first use.
 func rebuild_index() -> void:
-	_event_index.clear()
 	_level_index.clear()
 	_cutscene_index.clear()
 	_graph_index.clear()
 	_custom_action_index.clear()
 
-	for event: FlowEvent in events:
-		if event != null and not event.event_id.is_empty():
-			_event_index[event.event_id] = event
 	for level: FlowLevelEntry in levels:
 		if level != null and not level.level_id.is_empty():
 			_level_index[level.level_id] = level
@@ -149,7 +134,6 @@ func validate() -> Array[String]:
 	rebuild_index()
 	var problems: Array[String] = []
 
-	_check_duplicates(events, "event", problems)
 	_check_duplicates(levels, "level", problems)
 	_check_duplicates(cutscenes, "cutscene", problems)
 
@@ -172,19 +156,7 @@ func validate() -> Array[String]:
 		elif not ResourceLoader.exists(cutscene.scene_path):
 			problems.append("cutscene '%s' points at a scene that is not there: %s" % [cutscene.cutscene_id, cutscene.scene_path])
 
-	for event: FlowEvent in events:
-		if event == null:
-			continue
-		if event.event_id.is_empty():
-			problems.append("an event has no id")
-			continue
-		for action: FlowAction in event.actions:
-			if action == null:
-				problems.append("event '%s' has an empty action slot" % event.event_id)
-				continue
-			problems.append_array(_check_action(event.event_id, action))
-
-	# Registry scene-path problems were already appended above in the legacy string format.
+	# Registry scene-path problems were already appended above for the plain-text validation API.
 	for issue: FlowValidationIssue in _validate_graphs(false):
 		problems.append(issue.format_message())
 
@@ -205,14 +177,14 @@ func _validate_graphs(include_registry_paths: bool = true) -> Array[FlowValidati
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"unknown_master_graph",
-			"master graph '%s' is not registered" % master_graph_id,
+			"The Main Game Graph '%s' is not in the Game Flow library." % master_graph_id,
 			master_graph_id
 		))
 	elif master_graph_id.is_empty() and not graphs.is_empty():
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.WARNING,
 			&"missing_master_graph",
-			"graphs are registered but master_graph_id is empty"
+			"Choose one graph in the Game Flow library as the Main Game Graph."
 		))
 
 	for entry: FlowGraphEntry in graphs:
@@ -220,20 +192,20 @@ func _validate_graphs(include_registry_paths: bool = true) -> Array[FlowValidati
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"empty_graph_entry",
-				"graph registry has an empty slot"
+				"The Game Flow library contains an empty graph slot. Remove it or choose a graph."
 			))
 			continue
 		if entry.graph_id.is_empty():
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"graph_entry_missing_id",
-				"a graph registry entry has no graph_id"
+				"A graph in the Game Flow library has no Library Name."
 			))
 		elif seen_graph_ids.has(entry.graph_id):
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"duplicate_graph_id",
-				"two graph entries share graph_id '%s'" % entry.graph_id,
+				"Two graphs in the Game Flow library share the Library Name '%s'." % entry.graph_id,
 				entry.graph_id
 			))
 		else:
@@ -242,7 +214,7 @@ func _validate_graphs(include_registry_paths: bool = true) -> Array[FlowValidati
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"graph_entry_missing_resource",
-				"graph '%s' has no graph resource" % entry.graph_id,
+				"The library entry '%s' does not point to a flow graph." % entry.graph_id,
 				entry.graph_id
 			))
 			continue
@@ -250,7 +222,7 @@ func _validate_graphs(include_registry_paths: bool = true) -> Array[FlowValidati
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"master_graph_kind_mismatch",
-				"master_graph_id points to a graph whose kind is SUBGRAPH",
+				"The chosen Main Game Graph is marked as a Reusable Subgraph. Change its Graph Type.",
 				entry.graph_id
 			))
 		var graph_issues := entry.graph.validate_detailed(entry.graph_id, self)
@@ -261,7 +233,6 @@ func _validate_graphs(include_registry_paths: bool = true) -> Array[FlowValidati
 
 	_validate_subgraph_contracts(issues)
 	_validate_subgraph_cycles(issues)
-	_validate_legacy_event_overlap(issues)
 	_validate_custom_action_catalog(issues)
 	return issues
 
@@ -321,24 +292,6 @@ func _validate_registry_paths(issues: Array[FlowValidationIssue]) -> void:
 						% [cutscene.cutscene_id, cutscene.scene_path]
 			))
 
-func _validate_legacy_event_overlap(issues: Array[FlowValidationIssue]) -> void:
-	for entry: FlowGraphEntry in graphs:
-		if entry == null or entry.graph == null:
-			continue
-		for node: FlowGraphNode in entry.graph.nodes:
-			if not node is FlowEventEntryNode or not node.enabled:
-				continue
-			var event_entry := node as FlowEventEntryNode
-			if not event_entry.event_id.is_empty() and _event_index.has(event_entry.event_id):
-				issues.append(FlowValidationIssue.make(
-					FlowValidationIssue.Severity.WARNING,
-					&"legacy_graph_event_overlap",
-					"event '%s' is handled by both a legacy FlowEvent and a graph Event Entry" \
-							% event_entry.event_id,
-					entry.graph_id,
-					event_entry.node_id
-				))
-
 func _validate_custom_action_catalog(issues: Array[FlowValidationIssue]) -> void:
 	var seen := {}
 	for entry: FlowCustomActionEntry in custom_actions:
@@ -346,20 +299,20 @@ func _validate_custom_action_catalog(issues: Array[FlowValidationIssue]) -> void
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"empty_custom_action_entry",
-				"custom action catalog has an empty slot"
+				"The Game Action library contains an empty slot."
 			))
 			continue
 		if entry.action_id.is_empty():
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"custom_action_missing_id",
-				"a custom action catalog entry has no action_id"
+				"A Game Action in the library has no Library Name."
 			))
 		elif seen.has(entry.action_id):
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"duplicate_custom_action_id",
-				"two custom action entries share action_id '%s'" % entry.action_id
+				"Two Game Actions share the Library Name '%s'." % entry.action_id
 			))
 		else:
 			seen[entry.action_id] = true
@@ -390,7 +343,7 @@ func _validate_subgraph_contracts(issues: Array[FlowValidationIssue]) -> void:
 				issues.append(FlowValidationIssue.make(
 					FlowValidationIssue.Severity.ERROR,
 					&"call_target_not_subgraph",
-					"called graph '%s' is not marked SUBGRAPH" % call.subgraph_id,
+					"Run Subgraph points to '%s', but that graph is not marked Reusable Subgraph." % call.subgraph_id,
 					source_entry.graph_id,
 					call.node_id
 				))
@@ -402,7 +355,7 @@ func _validate_subgraph_contracts(issues: Array[FlowValidationIssue]) -> void:
 					issues.append(FlowValidationIssue.make(
 						FlowValidationIssue.Severity.ERROR,
 						&"call_subgraph_unknown_exit",
-						"called graph '%s' has no exit '%s'" % [call.subgraph_id, exit_id],
+						"Subgraph '%s' has no Finish Subgraph result named '%s'." % [call.subgraph_id, exit_id],
 						source_entry.graph_id,
 						call.node_id
 					))
@@ -411,7 +364,7 @@ func _validate_subgraph_contracts(issues: Array[FlowValidationIssue]) -> void:
 					issues.append(FlowValidationIssue.make(
 						FlowValidationIssue.Severity.ERROR,
 						&"call_subgraph_unhandled_exit",
-						"call does not expose graph '%s' exit '%s'" % [call.subgraph_id, exit_id],
+						"Run Subgraph does not expose the '%s' result returned by '%s'." % [exit_id, call.subgraph_id],
 						source_entry.graph_id,
 						call.node_id
 					))
@@ -428,7 +381,7 @@ func _validate_subgraph_contracts(issues: Array[FlowValidationIssue]) -> void:
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"subgraph_entry_count",
-				"called subgraph must contain exactly one Subgraph Entry (found %d)" % entry_count,
+				"A called subgraph needs exactly one Subgraph Starts Here step (found %d)." % entry_count,
 				graph_id
 			))
 
@@ -454,7 +407,7 @@ func _validate_subgraph_cycles(issues: Array[FlowValidationIssue]) -> void:
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"recursive_subgraph_call",
-				"subgraph calls form a recursive cycle",
+				"These Run Subgraph steps call one another in a loop. Recursive subgraphs are not allowed.",
 				cycle_graph
 			))
 			return
@@ -479,27 +432,7 @@ func _visit_subgraph_cycle(
 	state[graph_id] = 2
 	return &""
 
-func _check_action(event_id: StringName, action: FlowAction) -> Array[String]:
-	var problems: Array[String] = []
-	match action.type:
-		FlowAction.Type.LOAD_LEVEL, FlowAction.Type.PRELOAD_LEVEL:
-			if not _level_index.has(action.target_id):
-				problems.append("event '%s' names unknown level '%s'" % [event_id, action.target_id])
-		FlowAction.Type.PLAY_CUTSCENE:
-			if not _cutscene_index.has(action.target_id):
-				problems.append("event '%s' names unknown cutscene '%s'" % [event_id, action.target_id])
-		FlowAction.Type.EMIT_EVENT:
-			if action.target_id == event_id:
-				problems.append("event '%s' emits itself" % event_id)
-		FlowAction.Type.WAIT:
-			if action.number <= 0.0:
-				problems.append("event '%s' waits for %.2f seconds" % [event_id, action.number])
-		_:
-			if action.target_id.is_empty():
-				problems.append("event '%s' has a %s action with no target" % [event_id, FlowAction.Type.keys()[action.type]])
-	return problems
-
-## Generic duplicate check over legacy events, levels and cutscenes. Each resource type names its id
+## Generic duplicate check over levels and cutscenes. Each resource type names its id
 ## differently, so the id is read by property name rather than through a shared base class.
 func _check_duplicates(entries: Array, kind: String, problems: Array[String]) -> void:
 	var seen := {}

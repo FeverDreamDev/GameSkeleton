@@ -11,7 +11,10 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "Set Value"
+	if not title_override.is_empty():
+		return title_override
+	return "Set Story Value: %s" % _friendly_name(value_key) \
+			if not value_key.is_empty() else "Set Story Value"
 
 
 func validation_issues(

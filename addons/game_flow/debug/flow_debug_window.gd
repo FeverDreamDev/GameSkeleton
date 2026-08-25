@@ -8,7 +8,7 @@ extends UIWindow
 ##
 ## Everything it shows comes from [method FlowSystem.debug_snapshot]. Reading it should answer the
 ## two questions that cost the most time when a story rule misbehaves: what mode is the game in,
-## and what is the queue waiting for.
+## and what each graph path is waiting for.
 
 ## How often the readout is rebuilt. There is no reason to do this every frame.
 @export var refresh_interval: float = 0.2
@@ -79,11 +79,6 @@ func _refresh() -> void:
 		lines.append(_row("Loading", "%s  %d%%" % [loading, int(_loading_progress(system, loading) * 100.0)]))
 
 	lines.append(_row("Cutscene", _or_dash(snapshot["cutscene"])))
-	lines.append(_row("Action", _or_dash(snapshot["action"])))
-	lines.append(_row("Queued", str(snapshot["queued"])))
-	if snapshot["queued"] > 0 and system.director != null:
-		for event_id: StringName in system.director.queued_events():
-			lines.append("    %s" % event_id)
 	lines.append(_row("Exclusive", "%d queued%s" % [
 		int(snapshot.get("exclusive_queued", 0)),
 		"  [active]" if snapshot.get("exclusive_active", false) else "",

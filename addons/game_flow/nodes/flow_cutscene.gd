@@ -23,8 +23,8 @@ var was_skipped: bool = false
 
 #region Public
 
-## Starts the cutscene. [param context] is whatever the [FlowAction] carried, so one cutscene scene
-## can serve several moments.
+## Starts the cutscene. [param context] comes from the Play Cutscene graph node, so one cutscene
+## scene can serve several moments.
 func begin(context: Dictionary = {}) -> void:
 	_begin(context)
 

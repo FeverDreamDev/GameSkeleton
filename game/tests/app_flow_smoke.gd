@@ -4,7 +4,7 @@ extends SceneTree
 ## godot --path . --rendering-method gl_compatibility --script res://game/tests/app_flow_smoke.gd
 
 const TEST_SAVE_DIRECTORY_PREFIX := "res://.godot/app_flow_smoke_saves"
-const ONE_SHOT_FLAG := &"flow_ran_entered_terrain_test"
+const MASTER_BOOTSTRAP_FLAG := &"app_master_bootstrap_complete"
 const ROUND_TRIP_FLAG := &"app_flow_smoke_round_trip"
 const ROUND_TRIP_VALUE := &"app_flow_smoke_value"
 const ROUND_TRIP_SLOT := &"slot_2"
@@ -71,8 +71,8 @@ func _run() -> void:
 	_check(master_graph != null
 		and master_graph.resource_path == "res://game/flow/master_game_flow.tres",
 		"the production master graph is application-owned outside addons")
-	_check(app.flow_system.database.events.is_empty(),
-		"entered-level save behavior no longer remains in the legacy event lane")
+	_check(app.flow_system.get_node_or_null("FlowGraphRunner") == app.flow_system.graph_runner,
+		"FlowGraphRunner is the high-level flow executor")
 
 	app.call("_on_new_game_pressed")
 	_check(await _wait_for(
@@ -113,8 +113,8 @@ func _run() -> void:
 		"the FPS player remains a persistent actor")
 	_check(level != null and level.find_children("*", "Player", true, false).is_empty(),
 		"the streamed level does not create a second Player")
-	_check(FlowState.has_flag(ONE_SHOT_FLAG),
-		"entered_terrain_test sets its one-shot guard")
+	_check(FlowState.has_flag(MASTER_BOOTSTRAP_FLAG),
+		"the master graph records that application bootstrap completed")
 
 	var gameplay_payload := UISave.load_slot(UISave.autosave_id)
 	_check(gameplay_payload.get("resume_phase", "") == "gameplay",
@@ -128,8 +128,8 @@ func _run() -> void:
 		"gameplay autosave records that its streamed world must be restored")
 	var gameplay_flow: Dictionary = gameplay_payload.get("flow", {})
 	var gameplay_flags: Array = gameplay_flow.get(FlowState.KEY_FLAGS, [])
-	_check(String(ONE_SHOT_FLAG) in gameplay_flags,
-		"gameplay autosave persists the entered_terrain_test one-shot guard")
+	_check(String(MASTER_BOOTSTRAP_FLAG) in gameplay_flags,
+		"gameplay autosave persists the master bootstrap guard")
 
 	_check(await _wait_for(
 		func() -> bool:
@@ -239,7 +239,7 @@ func _run() -> void:
 	_check(_levels_entered.size() == 3,
 		"intro_pending routing installs terrain once after its intro")
 
-	# Graph snapshots are authoritative continuations, so changing only their legacy resume_phase
+	# Graph snapshots are authoritative continuations, so changing only their version-1 resume_phase
 	# must not redirect them. Exercise level_pending through a genuine version-1 fixture instead.
 	var level_pending_payload := {
 		"version": 1,

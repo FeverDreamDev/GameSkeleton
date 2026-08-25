@@ -16,7 +16,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Cutscene: %s" % cutscene_id if not cutscene_id.is_empty() else "Play Cutscene"
+	return "Play Cutscene: %s" % _friendly_name(cutscene_id) \
+			if not cutscene_id.is_empty() else "Play Cutscene"
 
 
 func output_ports() -> Array[StringName]:
@@ -38,7 +39,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"play_cutscene_unknown_id",
-			"cutscene '%s' is not registered" % cutscene_id,
+			"Cutscene '%s' could not be found in the Game Flow library." % cutscene_id,
 			graph_id,
 			node_id
 		))

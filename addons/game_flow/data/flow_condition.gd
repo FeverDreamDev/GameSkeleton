@@ -73,7 +73,7 @@ func validation_issues(graph_id: StringName, node_id: StringName) -> Array[FlowV
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"condition_missing_key",
-			"condition key is empty",
+			"Choose a Story Flag, Story Value, Event Detail, or Path Value to check.",
 			graph_id,
 			node_id
 		))
@@ -82,7 +82,7 @@ func validation_issues(graph_id: StringName, node_id: StringName) -> Array[FlowV
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"condition_ordered_flag",
-				"ordered comparisons cannot read a FlowState flag",
+				"A Story Flag can only be checked as On, Off, Set, Equal, or Not Equal.",
 				graph_id,
 				node_id
 			))
@@ -90,7 +90,7 @@ func validation_issues(graph_id: StringName, node_id: StringName) -> Array[FlowV
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"condition_ordered_non_numeric",
-				"ordered comparison value must be a finite number",
+				"Compare With must be a normal number for this comparison.",
 				graph_id,
 				node_id
 			))
@@ -99,7 +99,7 @@ func validation_issues(graph_id: StringName, node_id: StringName) -> Array[FlowV
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"condition_unsafe_value",
-			"condition value is not persistence-safe: %s" \
+			"Compare With contains something that cannot be saved: %s" \
 					% FlowPersistence.format_problems(persistence_problems),
 			graph_id,
 			node_id
@@ -108,7 +108,37 @@ func validation_issues(graph_id: StringName, node_id: StringName) -> Array[FlowV
 
 
 func describe() -> String:
-	return "%s %s %s" % [key, Operator.keys()[operator], value]
+	var subject := String(key).replace("_", " ").capitalize()
+	match operator:
+		Operator.EXISTS:
+			return "%s Is Set" % subject
+		Operator.NOT_EXISTS:
+			return "%s Is Not Set" % subject
+		Operator.IS_TRUE:
+			return "%s Is On" % subject
+		Operator.IS_FALSE:
+			return "%s Is Off" % subject
+		Operator.EQUAL:
+			return "%s = %s" % [subject, _friendly_value(value)]
+		Operator.NOT_EQUAL:
+			return "%s ≠ %s" % [subject, _friendly_value(value)]
+		Operator.LESS:
+			return "%s < %s" % [subject, _friendly_value(value)]
+		Operator.LESS_OR_EQUAL:
+			return "%s ≤ %s" % [subject, _friendly_value(value)]
+		Operator.GREATER:
+			return "%s > %s" % [subject, _friendly_value(value)]
+		Operator.GREATER_OR_EQUAL:
+			return "%s ≥ %s" % [subject, _friendly_value(value)]
+	return subject
+
+
+func _friendly_value(candidate: Variant) -> String:
+	if candidate is bool:
+		return "On" if candidate else "Off"
+	if candidate is String or candidate is StringName:
+		return String(candidate).replace("_", " ").capitalize()
+	return str(candidate)
 
 
 func _resolve(context: Dictionary) -> Dictionary:

@@ -99,7 +99,7 @@ func _run() -> void:
 	await _install_runtime()
 
 	_check(not SystemScript.has_active_graph(),
-		"a configured master graph remains opt-in")
+		"the application controls when its configured master graph begins")
 	SystemScript.register_action(ACTION_ID, _record_action)
 	await _test_stale_timer_generation_guards()
 	_reset_observations()
@@ -657,9 +657,9 @@ func _exercise_runtime_and_restore() -> void:
 	_check(_count(MARKER_EVENT_TRUE) == 1 and _count(MARKER_EVENT_FALSE) == 0,
 		"FlowState-backed IF takes the true output once after event restore")
 	_check(_count(MARKER_EVENT_ENTRY) == 1,
-		"the same event activates its one-shot Event Entry exactly once")
+		"the same event activates its Trigger Only Once entry exactly once")
 	_check(_waiter_precedes_same_event_entry(),
-		"an existing waiter resumes before the same-event Event Entry activates")
+		"an existing waiter resumes before the same-event entry activates")
 	_check(SystemScript.is_gameplay_input_enabled(),
 		"input returns only after the final overlapping lease is released")
 

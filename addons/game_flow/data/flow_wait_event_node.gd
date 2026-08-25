@@ -12,7 +12,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Wait: %s" % event_id if not event_id.is_empty() else "Wait For Event"
+	return "Wait Until Event: %s" % _friendly_name(event_id) \
+			if not event_id.is_empty() else "Wait Until Event"
 
 
 func is_blocking_node() -> bool:

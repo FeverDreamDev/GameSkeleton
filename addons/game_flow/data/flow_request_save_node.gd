@@ -10,7 +10,10 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "Request Save"
+	if not title_override.is_empty():
+		return title_override
+	return "Save Checkpoint: %s" % _friendly_name(reason) \
+			if not reason.is_empty() and reason != &"checkpoint" else "Save Checkpoint"
 
 
 func validation_issues(

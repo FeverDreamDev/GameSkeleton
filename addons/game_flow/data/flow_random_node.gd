@@ -27,7 +27,7 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "Random"
+	return title_override if not title_override.is_empty() else "Choose Random Path"
 
 
 func output_ports() -> Array[StringName]:
@@ -42,7 +42,7 @@ func output_ports() -> Array[StringName]:
 func port_label(port_id: StringName) -> String:
 	for branch: FlowRandomBranch in branches:
 		if branch != null and branch.port_id == port_id:
-			return "%s  [weight %s]" % [branch.display_label(), _format_weight(branch.weight)]
+			return "%s  (chance weight %s)" % [branch.display_label(), _format_weight(branch.weight)]
 	return super.port_label(port_id)
 
 
@@ -55,7 +55,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"random_missing_branches",
-			"random node must define at least one weighted output",
+			"Add at least one possible outcome to Choose Random Path.",
 			graph_id,
 			node_id
 		))
@@ -69,7 +69,7 @@ func validation_issues(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"random_empty_branch_slot",
-				"random branch %d is empty" % index,
+				"Random outcome %d is missing." % (index + 1),
 				graph_id,
 				node_id
 			))
@@ -78,7 +78,7 @@ func validation_issues(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"random_missing_port_id",
-				"random branch %d has no stable port_id" % index,
+				"Random outcome %d needs an internal connection name." % (index + 1),
 				graph_id,
 				node_id
 			))
@@ -86,7 +86,7 @@ func validation_issues(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"random_duplicate_port_id",
-				"random branches share port_id '%s'" % branch.port_id,
+				"Two random outcomes use the same internal connection name '%s'." % branch.port_id,
 				graph_id,
 				node_id,
 				&"",
@@ -100,7 +100,7 @@ func validation_issues(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"random_invalid_weight",
-				"random branch '%s' weight must be a finite number greater than zero" \
+				"The Chance Weight for '%s' must be greater than zero." \
 						% branch.port_id,
 				graph_id,
 				node_id,
@@ -115,7 +115,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"random_invalid_total_weight",
-			"sum of random branch weights must be finite",
+			"The combined Chance Weight is too large.",
 			graph_id,
 			node_id
 		))

@@ -477,7 +477,7 @@ func _load_slot(slot: StringName) -> void:
 
 	# Version-1 and transitional graphless saves retain their old recovery contract. Once their
 	# intro/level recovery is complete, seed the bootstrap guard before activating the master graph
-	# so Game Start registers its Event Entry nodes without replaying completed content.
+	# so When Game Starts activates its event listeners without replaying completed content.
 	if resume_phase == PHASE_INTRO_PENDING:
 		if not await FlowSystem.play_cutscene(INTRO_CUTSCENE_ID, {"loaded_slot": slot}):
 			await _recover_to_main_menu()

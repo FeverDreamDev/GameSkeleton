@@ -14,7 +14,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Call: %s" % subgraph_id if not subgraph_id.is_empty() else "Call Subgraph"
+	return "Run Subgraph: %s" % _friendly_name(subgraph_id) \
+			if not subgraph_id.is_empty() else "Run Subgraph"
 
 
 func output_ports() -> Array[StringName]:
@@ -42,7 +43,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"call_subgraph_unknown_graph",
-			"subgraph '%s' is not registered" % subgraph_id,
+			"Subgraph '%s' could not be found in the Game Flow library." % subgraph_id,
 			graph_id,
 			node_id
 		))
@@ -52,7 +53,7 @@ func validation_issues(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"call_subgraph_empty_exit",
-				"call subgraph has an empty exit port",
+				"Run Subgraph has an empty result name.",
 				graph_id,
 				node_id
 			))
@@ -60,7 +61,7 @@ func validation_issues(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"call_subgraph_reserved_exit",
-				"exit id 'failed' is reserved for call-resolution failures",
+				"'Failed' is reserved for problems starting a subgraph. Choose another result name.",
 				graph_id,
 				node_id
 			))
@@ -68,7 +69,7 @@ func validation_issues(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"call_subgraph_duplicate_exit",
-				"call subgraph repeats exit '%s'" % exit_id,
+				"Run Subgraph lists the result '%s' more than once." % exit_id,
 				graph_id,
 				node_id
 			))
@@ -78,7 +79,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"call_subgraph_no_exits",
-			"call subgraph exposes no exit ports",
+			"Run Subgraph needs at least one possible result.",
 			graph_id,
 			node_id
 		))

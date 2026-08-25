@@ -204,14 +204,14 @@ func _build_ui() -> void:
 
 	var open_button := Button.new()
 	open_button.text = "Open"
-	open_button.tooltip_text = "Open a FlowGraph resource"
+	open_button.tooltip_text = "Open a saved Game Flow graph"
 	open_button.pressed.connect(_show_open_dialog)
 	_toolbar.add_child(open_button)
 
 	var new_button := Button.new()
 	new_button.name = "NewGraphButton"
 	new_button.text = "New"
-	new_button.tooltip_text = "Create a new external FlowGraph resource"
+	new_button.tooltip_text = "Create a new Game Flow graph"
 	new_button.pressed.connect(_show_new_graph_dialog)
 	_toolbar.add_child(new_button)
 
@@ -230,22 +230,22 @@ func _build_ui() -> void:
 	_toolbar.add_child(_forward_button)
 
 	_graph_selector = OptionButton.new()
-	_graph_selector.tooltip_text = "Open a graph from the active FlowDatabase"
+	_graph_selector.tooltip_text = "Open another graph from this project's Game Flow library"
 	_graph_selector.custom_minimum_size.x = 220.0
 	_graph_selector.item_selected.connect(_on_graph_selector_selected)
 	_toolbar.add_child(_graph_selector)
 
 	_register_button = Button.new()
 	_register_button.name = "RegisterGraphButton"
-	_register_button.text = "Register"
-	_register_button.tooltip_text = "Register the open graph in a FlowDatabase"
+	_register_button.text = "Add to Library"
+	_register_button.tooltip_text = "Make this graph available to the game and other graphs"
 	_register_button.pressed.connect(_show_register_graph_dialog)
 	_toolbar.add_child(_register_button)
 
 	_set_master_button = Button.new()
 	_set_master_button.name = "SetMasterButton"
-	_set_master_button.text = "Set Master"
-	_set_master_button.tooltip_text = "Make the open registered graph the database run root"
+	_set_master_button.text = "Make Main Graph"
+	_set_master_button.tooltip_text = "Use this as the graph that starts the game's high-level flow"
 	_set_master_button.pressed.connect(_set_current_graph_as_master)
 	_toolbar.add_child(_set_master_button)
 
@@ -256,8 +256,8 @@ func _build_ui() -> void:
 	_toolbar.add_child(_save_button)
 
 	var validate_button := Button.new()
-	validate_button.text = "Validate"
-	validate_button.tooltip_text = "Validate the active FlowDatabase and its graphs"
+	validate_button.text = "Check Graph"
+	validate_button.tooltip_text = "Check the graph for missing settings, broken wires, and unreachable steps"
 	validate_button.pressed.connect(_validate_graphs)
 	_toolbar.add_child(validate_button)
 
@@ -269,14 +269,14 @@ func _build_ui() -> void:
 
 	_copy_button = Button.new()
 	_copy_button.text = "Copy"
-	_copy_button.tooltip_text = "Copy selected nodes and their internal connections (Ctrl/Cmd+C)"
+	_copy_button.tooltip_text = "Copy selected steps and the wires between them (Ctrl/Cmd+C)"
 	_copy_button.disabled = true
 	_copy_button.pressed.connect(_copy_selected_nodes)
 	_toolbar.add_child(_copy_button)
 
 	_paste_button = Button.new()
 	_paste_button.text = "Paste"
-	_paste_button.tooltip_text = "Paste copied nodes with fresh stable IDs (Ctrl/Cmd+V)"
+	_paste_button.tooltip_text = "Paste copied steps as a separate copy (Ctrl/Cmd+V)"
 	_paste_button.disabled = true
 	_paste_button.pressed.connect(_paste_nodes)
 	_toolbar.add_child(_paste_button)
@@ -309,11 +309,11 @@ func _build_ui() -> void:
 	work_area.add_child(palette_panel)
 
 	var palette_title := Label.new()
-	palette_title.text = "Node Palette"
+	palette_title.text = "Add a Step"
 	palette_panel.add_child(palette_title)
 
 	_palette_search = LineEdit.new()
-	_palette_search.placeholder_text = "Search nodes..."
+	_palette_search.placeholder_text = "Search game-flow steps..."
 	_palette_search.clear_button_enabled = true
 	_palette_search.text_changed.connect(_on_palette_search_changed)
 	palette_panel.add_child(_palette_search)
@@ -326,7 +326,8 @@ func _build_ui() -> void:
 	palette_panel.add_child(_palette)
 
 	_palette_add = Button.new()
-	_palette_add.text = "Add Node"
+	_palette_add.text = "Add Step"
+	_palette_add.tooltip_text = "Add the selected step to the open graph"
 	_palette_add.disabled = true
 	_palette_add.pressed.connect(_add_selected_palette_node)
 	palette_panel.add_child(_palette_add)
@@ -354,13 +355,13 @@ func _build_ui() -> void:
 	work_area.add_child(inspector_panel)
 
 	var inspector_title := Label.new()
-	inspector_title.text = "Node Inspector"
+	inspector_title.text = "Step Settings"
 	inspector_panel.add_child(inspector_title)
 
 	var inspector_navigation := HBoxContainer.new()
 	_inspector_back = Button.new()
 	_inspector_back.text = "<"
-	_inspector_back.tooltip_text = "Return to the owning flow node"
+	_inspector_back.tooltip_text = "Return to the main settings for this step"
 	_inspector_back.disabled = true
 	_inspector_back.pressed.connect(_on_inspector_back)
 	inspector_navigation.add_child(_inspector_back)
@@ -371,7 +372,7 @@ func _build_ui() -> void:
 	inspector_panel.add_child(inspector_navigation)
 
 	_inspector_filter = LineEdit.new()
-	_inspector_filter.placeholder_text = "Filter properties..."
+	_inspector_filter.placeholder_text = "Find a setting..."
 	_inspector_filter.clear_button_enabled = true
 	inspector_panel.add_child(_inspector_filter)
 
@@ -385,13 +386,13 @@ func _build_ui() -> void:
 	random_scroll.add_child(_random_panel)
 	var random_header := HBoxContainer.new()
 	var random_title := Label.new()
-	random_title.text = "Weighted Random Branches"
+	random_title.text = "Random Outcomes"
 	random_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	random_header.add_child(random_title)
 	var add_random_branch := Button.new()
 	add_random_branch.name = "AddRandomBranchButton"
-	add_random_branch.text = "+ Branch"
-	add_random_branch.tooltip_text = "Add a weighted output with a fresh stable port ID"
+	add_random_branch.text = "+ Outcome"
+	add_random_branch.tooltip_text = "Add another possible random outcome"
 	add_random_branch.pressed.connect(_add_random_branch)
 	random_header.add_child(add_random_branch)
 	_random_panel.add_child(random_header)
@@ -414,11 +415,11 @@ func _build_ui() -> void:
 	_reference_row.name = "DatabaseReferencePicker"
 	_reference_row.visible = false
 	_reference_label = Label.new()
-	_reference_label.text = "Registered ID"
+	_reference_label.text = "Choose from Library"
 	_reference_row.add_child(_reference_label)
 	_reference_selector = OptionButton.new()
 	_reference_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_reference_selector.tooltip_text = "Choose a stable ID registered in the active FlowDatabase"
+	_reference_selector.tooltip_text = "Choose an item already set up in this project's Game Flow library"
 	_reference_selector.item_selected.connect(_on_reference_selected)
 	_reference_row.add_child(_reference_selector)
 	inspector_panel.add_child(_reference_row)
@@ -430,7 +431,7 @@ func _build_ui() -> void:
 	var validation_header := HBoxContainer.new()
 	validation_panel.add_child(validation_header)
 	var validation_title := Label.new()
-	validation_title.text = "Validation"
+	validation_title.text = "Graph Check"
 	validation_header.add_child(validation_title)
 	_status = Label.new()
 	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -464,8 +465,8 @@ func _build_ui() -> void:
 	new_kind_label.text = "Graph kind"
 	new_fields.add_child(new_kind_label)
 	_new_graph_kind = OptionButton.new()
-	_new_graph_kind.add_item("Master", 0)
-	_new_graph_kind.add_item("Subgraph", 1)
+	_new_graph_kind.add_item("Main Game Graph", 0)
+	_new_graph_kind.add_item("Reusable Subgraph", 1)
 	new_fields.add_child(_new_graph_kind)
 	_new_graph_dialog.add_child(new_fields)
 	_new_graph_dialog.confirmed.connect(_on_new_graph_settings_confirmed)
@@ -480,17 +481,18 @@ func _build_ui() -> void:
 	add_child(_new_graph_path_dialog)
 
 	_register_dialog = ConfirmationDialog.new()
-	_register_dialog.title = "Register Flow Graph"
-	_register_dialog.ok_button_text = "Register"
+	_register_dialog.title = "Add Graph to Game Flow"
+	_register_dialog.ok_button_text = "Add to Library"
 	var register_fields := VBoxContainer.new()
 	var graph_id_label := Label.new()
-	graph_id_label.text = "Stable graph ID"
+	graph_id_label.text = "Graph Name for Connections"
+	graph_id_label.tooltip_text = "A permanent short name used by subgraph steps and saved games"
 	register_fields.add_child(graph_id_label)
 	_register_graph_id = LineEdit.new()
 	_register_graph_id.placeholder_text = "intro_sequence"
 	register_fields.add_child(_register_graph_id)
 	var database_label := Label.new()
-	database_label.text = "Flow database"
+	database_label.text = "Game Flow Library"
 	register_fields.add_child(database_label)
 	_register_database_selector = OptionButton.new()
 	register_fields.add_child(_register_database_selector)
@@ -571,7 +573,7 @@ func _build_node_view(node: Resource, index: int) -> GraphNode:
 	var view := GraphNode.new()
 	view.name = "FlowNode_%d" % index
 	view.title = _node_title(node)
-	view.tooltip_text = String(_call_if_present(node, &"type_id", &"flow_node"))
+	view.tooltip_text = _node_tooltip(node)
 	var stored_position: Variant = _read_value(node, &"editor_position", Vector2.ZERO)
 	view.position_offset = stored_position if stored_position is Vector2 else Vector2.ZERO
 
@@ -606,11 +608,11 @@ func _build_node_view(node: Resource, index: int) -> GraphNode:
 
 	var subgraph_id := StringName(str(_read_value(node, &"subgraph_id", "")))
 	if not subgraph_id.is_empty():
-		view.tooltip_text = "%s\nDouble-click to open subgraph '%s'." % [view.tooltip_text, subgraph_id]
+		view.tooltip_text = "%s\nDouble-click to open this reusable subgraph." % view.tooltip_text
 		view.gui_input.connect(_on_subgraph_view_input.bind(subgraph_id))
 		var open_subgraph := Button.new()
-		open_subgraph.text = "Open Subgraph: %s" % subgraph_id
-		open_subgraph.tooltip_text = "Navigate into the referenced graph"
+		open_subgraph.text = "Open This Subgraph"
+		open_subgraph.tooltip_text = "Open the reusable flow controlled by this step"
 		open_subgraph.pressed.connect(_open_subgraph.bind(subgraph_id))
 		view.add_child(open_subgraph)
 
@@ -690,12 +692,13 @@ func _apply_palette_filter(filter_text: String) -> void:
 		var haystack := "%s %s %s %s" % [type_id, display_name, category, description]
 		if not needle.is_empty() and not haystack.to_lower().contains(needle):
 			continue
-		var item_index := _palette.add_item("%s / %s" % [category, display_name])
+		var item_index := _palette.add_item("%s  ›  %s" % [category, display_name])
 		_palette.set_item_metadata(item_index, descriptor)
-		_palette.set_item_tooltip(item_index, description if not description.is_empty() else String(type_id))
+		_palette.set_item_tooltip(item_index,
+			description if not description.is_empty() else "Custom game-flow step")
 	_palette_add.disabled = _graph == null or _palette.get_selected_items().is_empty()
 	if _palette.item_count == 0 and _palette_entries.is_empty():
-		_status.text = "FlowNodeCatalog is not available yet."
+		_status.text = "No game-flow steps are available."
 
 
 func _catalog_descriptors() -> Array:
@@ -754,7 +757,7 @@ func _add_palette_node(descriptor: Variant) -> void:
 		return
 	var node := _create_node_from_descriptor(descriptor)
 	if node == null:
-		_status.text = "Could not instantiate that flow node type."
+		_status.text = "That game-flow step could not be created."
 		return
 	node.set(&"node_id", _new_stable_id(&"node"))
 	var center := _graph_edit.scroll_offset + (_graph_edit.size / maxf(_graph_edit.zoom, 0.01)) * 0.5
@@ -803,7 +806,7 @@ func _copy_selected_nodes() -> void:
 	_clipboard_connections.clear()
 	_clipboard_paste_serial = 0
 	if _graph == null or _selected_node_ids.is_empty():
-		_status.text = "Select one or more nodes to copy."
+		_status.text = "Select one or more steps to copy."
 		_update_copy_paste_buttons()
 		return
 
@@ -830,7 +833,7 @@ func _copy_selected_nodes() -> void:
 		if template != null:
 			_clipboard_connections.append(template)
 
-	_status.text = "Copied %d node%s and %d internal connection%s." % [
+	_status.text = "Copied %d step%s and %d wire%s." % [
 		_clipboard_nodes.size(), "" if _clipboard_nodes.size() == 1 else "s",
 		_clipboard_connections.size(), "" if _clipboard_connections.size() == 1 else "s"]
 	_update_copy_paste_buttons()
@@ -878,7 +881,7 @@ func _paste_nodes() -> void:
 		after_connections.append(connection)
 
 	if pasted_ids.is_empty():
-		_status.text = "The copied nodes could not be instantiated."
+		_status.text = "The copied steps could not be pasted."
 		return
 	var undo := _undo_redo()
 	if undo == null:
@@ -909,7 +912,7 @@ func _reload_after_paste(changed_graph: Resource, pasted_ids: Array[StringName])
 			_graph_edit.set_selected(first_view)
 			_selected_node_ids[first] = true
 			_inspect_node(_view_to_node.get(first_view.name) as Resource)
-	_status.text = "Pasted %d node%s with fresh IDs." % [
+	_status.text = "Pasted %d separate step%s." % [
 		pasted_ids.size(), "" if pasted_ids.size() == 1 else "s"]
 	_update_copy_paste_buttons()
 
@@ -934,7 +937,7 @@ func _on_connection_requested(from_view: StringName, from_port: int, to_view: St
 			return
 	var connection := _new_global_class_instance(&"FlowGraphConnection") as Resource
 	if connection == null:
-		_status.text = "FlowGraphConnection is not available yet."
+		_status.text = "A new wire could not be created."
 		return
 	connection.set(&"connection_id", _new_stable_id(&"connection"))
 	connection.set(&"from_node_id", from_id)
@@ -1199,7 +1202,7 @@ func _refresh_random_panel(node: Resource) -> void:
 		return
 
 	var branches := _array_property(node, &"branches")
-	_random_summary.text = "%d weighted output%s. Runtime probability is relative to connected, positive weights." % [
+	_random_summary.text = "%d possible outcome%s. Percentages use connected outcomes only; a larger Chance Weight is more likely." % [
 		branches.size(), "" if branches.size() == 1 else "s"]
 	for index in branches.size():
 		var branch := branches[index] as Resource
@@ -1212,7 +1215,7 @@ func _refresh_random_panel(node: Resource) -> void:
 		identity_row.add_child(index_label)
 		if branch == null:
 			var empty_label := Label.new()
-			empty_label.text = "Empty branch slot"
+			empty_label.text = "Missing outcome"
 			empty_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			identity_row.add_child(empty_label)
 			var remove_empty := Button.new()
@@ -1223,39 +1226,35 @@ func _refresh_random_panel(node: Resource) -> void:
 			_random_rows.add_child(row)
 			continue
 
-		var port_edit := LineEdit.new()
-		port_edit.name = "PortId"
-		port_edit.placeholder_text = "stable_port_id"
-		port_edit.tooltip_text = "Stable execution port ID. Renaming migrates every attached wire."
-		port_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		port_edit.text = str(_read_value(branch, &"port_id", ""))
-		port_edit.text_submitted.connect(_on_random_port_submitted.bind(node, branch))
-		port_edit.focus_exited.connect(_on_random_port_focus_exited.bind(port_edit, node, branch))
-		identity_row.add_child(port_edit)
+		var label_edit := LineEdit.new()
+		label_edit.name = "Label"
+		label_edit.placeholder_text = "Outcome name"
+		label_edit.tooltip_text = "The readable outcome name shown on the node"
+		label_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		label_edit.text = str(_read_value(branch, &"label", ""))
+		label_edit.text_submitted.connect(_on_random_label_submitted.bind(node, branch))
+		label_edit.focus_exited.connect(_on_random_label_focus_exited.bind(label_edit, node, branch))
+		identity_row.add_child(label_edit)
 		var inspect_branch := Button.new()
-		inspect_branch.text = "Inspect"
-		inspect_branch.tooltip_text = "Inspect this branch Resource's presentation properties"
+		inspect_branch.text = "More"
+		inspect_branch.tooltip_text = "Open all settings for this random outcome"
 		inspect_branch.pressed.connect(_inspect_subresource.bind(branch))
 		identity_row.add_child(inspect_branch)
 		var remove_branch := Button.new()
 		remove_branch.text = "X"
-		remove_branch.tooltip_text = "Remove this branch and every wire attached to its output"
+		remove_branch.tooltip_text = "Remove this outcome and its attached wire"
 		remove_branch.pressed.connect(_remove_random_branch.bind(node, index))
 		identity_row.add_child(remove_branch)
 		row.add_child(identity_row)
 
 		var values_row := HBoxContainer.new()
-		var label_edit := LineEdit.new()
-		label_edit.name = "Label"
-		label_edit.placeholder_text = "Display label"
-		label_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		label_edit.text = str(_read_value(branch, &"label", ""))
-		label_edit.text_submitted.connect(_on_random_label_submitted.bind(node, branch))
-		label_edit.focus_exited.connect(_on_random_label_focus_exited.bind(label_edit, node, branch))
-		values_row.add_child(label_edit)
+		var weight_label := Label.new()
+		weight_label.text = "Chance Weight"
+		weight_label.tooltip_text = "For example, weights 99 and 1 give 99% and 1% chances"
+		values_row.add_child(weight_label)
 		var weight := SpinBox.new()
 		weight.name = "Weight"
-		weight.tooltip_text = "Relative selection weight among connected outputs"
+		weight.tooltip_text = "Relative chance among connected outcomes"
 		weight.min_value = 0.01
 		weight.max_value = 1000000.0
 		weight.step = 0.01
@@ -1264,6 +1263,19 @@ func _refresh_random_panel(node: Resource) -> void:
 		weight.value = float(_read_value(branch, &"weight", 1.0))
 		weight.value_changed.connect(_on_random_weight_changed.bind(node, branch))
 		values_row.add_child(weight)
+		var port_label := Label.new()
+		port_label.text = "Connection Name"
+		port_label.tooltip_text = "Permanent internal name for this outcome's wire"
+		values_row.add_child(port_label)
+		var port_edit := LineEdit.new()
+		port_edit.name = "PortId"
+		port_edit.placeholder_text = "outcome_name"
+		port_edit.tooltip_text = "Permanent internal connection name. Renaming it safely moves every attached wire."
+		port_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		port_edit.text = str(_read_value(branch, &"port_id", ""))
+		port_edit.text_submitted.connect(_on_random_port_submitted.bind(node, branch))
+		port_edit.focus_exited.connect(_on_random_port_focus_exited.bind(port_edit, node, branch))
+		values_row.add_child(port_edit)
 		row.add_child(values_row)
 		_random_rows.add_child(row)
 		_random_row_controls[branch.get_instance_id()] = {
@@ -1341,7 +1353,7 @@ func _add_random_branch() -> void:
 		return
 	var branch := _new_global_class_instance(&"FlowRandomBranch") as Resource
 	if branch == null:
-		_status.text = "FlowRandomBranch is not available yet."
+		_status.text = "A new random outcome could not be created."
 		return
 	var port_id := _next_random_port_id(node)
 	branch.set(&"port_id", port_id)
@@ -1352,7 +1364,7 @@ func _add_random_branch() -> void:
 	after.append(branch)
 	var connections := _array_property(_graph, &"connections")
 	_commit_random_structure_change(
-		"Add Random Branch", node, before, after, connections, connections)
+		"Add Random Outcome", node, before, after, connections, connections)
 
 
 func _remove_random_branch(node: Resource, index: int) -> void:
@@ -1373,7 +1385,7 @@ func _remove_random_branch(node: Resource, index: int) -> void:
 				and StringName(str(_read_value(connection, &"from_port_id", ""))) == removed_port:
 			after_connections.remove_at(connection_index)
 	_commit_random_structure_change(
-		"Remove Random Branch", node, before_branches, after_branches,
+		"Remove Random Outcome", node, before_branches, after_branches,
 		before_connections, after_connections)
 
 
@@ -1414,13 +1426,13 @@ func _rename_random_branch_port(node: Resource, branch: Resource, new_port: Stri
 	if old_port == new_port:
 		return
 	if new_port.is_empty():
-		_status.text = "Random branch port IDs cannot be empty."
+		_status.text = "Every random outcome needs a Connection Name."
 		_sync_random_controls(node)
 		return
 	for other: Variant in _array_property(node, &"branches"):
 		if other is Resource and other != branch \
 				and StringName(str(_read_value(other, &"port_id", ""))) == new_port:
-			_status.text = "Random branch port ID '%s' is already in use." % new_port
+			_status.text = "Connection Name '%s' is already used by another outcome." % new_port
 			_sync_random_controls(node)
 			return
 
@@ -1440,7 +1452,7 @@ func _rename_random_branch_port(node: Resource, branch: Resource, new_port: Stri
 		_graph.emit_changed()
 		_after_random_structure_mutation(node)
 		return
-	undo.create_action("Rename Random Branch Port", UndoRedo.MERGE_DISABLE, node)
+	undo.create_action("Rename Random Outcome Connection", UndoRedo.MERGE_DISABLE, node)
 	undo.add_do_property(branch, &"port_id", new_port)
 	for connection: Resource in affected_connections:
 		undo.add_do_property(connection, &"from_port_id", new_port)
@@ -1532,34 +1544,39 @@ func _refresh_reference_picker(node: Resource) -> void:
 	var source_property := &""
 	var node_property := &""
 	var entry_id_property := &""
-	var label := "Registered ID"
+	var label := "Choose from Library"
+	var empty_choice := "<Choose an item>"
 	if _has_property(node, &"level_id"):
 		source_property = &"levels"
 		node_property = &"level_id"
 		entry_id_property = &"level_id"
-		label = "Registered level"
+		label = "Choose Level"
+		empty_choice = "<Choose a level>"
 	elif _has_property(node, &"cutscene_id"):
 		source_property = &"cutscenes"
 		node_property = &"cutscene_id"
 		entry_id_property = &"cutscene_id"
-		label = "Registered cutscene"
+		label = "Choose Cutscene"
+		empty_choice = "<Choose a cutscene>"
 	elif _has_property(node, &"action_id"):
 		source_property = &"custom_actions"
 		node_property = &"action_id"
 		entry_id_property = &"action_id"
-		label = "Registered action"
+		label = "Choose Game Action"
+		empty_choice = "<Choose a game action>"
 	elif _has_property(node, &"subgraph_id"):
 		source_property = &"graphs"
 		node_property = &"subgraph_id"
 		entry_id_property = &"graph_id"
-		label = "Registered subgraph"
+		label = "Choose Subgraph"
+		empty_choice = "<Choose a subgraph>"
 	else:
 		_suppress_reference_selector = false
 		return
 
 	_reference_property = node_property
 	_reference_label.text = label
-	_reference_selector.add_item("<Select registered ID>")
+	_reference_selector.add_item(empty_choice)
 	_reference_selector.set_item_metadata(0, &"")
 	var current_id := StringName(str(_read_value(node, node_property, "")))
 	var selected_index := 0
@@ -1579,7 +1596,9 @@ func _refresh_reference_picker(node: Resource) -> void:
 		var display := str(_read_value(entry, &"display_name", "")).strip_edges()
 		if display.is_empty() and source_property == &"graphs":
 			display = _graph_display_name(_read_value(entry, &"graph", null) as Resource)
-		_reference_selector.add_item("%s%s" % [entry_id, " — %s" % display if not display.is_empty() else ""])
+		_reference_selector.add_item("%s%s" % [
+			display if not display.is_empty() else _friendly_authored_name(entry_id),
+			"  (%s)" % entry_id if not display.is_empty() else ""])
 		_reference_selector.set_item_metadata(item, entry_id)
 		if entry_id == current_id:
 			selected_index = item
@@ -1587,7 +1606,7 @@ func _refresh_reference_picker(node: Resource) -> void:
 
 	if not found_current:
 		selected_index = _reference_selector.item_count
-		_reference_selector.add_item("%s (unregistered)" % current_id)
+		_reference_selector.add_item("%s  (not found in library)" % _friendly_authored_name(current_id))
 		_reference_selector.set_item_metadata(selected_index, current_id)
 	_reference_selector.select(selected_index)
 	_reference_selector.disabled = _reference_selector.item_count <= 1
@@ -1808,7 +1827,7 @@ func _refresh_graph_selector() -> void:
 				selected_index = item
 	_graph_selector.disabled = _graph_selector.item_count == 0
 	if _graph_selector.item_count == 0:
-		_graph_selector.add_item("Standalone graph" if _graph != null else "No graph database")
+		_graph_selector.add_item("Graph not yet in library" if _graph != null else "No Game Flow library")
 		_graph_selector.disabled = true
 	if selected_index >= 0:
 		_graph_selector.select(selected_index)
@@ -1854,7 +1873,8 @@ func _on_breadcrumb_pressed(index: int) -> void:
 func _open_subgraph(subgraph_id: StringName) -> void:
 	var graph := _resolve_graph_by_id(subgraph_id)
 	if graph == null:
-		_status.text = "Subgraph '%s' was not found in a FlowDatabase." % subgraph_id
+		_status.text = "Subgraph '%s' was not found in the Game Flow library." % \
+			_friendly_authored_name(subgraph_id)
 		return
 	var trail := _breadcrumbs.duplicate()
 	trail.append(graph)
@@ -1917,9 +1937,10 @@ func _present_validation_issues(issues: Array) -> void:
 	_validation_entries.clear()
 	for issue: Variant in issues:
 		var severity := int(_read_value(issue, &"severity", 2))
-		var message := str(_read_value(issue, &"message", "Validation issue"))
-		if issue is Object and issue.has_method(&"format_message"):
-			message = str(issue.call(&"format_message"))
+		var message := str(_read_value(issue, &"message", "The graph needs attention."))
+		var location := _friendly_validation_location(issue)
+		if not location.is_empty():
+			message = "%s — %s" % [location, message]
 		var prefix: String = ["INFO", "WARNING", "ERROR"][clampi(severity, 0, 2)]
 		var item := _validation.add_item("[%s] %s" % [prefix, message])
 		if severity == 2:
@@ -1929,10 +1950,35 @@ func _present_validation_issues(issues: Array) -> void:
 		_validation_entries.append(issue)
 
 	if issues.is_empty():
-		_validation.add_item("No validation issues.")
-		_status.text = "Validation passed."
+		_validation.add_item("No problems found.")
+		_status.text = "Graph check passed."
 	else:
-		_status.text = "%d validation issue%s." % [issues.size(), "" if issues.size() == 1 else "s"]
+		_status.text = "%d item%s need attention." % [issues.size(), "" if issues.size() == 1 else "s"]
+
+
+func _friendly_validation_location(issue: Variant) -> String:
+	var parts: Array[String] = []
+	var graph_id := StringName(str(_read_value(issue, &"graph_id", "")))
+	var node_id := StringName(str(_read_value(issue, &"node_id", "")))
+	var port_id := StringName(str(_read_value(issue, &"port_id", "")))
+	var target_graph := _graph
+	if not graph_id.is_empty() and _active_database != null \
+			and _active_database.has_method(&"get_graph"):
+		var registered_graph: Variant = _active_database.call(&"get_graph", graph_id)
+		if registered_graph is Resource:
+			target_graph = registered_graph
+	if target_graph != null:
+		parts.append(_graph_display_name(target_graph))
+	var target_node: Variant = null
+	if target_graph != null and not node_id.is_empty() and target_graph.has_method(&"get_node"):
+		target_node = target_graph.call(&"get_node", node_id)
+	if target_node != null:
+		parts.append("Step: %s" % _node_title(target_node))
+		if not port_id.is_empty():
+			parts.append("Outcome: %s" % _port_label(target_node, port_id))
+	elif not StringName(str(_read_value(issue, &"connection_id", ""))).is_empty():
+		parts.append("Wire")
+	return " › ".join(parts)
 
 
 func _validation_error_count(issues: Array) -> int:
@@ -1985,7 +2031,7 @@ func _on_new_graph_settings_confirmed() -> void:
 func _create_new_graph_at_path(path: String) -> void:
 	var graph := _new_global_class_instance(&"FlowGraph") as Resource
 	if graph == null:
-		_status.text = "FlowGraph is not available yet."
+		_status.text = "A new Game Flow graph could not be created."
 		return
 	graph.set(&"display_name", _pending_new_graph_name)
 	graph.set(&"kind", _pending_new_graph_kind)
@@ -1997,7 +2043,7 @@ func _create_new_graph_at_path(path: String) -> void:
 		_filesystem.update_file(path)
 	_active_database = null
 	_navigate_to(graph, [graph])
-	_status.text = "Created %s. Register it in a FlowDatabase when ready." % path
+	_status.text = "Created %s. Add it to the Game Flow library when ready." % path
 
 
 func _show_register_graph_dialog() -> void:
@@ -2005,12 +2051,12 @@ func _show_register_graph_dialog() -> void:
 		return
 	var databases := _find_databases()
 	if databases.is_empty():
-		_status.text = "No FlowDatabase resource was found."
+		_status.text = "No Game Flow library was found in the project."
 		return
 	_register_database_selector.clear()
 	for database: Resource in databases:
 		var item := _register_database_selector.item_count
-		var label := database.resource_path if not database.resource_path.is_empty() else "Embedded FlowDatabase"
+		var label := database.resource_path if not database.resource_path.is_empty() else "Built-in Game Flow Library"
 		_register_database_selector.add_item(label)
 		_register_database_selector.set_item_metadata(item, database)
 		if database == _active_database:
@@ -2027,24 +2073,24 @@ func _register_current_graph() -> void:
 		return
 	var selected := _register_database_selector.selected
 	if selected < 0:
-		_status.text = "Choose a FlowDatabase."
+		_status.text = "Choose a Game Flow library."
 		return
 	var database := _register_database_selector.get_item_metadata(selected) as Resource
 	var graph_id := StringName(_register_graph_id.text.strip_edges())
 	if database == null or graph_id.is_empty():
-		_status.text = "A database and non-empty stable graph ID are required."
+		_status.text = "Choose a library and enter a Graph Name for Connections."
 		return
 	if database.has_method(&"rebuild_index"):
 		database.call(&"rebuild_index")
 	if database.has_method(&"get_graph"):
 		var existing := database.call(&"get_graph", graph_id) as Resource
 		if existing != null and existing != _graph:
-			_status.text = "Graph ID '%s' is already registered." % graph_id
+			_status.text = "Graph Name '%s' is already used in this library." % graph_id
 			return
 
 	var entry := _new_global_class_instance(&"FlowGraphEntry") as Resource
 	if entry == null:
-		_status.text = "FlowGraphEntry is not available yet."
+		_status.text = "This graph could not be added to the Game Flow library."
 		return
 	entry.set(&"graph_id", graph_id)
 	entry.set(&"graph", _graph)
@@ -2077,7 +2123,7 @@ func _set_current_graph_as_master() -> void:
 		return
 	var graph_id := _graph_id_in_database(_graph, database)
 	if graph_id.is_empty():
-		_status.text = "The graph registry entry has no stable ID."
+		_status.text = "This graph is missing its Graph Name for Connections."
 		return
 	var old_master := StringName(str(_read_value(database, &"master_graph_id", "")))
 	var old_kind := int(_read_value(_graph, &"kind", 0))
@@ -2092,7 +2138,7 @@ func _set_current_graph_as_master() -> void:
 		_graph.emit_changed()
 		_after_master_mutation(database, _graph)
 		return
-	undo.create_action("Set Master Flow Graph", UndoRedo.MERGE_DISABLE, database)
+	undo.create_action("Make Main Game Flow Graph", UndoRedo.MERGE_DISABLE, database)
 	undo.add_do_property(database, &"master_graph_id", graph_id)
 	undo.add_do_property(_graph, &"kind", 0)
 	undo.add_do_method(database, &"emit_changed")
@@ -2135,7 +2181,7 @@ func _show_open_dialog() -> void:
 func _on_graph_file_selected(path: String) -> void:
 	var resource := ResourceLoader.load(path)
 	if not resource is Resource or not _is_flow_graph(resource):
-		_status.text = "%s is not a FlowGraph resource." % path
+		_status.text = "%s is not a Game Flow graph." % path
 		return
 	open_graph(resource)
 
@@ -2164,7 +2210,7 @@ func _save_graph(graph: Resource) -> void:
 			save_owner = database
 			save_path = database.resource_path
 	if save_path.is_empty() or save_path.contains("::"):
-		_status.text = "The graph has no external graph or database resource path."
+		_status.text = "Save this graph or its Game Flow library to the project first."
 		return
 	var error := ResourceSaver.save(save_owner, save_path)
 	if error != OK:
@@ -2186,7 +2232,7 @@ func _save_graph(graph: Resource) -> void:
 
 func _save_database(database: Resource) -> void:
 	if database == null or database.resource_path.is_empty() or database.resource_path.contains("::"):
-		_status.text = "The FlowDatabase has no external resource path."
+		_status.text = "Save the Game Flow library to the project first."
 		return
 	var error := ResourceSaver.save(database, database.resource_path)
 	if error != OK:
@@ -2302,8 +2348,84 @@ func _node_id(node: Variant) -> StringName:
 
 
 func _node_title(node: Variant) -> String:
-	var title := str(_call_if_present(node, &"display_title", "Flow Node"))
-	return title if not title.is_empty() else "Flow Node"
+	var custom_title := str(_read_value(node, &"title_override", "")).strip_edges()
+	if not custom_title.is_empty():
+		return custom_title
+	var type_id := StringName(str(_call_if_present(node, &"type_id", "")))
+	var collection := &""
+	var id_property := &""
+	var entry_id_property := &""
+	var prefix := ""
+	match type_id:
+		&"play_cutscene":
+			collection = &"cutscenes"
+			id_property = &"cutscene_id"
+			entry_id_property = &"cutscene_id"
+			prefix = "Play Cutscene"
+		&"preload_level":
+			collection = &"levels"
+			id_property = &"level_id"
+			entry_id_property = &"level_id"
+			prefix = "Prepare Level"
+		&"load_level":
+			collection = &"levels"
+			id_property = &"level_id"
+			entry_id_property = &"level_id"
+			prefix = "Go To Level"
+		&"invoke_action":
+			collection = &"custom_actions"
+			id_property = &"action_id"
+			entry_id_property = &"action_id"
+			prefix = "Run Game Action"
+		&"call_subgraph":
+			collection = &"graphs"
+			id_property = &"subgraph_id"
+			entry_id_property = &"graph_id"
+			prefix = "Run Subgraph"
+	if not collection.is_empty():
+		var selected_id := StringName(str(_read_value(node, id_property, "")))
+		var library_name := _library_item_display_name(collection, entry_id_property, selected_id)
+		if not library_name.is_empty():
+			return "%s: %s" % [prefix, library_name]
+	var title := str(_call_if_present(node, &"display_title", "Game Flow Step"))
+	return title if not title.is_empty() else "Game Flow Step"
+
+
+func _node_tooltip(node: Variant) -> String:
+	var lines: Array[String] = []
+	var catalog_script := _global_class_script(&"FlowNodeCatalog")
+	if catalog_script != null and catalog_script.has_method(&"get_descriptor"):
+		var type_id := StringName(str(_call_if_present(node, &"type_id", "")))
+		var descriptor: Variant = catalog_script.call(&"get_descriptor", type_id)
+		var description := str(_read_value(descriptor, &"description", "")).strip_edges()
+		if not description.is_empty():
+			lines.append(description)
+	var designer_note := str(_read_value(node, &"comment", "")).strip_edges()
+	if not designer_note.is_empty():
+		lines.append("Designer note: %s" % designer_note)
+	return "\n".join(lines) if not lines.is_empty() else "Game-flow step"
+
+
+func _library_item_display_name(
+		collection: StringName,
+		id_property: StringName,
+		selected_id: StringName
+) -> String:
+	if selected_id.is_empty():
+		return ""
+	if _active_database != null:
+		for entry: Variant in _array_property(_active_database, collection):
+			if StringName(str(_read_value(entry, id_property, ""))) != selected_id:
+				continue
+			var display := str(_read_value(entry, &"display_name", "")).strip_edges()
+			if display.is_empty() and collection == &"graphs":
+				display = _graph_display_name(_read_value(entry, &"graph", null) as Resource)
+			return display if not display.is_empty() else _friendly_authored_name(selected_id)
+	return ""
+
+
+func _friendly_authored_name(authored_name: StringName) -> String:
+	return String(authored_name).replace("_", " ").capitalize()
 
 
 func _port_label(node: Variant, port_id: StringName) -> String:

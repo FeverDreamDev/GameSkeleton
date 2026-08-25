@@ -8,7 +8,7 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "Subgraph Entry"
+	return title_override if not title_override.is_empty() else "Subgraph Starts Here"
 
 
 func input_ports() -> Array[StringName]:

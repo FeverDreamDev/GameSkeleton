@@ -13,7 +13,9 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "If / Else"
+	if not title_override.is_empty():
+		return title_override
+	return "Check: %s" % condition.describe() if condition != null else "Check Condition"
 
 
 func output_ports() -> Array[StringName]:
@@ -28,7 +30,7 @@ func validation_issues(
 		return [FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"if_missing_condition",
-			"IF node has no condition",
+			"Choose a condition for this Check Condition step.",
 			graph_id,
 			node_id
 		)] as Array[FlowValidationIssue]

@@ -10,7 +10,11 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "Wait %.2fs" % seconds
+	if not title_override.is_empty():
+		return title_override
+	var amount := str(int(seconds)) if is_equal_approx(seconds, roundf(seconds)) \
+			else String.num(seconds, 2).trim_suffix("0").trim_suffix(".")
+	return "Wait %s %s" % [amount, "Second" if is_equal_approx(seconds, 1.0) else "Seconds"]
 
 
 func is_blocking_node() -> bool:
@@ -26,7 +30,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"wait_timer_non_positive",
-			"wait duration must be greater than zero",
+			"Time in Seconds must be greater than zero.",
 			graph_id,
 			node_id
 		))

@@ -4,7 +4,6 @@
 [ext_resource type="Script" uid="uid://0fsjdd2f2fi2" path="res://addons/game_flow/data/flow_custom_action_entry.gd" id="1_yi8f6"]
 [ext_resource type="Script" uid="uid://dpc78tl1uf3um" path="res://addons/game_flow/data/flow_level_entry.gd" id="2_level"]
 [ext_resource type="Script" uid="uid://dk1iyrv7d5u30" path="res://addons/game_flow/data/flow_cutscene_entry.gd" id="3_cutscene"]
-[ext_resource type="Script" uid="uid://d03tqa68qqkoc" path="res://addons/game_flow/data/flow_event.gd" id="3_isyxd"]
 [ext_resource type="Script" uid="uid://c5eqovft0k5j4" path="res://addons/game_flow/data/flow_graph_entry.gd" id="4_graph_entry"]
 [ext_resource type="Resource" uid="uid://bwr2i7hjgk73" path="res://game/flow/master_game_flow.tres" id="5_master_graph"]
 

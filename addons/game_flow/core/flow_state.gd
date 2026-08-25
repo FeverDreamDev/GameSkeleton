@@ -3,8 +3,8 @@ extends RefCounted
 
 const FlowPersistenceCodec := preload("res://addons/game_flow/core/flow_persistence.gd")
 
-## The runtime truth the flow director reasons about: where the player is in the world and how far
-## they are through the story.
+## The persistent blackboard the flow graph reasons about: where the player is in the world and
+## how far they are through the story.
 ##
 ## This is not the save file. [UISave] owns serialisation and knows nothing about any game;
 ## [method to_dict] and [method from_dict] are the two lines that put this state into somebody

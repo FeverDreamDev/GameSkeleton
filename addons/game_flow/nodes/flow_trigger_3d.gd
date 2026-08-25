@@ -4,8 +4,9 @@ extends Area3D
 ## An area that reports an event when something walks into it, so a level does not need a bespoke
 ## script per doorway.
 ##
-## It reports and nothing else. What the event means is the [FlowDatabase]'s business -- that is
-## what keeps this node reusable and stops story logic scattering into level scenes.
+## It reports and nothing else. What the event means is decided by When Event Happens steps in the
+## flow graph -- that keeps this trigger reusable and stops story logic scattering into level
+## scenes.
 
 signal fired(event_id: StringName)
 
@@ -18,8 +19,8 @@ signal fired(event_id: StringName)
 @export_group("Conditions")
 ## Fires once, then stops testing overlaps at all. This is about not spamming the bus while the
 ## player stands in the doorway; it is not story memory. A beat that must never replay after a
-## reload wants [member FlowEvent.one_shot] on the event instead, which is flag-guarded and goes
-## into the save.
+## reload should use the When Event Happens step's Trigger Only Once setting, which is backed by
+## saved FlowState.
 @export var one_shot: bool = true
 
 ## Only bodies in this group can set it off. Empty means anything can.

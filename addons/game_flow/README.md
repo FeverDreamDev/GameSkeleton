@@ -2,7 +2,12 @@
 
 A global game-flow system for Godot 4.7: world objects report what happened, a concurrent visual
 graph decides what happens next, and normal game systems perform levels, cutscenes, encounters,
-transitions and saves. The original event/action lists remain supported as a compatibility lane.
+transitions and saves. The visual graph is the only high-level flow executor.
+
+Designers and artists should start with the plain-language
+[`GameFlow Designer Guide`](../../docs/GAMEFLOW_NODE_TUTORIAL.md), which explains the editor,
+every built-in step, worked examples, validation, and save/load behavior without assuming
+programming knowledge.
 
 It pairs with [`win98_ui`](../win98_ui/README.md) for its fades and dialogs, and with that addon's
 `UISave` for storage. It never writes to disk itself.
@@ -46,42 +51,43 @@ A gameplay object reports what happened and decides nothing:
 FlowEvents.emit(&"warehouse_boss_defeated", {"boss_id": persistent_id})
 ```
 
-What that means lives in the database, as a `FlowEvent` with a list of `FlowAction`s:
+What that means lives in the visual graph:
 
 ```
-FlowEvent  warehouse_boss_defeated
-    one_shot = true
-    SET_FLAG        warehouse_boss_dead
-    REQUEST_SAVE    boss_defeated
-    PLAY_CUTSCENE   warehouse_boss_outro
-    LOAD_LEVEL      freeway_night -> warehouse_exit
-    REQUEST_SAVE    level_entered
+When Event Happens: Warehouse Boss Defeated
+    -> Set Story Flag: Warehouse Boss Is Dead
+    -> Save Checkpoint: Boss Defeated
+    -> Play Cutscene: Warehouse Boss Outro
+    -> Go To Level: Freeway Night (Warehouse Exit)
+    -> Save Checkpoint: Level Entered
 ```
 
 That is the whole contract. The boss stays reusable because it never mentions a level, a cutscene
 or the save system, and the story is edited in one place instead of scattered through level scenes.
 
-An event with no entry in the database is a normal, silent no-op — content can emit events before
-the rules for them exist.
+An event with no active **When Event Happens** or **Wait Until Event** step is a normal, silent
+no-op — content can emit events before the graph reacts to them.
 
 ## Visual graphs
 
-Set `FlowDatabase.master_graph_id` to opt into graph execution. Leaving it empty preserves the
-legacy behavior exactly. A `FlowGraphEntry` maps that stable ID to an external or embedded
-`FlowGraph` Resource; graph connections and save files refer only to graph, node, connection and
-logical port IDs, never to editor controls or integer slot indexes.
+Set `FlowDatabase.master_graph_id` to the graph that begins the game. A `FlowGraphEntry` maps that
+stable ID to an external or embedded `FlowGraph` Resource; graph connections and save files refer
+only to graph, node, connection and logical port IDs, never to editor controls or integer slot
+indexes. Without a valid master graph there is intentionally no high-level flow to execute.
 
-The v1 palette includes Game Start and Event Entry roots; If/Else, Parallel, weighted Random, End
-and structured subgraph calls; flags and values; timer/event waits and event emission; level
-preload/load, cutscene, save and input actions; and Invoke Custom Action. Connections are execution
+The palette includes **When Game Starts** and **When Event Happens** roots; **Check Condition**,
+**Start Multiple Paths**, **Choose Random Path**, **Stop This Path**, and reusable subgraph calls;
+story flags and values; timer/event waits and **Send Event**; level preparation/loading, cutscenes,
+checkpoints, player-control locks, and **Run Game Action**. Connections are execution
 wires. More than one connection from an output creates independent execution tokens, so a story
 wait, ambient timer, secret trigger and boss threshold can all remain active at once.
 
 `FlowGraphRunner` drains immediate work in deterministic connection order. Timers use timeout
 callbacks and event waits are indexed by event ID—there is no per-frame graph polling. Emitted
-events enter a non-reentrant inbox; existing waiters resume before Event Entry nodes activate for
-the same event. Loads and cutscenes pass through a global FIFO arbiter while unrelated tokens keep
-running. A bounded immediate-step budget turns accidental zero-time loops into diagnostics.
+events enter a non-reentrant inbox; existing waiters resume before **When Event Happens** steps
+activate for the same event. Loads and cutscenes pass through a global FIFO arbiter while unrelated
+tokens keep running. A bounded immediate-step budget turns accidental zero-time loops into
+diagnostics.
 
 Enable `res://addons/game_flow/plugin.cfg` to add **Game Flow** beside the standard editor workspaces.
 The workspace provides a searchable palette, `GraphEdit` canvas, embedded node inspector,
@@ -89,24 +95,25 @@ undo/redo, structured validation, graph selection, breadcrumbs/history, subgraph
 Resource persistence. `GraphNode` objects are disposable views; the `.tres` graph Resources are
 the runtime truth.
 
-Structured subgraphs contain one Subgraph Entry and named Subgraph Exits. Call Subgraph creates a
-child instance and suspends only its caller. Reaching an exit cancels the child's remaining paths
-and resumes the parent through the matching named port. Event Entry listeners exist only while
-their graph instance exists. Recursion is rejected by validation in v1.
+Structured subgraphs contain one **Subgraph Starts Here** step and named **Finish Subgraph** steps.
+**Run Subgraph** creates a child instance and suspends only its caller. Reaching a result cancels
+the child's remaining paths and resumes the parent through the matching named outcome.
+**When Event Happens** listeners exist only while their graph instance exists. Recursion is
+rejected by validation in v1.
 
-### Weighted random branches
+### Random outcomes
 
-Random owns an authored list of stable named output ports and positive relative weights. For a
-one-percent rare path, use weights `99` and `1`; weights need not total 100. It chooses exactly one
-port from the currently connected, valid outputs. The selected port then follows normal execution
-semantics, including intentional fan-out when that one port has multiple wires. Empty branch lists,
-duplicate or empty port IDs, non-finite/non-positive weights, and a node with no connected output
-are validation errors.
+**Choose Random Path** owns a list of stable named outcomes and positive relative **Chance
+Weights**. For a one-percent rare path, use weights `99` and `1`; weights need not total 100. It
+chooses exactly one outcome from the currently connected, valid outputs. The selected outcome then
+follows normal execution semantics, including intentional fan-out when that outcome has multiple
+wires. Empty outcome lists, duplicate or empty connection names, invalid chance weights, and a step
+with no connected outcome are validation errors.
 
 The runner uses its own transient `RandomNumberGenerator`. Tests or game-owned deterministic
 services may call `FlowSystem.instance.graph_runner.set_random_seed(seed)` or inject a callable
 with `set_random_float_source(callable)`. Neither the generator nor an injected Callable is stored
-in graph Resources or save snapshots; a Random node is an immediate step, so snapshots always
+in graph Resources or save snapshots; Choose Random Path is an immediate step, so snapshots always
 record its selected successor rather than re-rolling it after load.
 
 ### Custom game actions
@@ -129,17 +136,15 @@ misspelled action IDs. No provider Node or Callable is stored in a graph or save
 formations, spawning, combat and boss health remain owned by encounter/boss systems; those systems
 emit `FlowEvents` such as `wave_cleared` or `boss_defeated` for the graph to coordinate.
 
-### The escape hatch
+### Keep decisions in the graph
 
-Not everything wants to be data. Subscribe directly for anything that is genuinely code:
+Gameplay systems should emit `FlowEvents`; **When Event Happens** and **Wait Until Event** steps
+decide what those events mean. When the graph needs code to perform game-specific work, use
+**Run Game Action** and a registered provider. Do not add a parallel code subscription that makes
+a high-level story decision, or the graph stops being the game's source of truth.
 
-```gdscript
-FlowEvents.subscribe(&"door_opened", _on_door_opened)   # one event
-FlowEvents.subscribe_any(_log_everything)               # all of them
-```
-
-Handlers take `(event_id: StringName, data: Dictionary)`. One fixed signature, so a handler that
-wants neither drops them with `Callable.unbind()`, exactly as it would for a signal.
+Direct `FlowEvents` subscriptions remain useful for diagnostics and low-level adapters that merely
+observe traffic. They are not a second story executor.
 
 ## What is in the box
 
@@ -150,14 +155,13 @@ wants neither drops them with `Callable.unbind()`, exactly as it would for a sig
 | `flow_events.gd` | `FlowEvents` | The bus. Keyed pub/sub, plus the `[FLOW]` log and a debug history ring. |
 | `flow_state.gd` | `FlowState` | Story flags, values, current level and spawn, and the two methods that put them in somebody else's save payload. |
 | `flow_system.gd` | `FlowSystem` | The node. Mode, containers, and the orchestration of a level swap and a cutscene. |
-| `flow_director.gd` | `FlowDirector` | Event-facing compatibility facade: feeds graphs and runs legacy actions through a serialized lane. |
 | `flow_graph_runner.gd` | `FlowGraphRunner` | Concurrent token scheduler, event/timer waits, subgraphs, snapshots and telemetry. |
 | `flow_operation_arbiter.gd` | `FlowOperationArbiter` | Event-driven FIFO for globally exclusive loads, cutscenes and future exclusive verbs. |
 | `flow_persistence.gd` | `FlowPersistence` | Rejects live Objects/Callables and safely clones persistent Variant data. |
 | `flow_loader.gd` | `FlowLoader` | Threaded loading and preloading. |
 | `flow_present.gd` | `FlowPresent` | Fades and error dialogs. **The only file that names `win98_ui`.** |
 
-**`data/`** — what you author: the legacy resources plus `FlowGraph`, typed graph nodes,
+**`data/`** — what you author: `FlowGraph`, typed graph nodes,
 `FlowGraphConnection`, `FlowCondition`, registries/descriptors and structured validation issues.
 
 **`editor/`** — editor-only visual graph UI. Runtime files do not import it.
@@ -165,8 +169,8 @@ wants neither drops them with `Callable.unbind()`, exactly as it would for a sig
 **`nodes/`** — what goes in scenes: `FlowLevel` (level root), `FlowSpawn` (arrival marker),
 `FlowTrigger3D` (an area that reports an event), `FlowCutscene` (the cutscene contract).
 
-**`debug/`** — `FlowDebugWindow`, a `UIWindow` showing mode, level, spawn, queue, pending save and
-every story flag, live.
+**`debug/`** — `FlowDebugWindow`, a `UIWindow` showing mode, level, spawn, pending save, concurrent
+graph paths and every story flag, live.
 
 ## Modes
 
@@ -187,8 +191,8 @@ Put `FlowLevel` on the level root and scatter `FlowSpawn` markers through it. A 
 own facing, so arrival direction is authored in the level rather than hardcoded in a story script.
 A missing spawn warns and falls back to `default` rather than refusing to load.
 
-Entering a level announces `entered_<level_id>` on the bus. A one-shot `FlowEvent` with that id is
-how a first-visit cutscene works, with no script in the level scene at all.
+Entering a level announces `entered_<level_id>` on the bus. A **When Event Happens** step with
+**Trigger Only Once** enabled can start a first-visit cutscene with no script in the level scene at all.
 
 ## Cutscenes
 
@@ -199,8 +203,9 @@ Extend `FlowCutscene` on the root of a cutscene scene, override `_begin`, and ca
 A cutscene may finish inside `begin()`. `FlowSystem` checks `is_finished()` before awaiting, so a
 cutscene that resolves instantly does not hang the queue waiting for a signal already emitted.
 
-Cutscenes and graph input nodes take control through owner-scoped input leases; the legacy/manual
-`FlowSystem.set_gameplay_input()` override remains available. `gameplay_input_changed` reports the
+Cutscenes and graph input nodes take control through owner-scoped input leases; the host-level
+`FlowSystem.set_gameplay_input()` override remains available for menus and application setup.
+`gameplay_input_changed` reports the
 aggregate result. That is **not** the same as disabling the player node: the body keeps simulating,
 so a character coasts to a stop and stands there rather than freezing mid-stride and dropping its
 shadow. Overlapping owners cannot accidentally re-enable one another's lock.
@@ -240,16 +245,16 @@ producing a corrupt save. Returned containers are detached copies.
 Restore it **before** the level is instanced, or a door that reads a flag in its own `_ready()`
 reads the value from the run that was just abandoned.
 
-One-shot events are guarded by a story flag (`flow_ran_<event_id>`), so "seen it once" survives
-quitting and reloading rather than replaying every time the game comes back.
+When Event Happens steps with **Trigger Only Once** enabled are guarded by a stable graph/step flag, so "seen it
+once" survives quitting and reloading rather than replaying every time the game comes back.
 
 ## Why it stays fast as the story grows
 
 - **Keyed dispatch.** Listeners are stored per event id, so an emit wakes only the handlers that
-  asked for that event. `subscribe_any` exists for the two things that legitimately want
-  everything — the director and the log.
-- **Hash lookup, not a `match` chain.** The director indexes the database once at startup, so three
-  hundred events cost the same per event as three.
+  asked for that event. `subscribe_any` exists for the graph runtime and debug tools that need the
+  complete stream.
+- **Indexed graph routing.** Event waits and When Event Happens steps are indexed by event name, and graph,
+  level, cutscene and custom-action registries are indexed once instead of scanned per step.
 - **No allocation on a bare emit.** `FlowEvents.NO_DATA` is shared, and safe to share because a
   `const` Dictionary is read-only.
 - **Spent triggers stop costing.** A one-shot `FlowTrigger3D` sets `monitoring = false`, so the
@@ -271,10 +276,10 @@ quitting and reloading rather than replaying every time the game comes back.
   up as a leaked instance at exit.
 - **Static state outlives the scene tree.** `FlowSystem.reset_run()` wipes flags, subscriptions and
   preloads when a run ends. Without it a second New Game inherits the first one's story.
-  `FlowEvents.reset()` also drops the director's own subscription, so anything that resets the bus
+  `FlowEvents.reset()` also drops the graph runtime's subscription, so anything that resets the bus
   must reconnect it.
-- **An emitted event joins the queue *behind* the rest of the current event's actions.**
-  In graphs it enters the non-reentrant inbox; in the compatibility lane it joins the legacy FIFO.
+- **An emitted event enters a non-reentrant inbox.** The current graph step finishes first, then
+  existing waiters resume before new When Event Happens paths start.
 - **A `StringName` compares by pointer, not alphabetically.** Sorting an `Array[StringName]`
   directly gives an order that is stable within a run but otherwise arbitrary. `FlowState.flags()`
   sorts as strings and converts back.

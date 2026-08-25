@@ -7,6 +7,9 @@ extends SceneTree
 ##   res://addons/game_flow/tests/flow_graph_editor_smoke.gd
 
 const WorkspaceScript := preload("res://addons/game_flow/editor/flow_graph_editor.gd")
+const FriendlyInspectorScript := preload(
+	"res://addons/game_flow/editor/flow_node_inspector_plugin.gd")
+const NodeCatalogScript := preload("res://addons/game_flow/data/flow_node_catalog.gd")
 const GraphScript := preload("res://addons/game_flow/data/flow_graph.gd")
 const ConnectionScript := preload("res://addons/game_flow/data/flow_graph_connection.gd")
 const DatabaseScript := preload("res://addons/game_flow/data/flow_database.gd")
@@ -16,6 +19,8 @@ const CutsceneEntryScript := preload("res://addons/game_flow/data/flow_cutscene_
 const GameStartNodeScript := preload("res://addons/game_flow/data/flow_game_start_node.gd")
 const EndNodeScript := preload("res://addons/game_flow/data/flow_end_node.gd")
 const RandomNodeScript := preload("res://addons/game_flow/data/flow_random_node.gd")
+const IfNodeScript := preload("res://addons/game_flow/data/flow_if_node.gd")
+const ConditionScript := preload("res://addons/game_flow/data/flow_condition.gd")
 const CallSubgraphNodeScript := preload("res://addons/game_flow/data/flow_call_subgraph_node.gd")
 const SubgraphEntryNodeScript := preload("res://addons/game_flow/data/flow_subgraph_entry_node.gd")
 const SubgraphExitNodeScript := preload("res://addons/game_flow/data/flow_subgraph_exit_node.gd")
@@ -52,6 +57,17 @@ func _run() -> void:
 
 	var palette := _workspace.get("_palette") as ItemList
 	_check(palette != null and palette.item_count > 0, "node catalog populated the searchable palette")
+	_check(_palette_contains(palette, "Start & Finish  ›  When Game Starts") \
+			and _palette_contains(palette, "Choices & Paths  ›  Check Condition") \
+			and _palette_contains(palette, "Player  ›  Lock Player Controls"),
+		"palette uses approachable game-design names and categories")
+	var catalog_descriptions_complete := true
+	for descriptor in NodeCatalogScript.descriptors():
+		if descriptor.display_name.is_empty() or descriptor.category.is_empty() \
+				or descriptor.description.is_empty():
+			catalog_descriptions_complete = false
+			break
+	_check(catalog_descriptions_complete, "every built-in palette step has author-facing help")
 
 	var canvas := _workspace.get("_graph_edit") as GraphEdit
 	var graph_node_count := 0
@@ -72,6 +88,40 @@ func _run() -> void:
 	var start_view := node_views.get(&"start") as GraphNode
 	var finish_view := node_views.get(&"finish") as GraphNode
 	_check(start_view != null and finish_view != null, "stable node IDs map to disposable GraphNode views")
+	_check(start_view.title == "When Game Starts" and finish_view.title == "Stop This Path",
+		"canvas titles use plain game-design language")
+	_check(_graph_view_contains(start_view, "Next") and _graph_view_contains(finish_view, "Enter"),
+		"execution ports read as Enter and Next without changing their stable IDs")
+	_check(start_view.tooltip_text.contains("Begins the master graph") \
+			and not start_view.tooltip_text.contains("game_start"),
+		"canvas tooltip explains behavior instead of exposing a runtime type ID")
+
+	# The editor-only Inspector adapter keeps serialized property paths unchanged while replacing
+	# labels and enum choices with terms a designer can understand.
+	var friendly_inspector = FriendlyInspectorScript.new()
+	var event_entry = preload("res://addons/game_flow/data/flow_event_entry_node.gd").new()
+	var condition = ConditionScript.new()
+	_check(friendly_inspector.friendly_label_for(event_entry, "event_id") == "Event Name" \
+			and friendly_inspector.friendly_label_for(event_entry, "one_shot") == "Trigger Only Once" \
+			and friendly_inspector.friendly_label_for(condition, "source") == "Where to Look",
+		"Inspector presents common node properties in designer language")
+	_check(friendly_inspector.friendly_enum_options_for(condition, "source") \
+			== PackedStringArray(["Story Flag", "Story Value", "Event Detail", "Path Value"]),
+		"condition sources have friendly choices in their stable numeric order")
+	_check(friendly_inspector.friendly_enum_options_for(condition, "operator") \
+			== PackedStringArray([
+				"Equals", "Is Not", "Less Than", "At Most", "Greater Than", "At Least",
+				"Is On", "Is Off", "Is Set", "Is Not Set"]),
+		"condition comparisons have friendly choices in their stable numeric order")
+	condition.key = &"boss_health"
+	condition.operator = ConditionScript.Operator.LESS
+	condition.value = 0.3
+	var check_node = IfNodeScript.new()
+	check_node.condition = condition
+	_check(check_node.display_title() == "Check: Boss Health < 0.3" \
+			and check_node.port_label(&"true") == "Yes" \
+			and check_node.port_label(&"false") == "No",
+		"condition step summarizes its rule and uses Yes/No outcomes")
 
 	# Disconnect/connect mutations are authored into the Resource, not just drawn on GraphEdit.
 	_workspace.call("_on_disconnection_requested", start_view.name, 0, finish_view.name, 0)
@@ -160,7 +210,7 @@ func _run() -> void:
 	_check(is_equal_approx(common_branch.weight, 1.0), "Random weight edit can be undone")
 	undo.get_history_undo_redo(branch_history).redo()
 	_check(is_equal_approx(common_branch.weight, 99.0), "Random weight edit can be redone")
-	_check(_random_view_contains(random_node.node_id, "weight 99"),
+	_check(_random_view_contains(random_node.node_id, "chance weight 99"),
 		"Random GraphNode output visibly includes its authored weight")
 
 	_workspace.call("_on_inspector_resource_selected", common_branch, "branches/0")
@@ -272,6 +322,8 @@ func _run() -> void:
 	if child_option >= 0:
 		_workspace.call("_on_reference_selected", child_option)
 	_check(call_child.subgraph_id == &"editor_child", "database reference picker authored the stable ID")
+	_check(_workspace.call("_node_title", call_child) == "Run Subgraph: Editor Child",
+		"canvas title uses the registered subgraph's readable display name")
 	_workspace.call("_open_subgraph", &"editor_child")
 	_check(_workspace.get("_graph") == child and (_workspace.get("_breadcrumbs") as Array).size() == 2,
 		"subgraph navigation pushed a breadcrumb")
@@ -433,6 +485,10 @@ func _find_connection(graph, connection_id: StringName):
 
 func _random_view_contains(node_id: StringName, needle: String) -> bool:
 	var view := (_workspace.get("_node_to_view") as Dictionary).get(node_id) as GraphNode
+	return _graph_view_contains(view, needle)
+
+
+func _graph_view_contains(view: GraphNode, needle: String) -> bool:
 	if view == null:
 		return false
 	for child: Node in view.get_children():
@@ -441,6 +497,15 @@ func _random_view_contains(node_id: StringName, needle: String) -> bool:
 		for label_candidate: Node in child.get_children():
 			if label_candidate is Label and (label_candidate as Label).text.contains(needle):
 				return true
+	return false
+
+
+func _palette_contains(palette: ItemList, expected_text: String) -> bool:
+	if palette == null:
+		return false
+	for index in palette.item_count:
+		if palette.get_item_text(index) == expected_text:
+			return true
 	return false
 
 

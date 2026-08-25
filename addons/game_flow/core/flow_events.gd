@@ -8,8 +8,8 @@ extends RefCounted
 ## meant to parse standalone. Nothing in this file touches the scene tree.
 ##
 ## Listeners are keyed by event id, so an emit wakes only the handlers for that one event instead
-## of every listener in the game. [method subscribe_any] exists for the two things that
-## legitimately want all of them -- the director and the debug log.
+## of every listener in the game. [method subscribe_any] exists for systems that legitimately
+## want all events, primarily the graph runtime and debug tools.
 ##
 ## Handlers take [code](event_id: StringName, data: Dictionary)[/code]. That is one fixed
 ## signature on purpose; a handler that wants neither can drop them with
@@ -86,7 +86,7 @@ static func subscribe(event_id: StringName, callback: Callable) -> void:
 	if not bucket.has(callback):
 		bucket.append(callback)
 
-## Registers [param callback] for every event. Meant for the flow director and the debug log; a
+## Registers [param callback] for every event. Meant for the graph runtime and debug tools; a
 ## gameplay object wanting one event should use [method subscribe] so it is not woken by traffic
 ## it does not care about.
 static func subscribe_any(callback: Callable) -> void:

@@ -13,8 +13,8 @@ extends Node
 ## Like [UISystem], every static entry point no-ops with nothing in the tree rather than crashing,
 ## so a level scene opened on its own still runs.
 ##
-## What this file does not do is decide anything about the story. It provides the verbs;
-## [FlowDirector] and the [FlowDatabase] decide when they are used.
+## What this file does not do is decide anything about the story. It provides the verbs; the
+## [FlowGraphRunner] executes the authored graph and decides when they are used.
 
 #region Signals
 
@@ -69,7 +69,7 @@ enum Mode {
 
 static var instance: FlowSystem
 
-## Every story rule, level and cutscene. Validated at startup in debug builds.
+## Every graph, level, cutscene and custom-action definition. Validated at startup in debug builds.
 @export var database: FlowDatabase
 
 @export_group("Containers")
@@ -92,7 +92,6 @@ var world_container: Node
 var persistent_actors: Node
 var cutscene_container: Node
 
-var director: FlowDirector
 var graph_runner: FlowGraphRunner
 var operation_arbiter: FlowOperationArbiter
 
@@ -132,9 +131,8 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	if graph_runner != null:
+		FlowEvents.unsubscribe_any(graph_runner.accept_event)
 		graph_runner.cancel_all()
-	if director != null:
-		director.clear_queue()
 	if operation_arbiter != null:
 		operation_arbiter.cancel_all("system_exit")
 	if instance == self:
@@ -175,26 +173,21 @@ func _ready() -> void:
 	add_child(graph_runner)
 	graph_runner.telemetry.connect(_on_graph_telemetry)
 	graph_runner.save_stability_changed.connect(_flush_pending_save)
-
-	director = FlowDirector.new()
-	director.name = "FlowDirector"
-	director.graph_runner = graph_runner
-	add_child(director)
-	_connect_director()
+	_connect_graph_runner()
 
 	_report_database_problems()
 
-## The director listens to everything, which is exactly what [method FlowEvents.reset] wipes. Any
-## code that resets the bus has to come back through here or the game goes deaf.
-func _connect_director() -> void:
-	if director != null:
-		FlowEvents.subscribe_any(director.on_event)
+## The graph runtime is the one wildcard flow listener. [method FlowEvents.reset] deliberately
+## clears every subscription, so run reset reconnects it here before gameplay can emit again.
+func _connect_graph_runner() -> void:
+	if graph_runner != null:
+		FlowEvents.subscribe_any(graph_runner.accept_event)
 
 ## Says every problem in the database out loud at startup. A level that points at a scene which is
 ## no longer there is much easier to fix now than as a silent failed transition three rooms later.
 func _report_database_problems() -> void:
 	if database == null:
-		push_warning("FlowSystem: no FlowDatabase assigned; no story event will route.")
+		push_warning("FlowSystem: no FlowDatabase assigned; no game-flow graph can run.")
 		return
 	if not OS.is_debug_build():
 		return
@@ -309,7 +302,8 @@ func _refresh_gameplay_input_state() -> void:
 ## Swaps the world for [param level_id], arriving at [param spawn_id]. Await it.
 ##
 ## Returns false and leaves the game where it was if the level is unknown, fails to load, or
-## another major action is already running.
+## another major action is already running. Authored game flow should use a Load Level node; this
+## direct verb exists for host integration such as restoring older save formats.
 static func transition_to_level(
 		level_id: StringName,
 		spawn_id: StringName = &"",
@@ -361,7 +355,7 @@ func _transition_to_level(
 		transition_data: Dictionary
 ) -> bool:
 	if _busy:
-		# The director queues rather than calling into a busy system; a direct caller is refused
+		# The graph runtime queues rather than calling into a busy system; a direct caller is refused
 		# outright, because two transitions running at once free the world twice.
 		push_warning("FlowSystem: refusing to enter '%s' while another flow action is running." % level_id)
 		return false
@@ -423,9 +417,8 @@ func _transition_to_level(
 	FlowEvents.log_line("entered: %s at %s" % [level_id, resolved if not resolved.is_empty() else &"default"])
 	level_entered.emit(level_id, resolved)
 
-	# Arriving somewhere is itself a story event, announced under a derived id so a rule can key off
-	# it like any other. This is what a first-visit cutscene hangs on: a one-shot FlowEvent called
-	# entered_<level_id>, with no bespoke hook in the level scene.
+	# Arriving somewhere is itself a story event. A When Event Happens step can react to the derived
+	# entered_<level_id> id without adding a bespoke hook to the level scene.
 	FlowEvents.emit(entered_event_for(level_id), {"level_id": level_id, "spawn_id": resolved})
 
 	await FlowPresent.reveal(reveal_duration)
@@ -451,7 +444,9 @@ func _on_load_progress(value: float) -> void:
 
 #region Cutscenes
 
-## Plays [param cutscene_id] and returns when it has finished or been skipped. Await it.
+## Plays [param cutscene_id] and returns when it has finished or been skipped. Await it. Authored
+## game flow should use a Play Cutscene node; this direct verb exists for host integration and
+## recovery.
 static func play_cutscene(cutscene_id: StringName, context: Dictionary = {}) -> bool:
 	if instance == null:
 		push_error("FlowSystem.play_cutscene(): no FlowSystem in the tree.")
@@ -551,7 +546,7 @@ func _finish_cutscene_state(previous_mode: Mode, input_lease: StringName) -> voi
 
 #region Queued exclusive operations
 
-## Queues a level transition for graph/legacy execution. Unlike the direct API, simultaneous
+## Queues a level transition for graph execution. Unlike the direct API, simultaneous
 ## requests wait their turn rather than racing FlowSystem's world-swap mutex.
 static func queue_level_transition(
 		level_id: StringName,
@@ -566,7 +561,7 @@ static func queue_level_transition(
 		"data": transition_data,
 	})
 
-## Queues a cutscene for graph/legacy execution.
+## Queues a cutscene for graph execution.
 static func queue_cutscene(cutscene_id: StringName, context: Dictionary = {}) -> FlowActionHandle:
 	if instance == null:
 		return _failed_handle("no_flow_system")
@@ -736,16 +731,12 @@ static func reset_run() -> void:
 func _reset_run() -> void:
 	if graph_runner != null:
 		graph_runner.cancel_all()
-	# Invalidate awaiting legacy continuations before cancelling their operation handles. Handle
-	# cancellation emits synchronously, so this order prevents stale actions from resuming mid-reset.
-	if director != null:
-		director.clear_queue()
 	_cancel_operation_queue()
 	FlowState.reset()
 	FlowLoader.reset()
 	FlowEvents.reset()
-	# FlowEvents.reset() just dropped the director's own subscription along with everything else.
-	_connect_director()
+	# FlowEvents.reset() dropped the graph runtime's subscription along with everything else.
+	_connect_graph_runner()
 
 	_pending_save = &""
 	_set_busy(false)
@@ -771,10 +762,8 @@ func debug_snapshot() -> Dictionary:
 		"spawn": FlowState.current_spawn,
 		"loading": _loading_level,
 		"cutscene": _current_cutscene_id,
-		"queued": director.queue_size() if director != null else 0,
 		"exclusive_active": operation_arbiter != null and operation_arbiter.is_active(),
 		"exclusive_queued": operation_arbiter.queued_count() if operation_arbiter != null else 0,
-		"action": director.current_action_text() if director != null else "",
 		"pending_save": _pending_save,
 		"input": _input_enabled,
 		"flags": FlowState.flags(),

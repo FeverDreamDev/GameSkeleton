@@ -88,7 +88,7 @@ func start_master(graph_id: StringName = &"") -> bool:
 		if node.enabled:
 			starts.append(node)
 	if starts.is_empty():
-		push_error("FlowGraphRunner: master graph '%s' has no Game Start node." % resolved_id)
+		push_error("FlowGraphRunner: Main Game Graph '%s' has no When Game Starts step." % resolved_id)
 		cancel_all()
 		return false
 	for node: FlowGraphNode in starts:
@@ -178,7 +178,7 @@ func set_random_seed(seed_value: int) -> void:
 
 #region Event ingress
 
-## Called by FlowDirector's one wildcard subscription. Wait tokens do not create their own bus
+## Called by the runner's one wildcard bus subscription. Wait tokens do not create their own
 ## subscriptions, which makes reset/rebind deterministic and keeps event lookup O(waiters).
 func accept_event(event_id: StringName, data: Dictionary) -> void:
 	if not _active or event_id.is_empty():
@@ -225,7 +225,7 @@ func _drain_event_inbox() -> void:
 				var flag := _entry_once_flag(_instances[instance_id]["graph_id"], node.node_id)
 				if FlowState.has_flag(flag):
 					continue
-				# Marked at scheduling time, matching legacy same-frame de-duplication.
+				# Marked at scheduling time so two same-frame reports cannot start it twice.
 				FlowState.set_flag(flag)
 			_spawn_token(instance_id, node.node_id, {}, data)
 
@@ -1054,8 +1054,8 @@ func restore_from_dict(state: Dictionary, keep_suspended: bool = true) -> bool:
 					or _tokens[owner_token_id]["instance_id"] != instance_id:
 				return _reject_restore("snapshot input lease '%s' has an unresolved owner" % key)
 			owners.append(owner_token_id)
-		# Snapshot v1 originally stored one instance-scoped owner without token IDs. Keep accepting
-		# those files; the first matching Enable Input releases that legacy owner.
+		# Early snapshot-v1 files stored one instance-scoped owner without token IDs. Keep accepting
+		# those files; the first matching Enable Input releases that older owner.
 		if owners.is_empty():
 			owners.append(&"")
 		_owned_input_leases[key] = {

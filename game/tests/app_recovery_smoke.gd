@@ -201,9 +201,9 @@ func _run() -> void:
 	_check(_cutscenes_started.size() == cutscenes_before_continue + 1,
 		"Continue chose the newest intro_pending save")
 
-	# A second New Game resets the static event bus. The graph must route its two recovery
-	# checkpoints and one entered-level autosave exactly once each, while the entered event itself
-	# still routes once rather than once per prior run.
+	# A second New Game resets the static event bus. The graph must request its two recovery
+	# checkpoints and one entered-level autosave exactly once each, while the entered event is
+	# recorded once rather than once per prior run.
 	app.call("_return_to_main_menu")
 	_check(await _wait_for(_stable_menu.bind(app), 10.0),
 		"Continue run returns to menu before the second New Game")
@@ -219,8 +219,8 @@ func _run() -> void:
 			entered_history_count += 1
 	_check(entered_history_count == 1,
 		"the reset FlowEvents bus records one entered_terrain_test event")
-	_check(FlowState.has_flag(&"flow_ran_entered_terrain_test"),
-		"the second run spends the entered-level one-shot flag")
+	_check(FlowState.has_flag(&"app_master_bootstrap_complete"),
+		"the second run records completed master-graph bootstrap")
 
 	# Exercise the application's supported teardown path before freeing the test
 	# tree. This also keeps the dummy headless renderer from observing managed

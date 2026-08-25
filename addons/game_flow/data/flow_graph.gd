@@ -141,14 +141,14 @@ func validate_detailed(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"unsupported_graph_version",
-			"graph format version %d is not supported (latest is %d)" % [format_version, FORMAT_VERSION],
+			"This graph was saved in an unsupported format (version %d; supported version %d)." % [format_version, FORMAT_VERSION],
 			graph_id
 		))
 	if kind not in [Kind.MASTER, Kind.SUBGRAPH]:
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"invalid_graph_kind",
-			"graph kind %d is not supported" % kind,
+			"Choose either Main Game Graph or Reusable Subgraph as the graph kind.",
 			graph_id
 		))
 
@@ -157,7 +157,7 @@ func validate_detailed(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"empty_node_slot",
-				"graph has an empty node slot",
+				"This graph contains a missing step. Remove the empty entry and add the step again.",
 				graph_id
 			))
 			continue
@@ -165,14 +165,14 @@ func validate_detailed(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"node_missing_id",
-				"node '%s' has no stable node_id" % node.display_title(),
+				"'%s' is missing its internal identity. Delete it and add the step again." % node.display_title(),
 				graph_id
 			))
 		elif node_map.has(node.node_id):
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"duplicate_node_id",
-				"two nodes share node_id '%s'" % node.node_id,
+				"Two steps share the same internal identity. Duplicate one of them again to repair it.",
 				graph_id,
 				node.node_id
 			))
@@ -184,7 +184,7 @@ func validate_detailed(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"unknown_node_type",
-				"node type '%s' is not registered" % node.type_id(),
+				"'%s' uses a step type that is not available in this project." % node.display_title(),
 				graph_id,
 				node.node_id
 			))
@@ -194,14 +194,14 @@ func validate_detailed(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"empty_graph",
-			"graph contains no nodes",
+			"This graph is empty. Add a starting step from the palette.",
 			graph_id
 		))
 	elif entry_count == 0:
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"graph_missing_entry",
-			"graph has no enabled entry node",
+			"This graph has no active starting step.",
 			graph_id
 		))
 
@@ -227,7 +227,8 @@ func _validate_unconnected_outputs(
 				issues.append(FlowValidationIssue.make(
 					FlowValidationIssue.Severity.WARNING,
 					&"unconnected_output_port",
-					"output port '%s' is not connected" % port_id,
+					"'%s' has no wire connected to its '%s' outcome." % [
+						node.display_title(), node.port_label(port_id)],
 					graph_id,
 					node.node_id,
 					&"",
@@ -240,7 +241,7 @@ func _validate_unconnected_outputs(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"random_no_connected_output",
-				"random node must have at least one connected weighted output",
+				"Choose Random Path needs a wire connected to at least one outcome.",
 				graph_id,
 				node.node_id
 			))
@@ -266,7 +267,7 @@ func _validate_graph_node_contracts(
 				issues.append(FlowValidationIssue.make(
 					FlowValidationIssue.Severity.ERROR,
 					&"duplicate_subgraph_exit",
-					"two subgraph exits share exit_id '%s'" % exit_node.exit_id,
+					"Two Finish Subgraph steps return the same result '%s'." % exit_node.port_label(exit_node.exit_id),
 					graph_id,
 					exit_node.node_id
 				))
@@ -276,28 +277,28 @@ func _validate_graph_node_contracts(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"master_game_start_count",
-			"master graph must contain exactly one enabled Game Start (found %d)" % game_start_count,
+			"The Main Game Graph needs exactly one active When Game Starts step (found %d)." % game_start_count,
 			graph_id
 		))
 	if kind == Kind.MASTER and subgraph_entry_count > 0:
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"master_has_subgraph_entry",
-			"master graph cannot contain a Subgraph Entry",
+			"Subgraph Starts Here belongs only in a Reusable Subgraph, not the Main Game Graph.",
 			graph_id
 		))
 	if kind == Kind.SUBGRAPH and subgraph_entry_count != 1:
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"subgraph_entry_count",
-			"subgraph must contain exactly one enabled Subgraph Entry (found %d)" % subgraph_entry_count,
+			"A Reusable Subgraph needs exactly one active Subgraph Starts Here step (found %d)." % subgraph_entry_count,
 			graph_id
 		))
 	if kind == Kind.SUBGRAPH and game_start_count > 0:
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"subgraph_has_game_start",
-			"subgraph cannot contain a Game Start entry",
+			"When Game Starts belongs only in the Main Game Graph, not a Reusable Subgraph.",
 			graph_id
 		))
 
@@ -314,7 +315,7 @@ func _validate_connections(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"empty_connection_slot",
-				"graph has an empty connection slot",
+				"This graph contains a missing wire. Disconnect and reconnect the affected steps.",
 				graph_id
 			))
 			continue
@@ -322,14 +323,14 @@ func _validate_connections(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"connection_missing_id",
-				"connection %s has no stable connection_id" % connection.describe(),
+				"A wire is missing its internal identity. Disconnect and reconnect it.",
 				graph_id
 			))
 		elif connection_ids.has(connection.connection_id):
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"duplicate_connection_id",
-				"two connections share connection_id '%s'" % connection.connection_id,
+				"Two wires share the same internal identity. Disconnect and reconnect one of them.",
 				graph_id,
 				&"",
 				connection.connection_id
@@ -342,20 +343,20 @@ func _validate_connections(
 		if from_node == null:
 			issues.append(_connection_issue(
 				graph_id, connection, &"connection_missing_source",
-				"source node '%s' does not exist" % connection.from_node_id))
+				"A wire starts at a step that no longer exists. Remove the broken wire."))
 		elif not from_node.has_output_port(connection.from_port_id):
 			issues.append(_connection_issue(
 				graph_id, connection, &"connection_missing_source_port",
-				"node '%s' has no output port '%s'" % [connection.from_node_id, connection.from_port_id],
+				"A wire starts from an outcome that no longer exists. Reconnect the wire.",
 				FlowValidationIssue.Severity.ERROR, connection.from_port_id))
 		if to_node == null:
 			issues.append(_connection_issue(
 				graph_id, connection, &"connection_missing_target",
-				"target node '%s' does not exist" % connection.to_node_id))
+				"A wire points to a step that no longer exists. Remove the broken wire."))
 		elif not to_node.has_input_port(connection.to_port_id):
 			issues.append(_connection_issue(
 				graph_id, connection, &"connection_missing_target_port",
-				"node '%s' has no input port '%s'" % [connection.to_node_id, connection.to_port_id],
+				"A wire points to an entrance that no longer exists. Reconnect the wire.",
 				FlowValidationIssue.Severity.ERROR, connection.to_port_id))
 
 		var edge_key := "%s\u001f%s\u001f%s\u001f%s" % [
@@ -365,7 +366,7 @@ func _validate_connections(
 		if edge_keys.has(edge_key):
 			issues.append(_connection_issue(
 				graph_id, connection, &"duplicate_connection",
-				"duplicate execution connection %s" % connection.describe(),
+				"The same two outcomes are connected by more than one wire.",
 				FlowValidationIssue.Severity.WARNING))
 		else:
 			edge_keys[edge_key] = true
@@ -395,7 +396,7 @@ func _validate_reachability(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.WARNING,
 			&"unreachable_node",
-			"node is unreachable from every enabled entry",
+			"This step can never run because no starting path reaches it.",
 			graph_id,
 			node.node_id
 		))
@@ -415,7 +416,7 @@ func _validate_immediate_cycles(
 			issues.append(FlowValidationIssue.make(
 				FlowValidationIssue.Severity.ERROR,
 				&"immediate_execution_cycle",
-				"execution cycle has no wait or asynchronous action",
+				"This loop can run forever without waiting. Add a timer, event wait, or other waiting step.",
 				graph_id,
 				cycle_node
 			))

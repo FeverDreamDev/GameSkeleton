@@ -17,7 +17,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Action: %s" % action_id if not action_id.is_empty() else "Invoke Action"
+	return "Run Game Action: %s" % _friendly_name(action_id) \
+			if not action_id.is_empty() else "Run Game Action"
 
 
 func output_ports() -> Array[StringName]:
@@ -40,7 +41,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"invoke_action_unknown_id",
-			"custom action '%s' is not in the authored action catalog" % action_id,
+			"Game Action '%s' could not be found in the Game Flow library." % action_id,
 			graph_id,
 			node_id
 		))

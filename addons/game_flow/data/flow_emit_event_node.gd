@@ -13,7 +13,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Emit: %s" % event_id if not event_id.is_empty() else "Emit Event"
+	return "Send Event: %s" % _friendly_name(event_id) \
+			if not event_id.is_empty() else "Send Event"
 
 
 func validation_issues(

@@ -12,7 +12,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Exit: %s" % exit_id if not exit_id.is_empty() else "Subgraph Exit"
+	return "Finish Subgraph: %s" % _friendly_name(exit_id) \
+			if not exit_id.is_empty() else "Finish Subgraph"
 
 
 func output_ports() -> Array[StringName]:
@@ -30,7 +31,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"subgraph_exit_reserved_id",
-			"subgraph exit id 'failed' is reserved for call-resolution failures",
+			"'Failed' is reserved for problems starting a subgraph. Choose another result name.",
 			graph_id,
 			node_id
 		))

@@ -8,7 +8,7 @@ func type_id() -> StringName:
 
 
 func display_title() -> String:
-	return title_override if not title_override.is_empty() else "Game Start"
+	return title_override if not title_override.is_empty() else "When Game Starts"
 
 
 func input_ports() -> Array[StringName]:

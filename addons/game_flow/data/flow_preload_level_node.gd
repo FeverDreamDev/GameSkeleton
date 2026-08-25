@@ -12,7 +12,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Preload: %s" % level_id if not level_id.is_empty() else "Preload Level"
+	return "Prepare Level: %s" % _friendly_name(level_id) \
+			if not level_id.is_empty() else "Prepare Level"
 
 
 func validation_issues(
@@ -26,7 +27,7 @@ func validation_issues(
 		issues.append(FlowValidationIssue.make(
 			FlowValidationIssue.Severity.ERROR,
 			&"preload_level_unknown_id",
-			"level '%s' is not registered" % level_id,
+			"Level '%s' could not be found in the Game Flow library." % level_id,
 			graph_id,
 			node_id
 		))

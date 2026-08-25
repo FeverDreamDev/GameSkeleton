@@ -8,11 +8,16 @@ extends EditorPlugin
 ## code from accidentally taking a dependency on editor-only APIs.
 
 const GRAPH_EDITOR_SCRIPT := preload("res://addons/game_flow/editor/flow_graph_editor.gd")
+const NODE_INSPECTOR_PLUGIN_SCRIPT := preload(
+	"res://addons/game_flow/editor/flow_node_inspector_plugin.gd")
 
 var _main_screen: Control
+var _node_inspector_plugin: EditorInspectorPlugin
 
 
 func _enter_tree() -> void:
+	_node_inspector_plugin = NODE_INSPECTOR_PLUGIN_SCRIPT.new()
+	add_inspector_plugin(_node_inspector_plugin)
 	_main_screen = GRAPH_EDITOR_SCRIPT.new()
 	_main_screen.name = "GameFlowEditor"
 	_main_screen.set_editor_plugin(self)
@@ -27,6 +32,9 @@ func _exit_tree() -> void:
 		_main_screen.shutdown()
 		_main_screen.queue_free()
 	_main_screen = null
+	if _node_inspector_plugin != null:
+		remove_inspector_plugin(_node_inspector_plugin)
+	_node_inspector_plugin = null
 
 
 func _has_main_screen() -> bool:

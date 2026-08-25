@@ -13,7 +13,8 @@ func type_id() -> StringName:
 func display_title() -> String:
 	if not title_override.is_empty():
 		return title_override
-	return "Event: %s" % event_id if not event_id.is_empty() else "Event Entry"
+	return "When Event Happens: %s" % _friendly_name(event_id) \
+			if not event_id.is_empty() else "When Event Happens"
 
 
 func input_ports() -> Array[StringName]:
