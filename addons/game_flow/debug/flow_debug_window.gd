@@ -84,6 +84,10 @@ func _refresh() -> void:
 	if snapshot["queued"] > 0 and system.director != null:
 		for event_id: StringName in system.director.queued_events():
 			lines.append("    %s" % event_id)
+	lines.append(_row("Exclusive", "%d queued%s" % [
+		int(snapshot.get("exclusive_queued", 0)),
+		"  [active]" if snapshot.get("exclusive_active", false) else "",
+	]))
 
 	lines.append(_row("Save", _or_dash(snapshot["pending_save"])))
 
@@ -97,6 +101,35 @@ func _refresh() -> void:
 	lines.append(_row("Flags", str(flags.size())))
 	for flag: StringName in flags:
 		lines.append("    %s" % flag)
+
+	var values: Dictionary = snapshot.get("values", {})
+	lines.append(_row("Values", str(values.size())))
+	var value_names: Array[String] = []
+	for key: Variant in values:
+		value_names.append(str(key))
+	value_names.sort()
+	for key in value_names:
+		lines.append("    %s = %s" % [key, values.get(StringName(key), values.get(key))])
+
+	var tokens: Array = snapshot.get("graph_tokens", [])
+	lines.append(_row("Graph", "%d token(s)%s" % [
+		tokens.size(), "  [suspended]" if snapshot.get("graph_suspended", false) else ""]))
+	for token: Dictionary in tokens:
+		var wait: Dictionary = token.get("wait", {})
+		var suffix := ""
+		if not wait.is_empty():
+			suffix = "  %s" % wait.get("kind", "")
+		var stack_names := PackedStringArray()
+		for graph_id: StringName in token.get("subgraph_stack", []):
+			stack_names.append(String(graph_id))
+		var graph_label := " > ".join(stack_names) if not stack_names.is_empty() \
+				else String(token.get("graph_id", &""))
+		lines.append("    %s/%s  %s%s" % [
+			graph_label,
+			token.get("node_id", &""),
+			token.get("status", &""),
+			suffix,
+		])
 
 	_readout.text = "\n".join(lines)
 

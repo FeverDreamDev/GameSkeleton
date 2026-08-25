@@ -1,10 +1,12 @@
 [gd_resource type="Resource" script_class="FlowDatabase" format=3 uid="uid://g52tnndjns6f"]
 
 [ext_resource type="Script" uid="uid://cd52pe57xh0l4" path="res://addons/game_flow/data/flow_database.gd" id="1_database"]
+[ext_resource type="Script" uid="uid://0fsjdd2f2fi2" path="res://addons/game_flow/data/flow_custom_action_entry.gd" id="1_yi8f6"]
 [ext_resource type="Script" uid="uid://dpc78tl1uf3um" path="res://addons/game_flow/data/flow_level_entry.gd" id="2_level"]
 [ext_resource type="Script" uid="uid://dk1iyrv7d5u30" path="res://addons/game_flow/data/flow_cutscene_entry.gd" id="3_cutscene"]
-[ext_resource type="Script" uid="uid://d03tqa68qqkoc" path="res://addons/game_flow/data/flow_event.gd" id="4_event"]
-[ext_resource type="Script" uid="uid://j6kq5bxf5plx" path="res://addons/game_flow/data/flow_action.gd" id="5_action"]
+[ext_resource type="Script" uid="uid://d03tqa68qqkoc" path="res://addons/game_flow/data/flow_event.gd" id="3_isyxd"]
+[ext_resource type="Script" uid="uid://c5eqovft0k5j4" path="res://addons/game_flow/data/flow_graph_entry.gd" id="4_graph_entry"]
+[ext_resource type="Resource" uid="uid://bwr2i7hjgk73" path="res://game/flow/master_game_flow.tres" id="5_master_graph"]
 
 [sub_resource type="Resource" id="FlowCutsceneEntry_intro"]
 script = ExtResource("3_cutscene")
@@ -12,16 +14,11 @@ cutscene_id = &"intro_blank"
 scene_path = "res://game/cutscenes/intro_blank.tscn"
 display_name = "Introduction"
 
-[sub_resource type="Resource" id="FlowAction_entered_save"]
-script = ExtResource("5_action")
-type = 7
-target_id = &"entered_terrain_test"
-
-[sub_resource type="Resource" id="FlowEvent_entered_terrain_test"]
-script = ExtResource("4_event")
-event_id = &"entered_terrain_test"
-one_shot = true
-actions = Array[ExtResource("5_action")]([SubResource("FlowAction_entered_save")])
+[sub_resource type="Resource" id="FlowGraphEntry_main_game"]
+script = ExtResource("4_graph_entry")
+graph_id = &"main_game"
+graph = ExtResource("5_master_graph")
+display_name = "Main Game"
 
 [sub_resource type="Resource" id="FlowLevelEntry_terrain_test"]
 script = ExtResource("2_level")
@@ -31,6 +28,7 @@ display_name = "Terrain Test"
 
 [resource]
 script = ExtResource("1_database")
-events = Array[ExtResource("4_event")]([SubResource("FlowEvent_entered_terrain_test")])
 levels = Array[ExtResource("2_level")]([SubResource("FlowLevelEntry_terrain_test")])
 cutscenes = Array[ExtResource("3_cutscene")]([SubResource("FlowCutsceneEntry_intro")])
+graphs = Array[ExtResource("4_graph_entry")]([SubResource("FlowGraphEntry_main_game")])
+master_graph_id = &"main_game"

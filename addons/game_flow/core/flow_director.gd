@@ -17,12 +17,13 @@ extends Node
 ## this is a story that emits itself, not a story.
 const MAX_CHAIN := 256
 
-## Frames to wait for the flow to become free before giving up on an action.
-const BUSY_FRAME_BUDGET := 1800
-
 var _queue: Array[Dictionary] = []
 var _running: bool = false
 var _current_action: String = ""
+var _generation: int = 1
+
+## Set by FlowSystem. Graph events and waits share this single event-facing facade.
+var graph_runner: FlowGraphRunner
 
 func _ready() -> void:
 	# Actions have to keep running while a pause menu is up, or a save requested just before the
@@ -34,6 +35,9 @@ func _ready() -> void:
 ## Every event passes through here. Most do nothing: an event with no entry in the database is
 ## normal and silent, which is what lets content emit events before the rules for them exist.
 func on_event(event_id: StringName, data: Dictionary) -> void:
+	if graph_runner != null:
+		graph_runner.accept_event(event_id, data)
+
 	var system := FlowSystem.instance
 	if system == null or system.database == null:
 		return
@@ -63,9 +67,10 @@ func _drain() -> void:
 	if _running:
 		return
 	_running = true
+	var generation := _generation
 
 	var processed := 0
-	while not _queue.is_empty():
+	while not _queue.is_empty() and generation == _generation:
 		processed += 1
 		if processed > MAX_CHAIN:
 			push_error("FlowDirector: %d events in one chain; something is emitting itself. Dropping %d queued."
@@ -73,14 +78,17 @@ func _drain() -> void:
 			_queue.clear()
 			break
 		var item: Dictionary = _queue.pop_front()
-		await _run_event(item["event"], item["data"])
+		await _run_event(item["event"], item["data"], generation)
 
-	_current_action = ""
-	_running = false
+	if generation == _generation:
+		_current_action = ""
+		_running = false
 
-func _run_event(definition: FlowEvent, data: Dictionary) -> void:
+func _run_event(definition: FlowEvent, data: Dictionary, generation: int) -> void:
 	FlowEvents.log_line("event: %s" % definition.event_id)
 	for action: FlowAction in definition.actions:
+		if generation != _generation:
+			return
 		if action == null:
 			continue
 		_current_action = action.describe()
@@ -104,12 +112,15 @@ func _run_action(action: FlowAction, data: Dictionary) -> void:
 			FlowEvents.emit(action.target_id, action.data if not action.data.is_empty() else data)
 
 		FlowAction.Type.PLAY_CUTSCENE:
-			if await _wait_until_free():
-				await FlowSystem.play_cutscene(action.target_id, action.data)
+			var cutscene_handle := FlowSystem.queue_cutscene(action.target_id, action.data)
+			if not cutscene_handle.is_finished():
+				await cutscene_handle.completed
 
 		FlowAction.Type.LOAD_LEVEL:
-			if await _wait_until_free():
-				await FlowSystem.transition_to_level(action.target_id, action.spawn_id, action.data)
+			var level_handle := FlowSystem.queue_level_transition(
+				action.target_id, action.spawn_id, action.data)
+			if not level_handle.is_finished():
+				await level_handle.completed
 
 		FlowAction.Type.PRELOAD_LEVEL:
 			FlowSystem.preload_level(action.target_id)
@@ -129,25 +140,6 @@ func _run_action(action: FlowAction, data: Dictionary) -> void:
 
 		_:
 			push_warning("FlowDirector: unhandled action type %d." % action.type)
-
-## Holds until no other major flow action is running.
-##
-## The queue already serialises everything the director starts, but the game can start a transition
-## directly -- New Game and Load both do. Without this an action arriving mid-load would be refused
-## and silently lost.
-func _wait_until_free() -> bool:
-	if not FlowSystem.is_busy():
-		return true
-	var tree := get_tree()
-	if tree == null:
-		return false
-	for frame in BUSY_FRAME_BUDGET:
-		await tree.process_frame
-		if not FlowSystem.is_busy():
-			return true
-	push_error("FlowDirector: gave up waiting for the flow to settle; dropping an action.")
-	return false
-
 #endregion
 
 #region Inspection
@@ -171,7 +163,9 @@ func queued_events() -> Array[StringName]:
 
 ## Drops everything waiting. Called when a run ends.
 func clear_queue() -> void:
+	_generation += 1
 	_queue.clear()
 	_current_action = ""
+	_running = false
 
 #endregion

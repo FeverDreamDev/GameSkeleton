@@ -1,6 +1,8 @@
 class_name FlowState
 extends RefCounted
 
+const FlowPersistenceCodec := preload("res://addons/game_flow/core/flow_persistence.gd")
+
 ## The runtime truth the flow director reasons about: where the player is in the world and how far
 ## they are through the story.
 ##
@@ -75,13 +77,44 @@ static func flags() -> Array[StringName]:
 #region Values
 
 static func set_value(key: StringName, value: Variant) -> void:
+	try_set_value(key, value)
+
+## Stores [param value] only when it is safe to persist, returning whether it was accepted.
+##
+## The stored value is detached through [FlowPersistence], so a caller cannot add a live Node or
+## Resource to a Dictionary after handing it over. [method set_value] remains the void-compatible
+## convenience API used by existing game code.
+static func try_set_value(key: StringName, value: Variant) -> bool:
 	if key.is_empty():
 		push_warning("FlowState.set_value(): refusing a value with no key.")
-		return
-	_values[key] = value
+		return false
+
+	var result := FlowPersistenceCodec.try_clone(value, _value_path(key))
+	if not bool(result[FlowPersistenceCodec.RESULT_OK]):
+		var problems: Array[String] = result[FlowPersistenceCodec.RESULT_PROBLEMS]
+		push_warning("FlowState.set_value(): refusing '%s': %s" % [
+			key, FlowPersistenceCodec.format_problems(problems),
+		])
+		return false
+
+	_values[key] = result[FlowPersistenceCodec.RESULT_VALUE]
+	return true
+
+## Every reason [param value] cannot be stored in persistent flow state. Empty means safe.
+static func validate_value(value: Variant) -> Array[String]:
+	return FlowPersistenceCodec.validate(value, "FlowState value")
+
+static func can_store_value(value: Variant) -> bool:
+	return validate_value(value).is_empty()
 
 static func get_value(key: StringName, default_value: Variant = null) -> Variant:
-	return _values.get(key, default_value)
+	if not _values.has(key):
+		return default_value
+	var result := FlowPersistenceCodec.try_clone(_values[key], _value_path(key))
+	if bool(result[FlowPersistenceCodec.RESULT_OK]):
+		return result[FlowPersistenceCodec.RESULT_VALUE]
+	_report_corrupt_value(key, result[FlowPersistenceCodec.RESULT_PROBLEMS])
+	return default_value
 
 static func has_value(key: StringName) -> bool:
 	return _values.has(key)
@@ -90,7 +123,14 @@ static func erase_value(key: StringName) -> void:
 	_values.erase(key)
 
 static func values() -> Dictionary:
-	return _values.duplicate()
+	var out := {}
+	for key: StringName in _values:
+		var result := FlowPersistenceCodec.try_clone(_values[key], _value_path(key))
+		if bool(result[FlowPersistenceCodec.RESULT_OK]):
+			out[key] = result[FlowPersistenceCodec.RESULT_VALUE]
+		else:
+			_report_corrupt_value(key, result[FlowPersistenceCodec.RESULT_PROBLEMS])
+	return out
 
 #endregion
 
@@ -120,7 +160,11 @@ static func to_dict() -> Dictionary:
 
 	var out_values := {}
 	for key: StringName in _values:
-		out_values[String(key)] = _values[key]
+		var result := FlowPersistenceCodec.try_clone(_values[key], _value_path(key))
+		if bool(result[FlowPersistenceCodec.RESULT_OK]):
+			out_values[String(key)] = result[FlowPersistenceCodec.RESULT_VALUE]
+		else:
+			_report_corrupt_value(key, result[FlowPersistenceCodec.RESULT_PROBLEMS])
 
 	return {
 		KEY_LEVEL: String(current_level),
@@ -152,6 +196,15 @@ static func from_dict(state: Dictionary) -> void:
 		for key: Variant in raw_values:
 			var name := str(key)
 			if not name.is_empty():
-				_values[StringName(name)] = raw_values[key]
+				try_set_value(StringName(name), raw_values[key])
+
+## A stable path for diagnostics from nested dictionaries and arrays.
+static func _value_path(key: StringName) -> String:
+	return "FlowState.values[%s]" % JSON.stringify(String(key))
+
+static func _report_corrupt_value(key: StringName, problems: Array[String]) -> void:
+	push_error("FlowState: unsafe value '%s' was omitted: %s" % [
+		key, FlowPersistenceCodec.format_problems(problems),
+	])
 
 #endregion

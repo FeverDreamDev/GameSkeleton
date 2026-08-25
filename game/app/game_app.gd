@@ -5,7 +5,7 @@ extends Node
 ## node is the game-specific place that connects boot, menus, saves, cutscenes, streamed terrain,
 ## the persistent FPS player, and the restartable RT renderer.
 
-const SAVE_SCHEMA_VERSION := 1
+const SAVE_SCHEMA_VERSION := 2
 const GraphicsOptionsDialogScript := preload("res://game/app/graphics_options_dialog.gd")
 const DEFAULT_LEVEL_ID := &"terrain_test"
 const DEFAULT_SPAWN_ID := &"default"
@@ -14,6 +14,9 @@ const SAVEABLE_GROUP := &"saveable"
 const PHASE_INTRO_PENDING := &"intro_pending"
 const PHASE_LEVEL_PENDING := &"level_pending"
 const PHASE_GAMEPLAY := &"gameplay"
+const MASTER_BOOTSTRAP_FLAG := &"app_master_bootstrap_complete"
+const MASTER_READY_EVENT := &"app_master_flow_ready"
+const MASTER_FAILED_EVENT := &"app_master_flow_failed"
 
 @export_group("Systems")
 @export_node_path("FlowSystem") var flow_system_path: NodePath = ^"FlowSystem"
@@ -51,6 +54,7 @@ var _operation_in_progress: bool = false
 var _boot_complete: bool = false
 var _suppress_pause_resume: bool = false
 var _last_rt_failure: String = ""
+var _master_recovery_requested: bool = false
 
 # Graphics settings are session-scoped by design. Native RT still exercises the shared present
 # path; reduced presets opt into FSR through RTSceneManager.
@@ -355,10 +359,25 @@ func _quit_game() -> void:
 
 func _on_save_and_quit_requested() -> void:
 	_pause_menu = null
-	_write_save(UISave.autosave_id, &"save_and_quit")
+	var error := _write_save(UISave.autosave_id, &"save_and_quit")
+	if error != OK:
+		var message := "Game Flow is finishing a non-resumable action. Try again in a moment." \
+				if error == ERR_BUSY else UISave.last_error()
+		_restore_pause_after_failed_save_and_quit.call_deferred(message)
+		return
 	await get_tree().process_frame
 	await get_tree().process_frame
 	get_tree().quit()
+
+
+func _restore_pause_after_failed_save_and_quit(message: String) -> void:
+	# The selected PauseMenu button closes its dialog after emitting. Cross that teardown before
+	# putting a fresh pause owner behind the error, so a failed write can never silently quit or
+	# leave gameplay stuck in PAUSED with no menu.
+	await get_tree().process_frame
+	if FlowSystem.get_mode() == FlowSystem.Mode.PAUSED:
+		_open_pause_menu()
+	_show_error("Save & Quit Failed", message)
 
 #endregion
 
@@ -369,38 +388,23 @@ func _on_new_game_pressed() -> void:
 	if _operation_in_progress:
 		return
 	_operation_in_progress = true
+	_master_recovery_requested = false
 	_clear_world()
 	FlowSystem.reset_run()
 	_reset_player_for_new_run()
 	FlowState.current_level = DEFAULT_LEVEL_ID
 	FlowState.current_spawn = DEFAULT_SPAWN_ID
-
-	# This write is intentionally direct. FlowSystem defers save requests outside GAMEPLAY, while
-	# New Game promises a durable recovery point before the intro cutscene starts.
-	var initial_error := _write_save(
-		UISave.autosave_id, &"new_game", false, PHASE_INTRO_PENDING)
-	if initial_error != OK:
-		_operation_in_progress = false
-		_show_error("New Game Failed", UISave.last_error())
-		return
-
+	_bind_master_flow_events()
 	await UISystem.close_screen(true)
 	_main_menu = null
-	if not await FlowSystem.play_cutscene(INTRO_CUTSCENE_ID, {"new_game": true}):
-		await _recover_to_main_menu()
+	# The master graph now owns checkpoints, the intro, the initial level transition, and the
+	# entered-level autosave. GAMEPLAY is used here as a stable pre-world orchestration mode so a
+	# graph Request Save can quiesce and write its resumable continuation before the intro starts.
+	FlowSystem.set_mode(FlowSystem.Mode.GAMEPLAY)
+	if FlowSystem.start_master_graph():
 		return
-	var level_pending_error := _write_save(
-		UISave.autosave_id, &"intro_complete", false, PHASE_LEVEL_PENDING)
-	if level_pending_error != OK:
-		_show_error("New Game Failed", UISave.last_error())
-		await _recover_to_main_menu()
-		return
-	if not await FlowSystem.transition_to_level(DEFAULT_LEVEL_ID, DEFAULT_SPAWN_ID):
-		await _recover_to_main_menu()
-		return
-
-	_operation_in_progress = false
-	_refresh_player_control()
+	_show_error("New Game Failed", "The Main Game flow graph could not be started.")
+	await _recover_to_main_menu()
 
 
 func _on_continue_pressed() -> void:
@@ -424,6 +428,7 @@ func _load_slot(slot: StringName) -> void:
 		return
 
 	_operation_in_progress = true
+	_master_recovery_requested = false
 	if _pause_menu != null and is_instance_valid(_pause_menu):
 		_suppress_pause_resume = true
 		_pause_menu.dismiss()
@@ -437,12 +442,42 @@ func _load_slot(slot: StringName) -> void:
 	# observes a level with no active Camera3D during an intro or the next transition's cover.
 	_clear_world()
 	FlowSystem.reset_run()
+	_bind_master_flow_events()
 	var saved_flow: Dictionary = payload["flow"]
 	# Restored before instancing by contract: a level's _ready may depend on story flags.
 	FlowState.from_dict(saved_flow)
+	var graph_state: Dictionary = payload.get("flow_graph", {}) if payload.get("flow_graph", {}) is Dictionary else {}
+	var restored_graph := not graph_state.is_empty()
+	if restored_graph and not FlowSystem.restore_graph_state(graph_state, true):
+		_show_error("Load Failed", "The saved Game Flow graph state no longer matches this build.")
+		await _recover_to_main_menu()
+		return
 	var level_id := FlowState.current_level
 	var spawn_id := FlowState.current_spawn
 	var resume_phase := StringName(str(payload.get("resume_phase", PHASE_GAMEPLAY)))
+
+	# A version-2 graph snapshot is authoritative about pre-world choreography. If it was captured
+	# at either save barrier, resume the graph without pre-installing the level; its saved token will
+	# continue with the intro or load exactly once. Gameplay snapshots still restore their streamed
+	# world through install_world before tokens and event entries are resumed.
+	if restored_graph:
+		var world_was_active := bool(payload.get(
+			"world_active", resume_phase == PHASE_GAMEPLAY))
+		if world_was_active:
+			if not await FlowSystem.transition_to_level(level_id, spawn_id, payload):
+				await _recover_to_main_menu()
+				return
+			FlowSystem.resume_graph()
+			_operation_in_progress = false
+			_refresh_player_control()
+		else:
+			FlowSystem.set_mode(FlowSystem.Mode.GAMEPLAY)
+			FlowSystem.resume_graph()
+		return
+
+	# Version-1 and transitional graphless saves retain their old recovery contract. Once their
+	# intro/level recovery is complete, seed the bootstrap guard before activating the master graph
+	# so Game Start registers its Event Entry nodes without replaying completed content.
 	if resume_phase == PHASE_INTRO_PENDING:
 		if not await FlowSystem.play_cutscene(INTRO_CUTSCENE_ID, {"loaded_slot": slot}):
 			await _recover_to_main_menu()
@@ -457,6 +492,11 @@ func _load_slot(slot: StringName) -> void:
 	if not await FlowSystem.transition_to_level(level_id, spawn_id, payload):
 		await _recover_to_main_menu()
 		return
+	FlowState.set_flag(MASTER_BOOTSTRAP_FLAG)
+	if not FlowSystem.start_master_graph():
+		_show_error("Load Failed", "The Main Game flow graph could not be activated after recovery.")
+		await _recover_to_main_menu()
+		return
 	_operation_in_progress = false
 	_refresh_player_control()
 
@@ -469,6 +509,8 @@ func _validate_save_payload(payload: Dictionary) -> String:
 		return "The save was written by a newer game schema (%d)." % version
 	if not payload.get("flow") is Dictionary:
 		return "The save has no valid flow state."
+	if payload.has("flow_graph") and not payload.get("flow_graph") is Dictionary:
+		return "The save has no valid graph execution state."
 	var resume_phase := StringName(str(payload.get("resume_phase", "")))
 	if resume_phase not in [PHASE_INTRO_PENDING, PHASE_LEVEL_PENDING, PHASE_GAMEPLAY]:
 		return "The save has an unknown resume phase: %s." % resume_phase
@@ -486,8 +528,28 @@ func _recover_to_main_menu() -> void:
 	FlowSystem.reset_run()
 	_reset_player_for_new_run()
 	_operation_in_progress = false
+	_master_recovery_requested = false
 	_show_main_menu()
 	await get_tree().process_frame
+
+
+func _bind_master_flow_events() -> void:
+	FlowEvents.subscribe(MASTER_READY_EVENT, _on_master_flow_ready)
+	FlowEvents.subscribe(MASTER_FAILED_EVENT, _on_master_flow_failed)
+
+
+func _on_master_flow_ready(_event_id: StringName, _data: Dictionary) -> void:
+	_master_recovery_requested = false
+	_operation_in_progress = false
+	_refresh_player_control()
+
+
+func _on_master_flow_failed(_event_id: StringName, data: Dictionary) -> void:
+	if _master_recovery_requested:
+		return
+	_master_recovery_requested = true
+	push_error("GameApp: master flow failed during %s." % String(data.get("stage", "unknown")))
+	_recover_to_main_menu.call_deferred()
 
 #endregion
 
@@ -630,15 +692,27 @@ func _detach_world_children() -> void:
 #region Saving
 
 func _on_flow_save_requested(reason: StringName) -> void:
-	var error := _write_save(UISave.autosave_id, reason)
+	var resume_phase := PHASE_GAMEPLAY
+	if reason == &"new_game":
+		resume_phase = PHASE_INTRO_PENDING
+	elif reason == &"intro_complete":
+		resume_phase = PHASE_LEVEL_PENDING
+	var error := _write_save(UISave.autosave_id, reason, true, resume_phase)
 	if error != OK:
 		_show_error("Autosave Failed", UISave.last_error())
+		if reason in [&"new_game", &"intro_complete"]:
+			FlowEvents.emit(MASTER_FAILED_EVENT, {
+				"stage": "checkpoint_save",
+				"reason": String(reason),
+			})
 
 
 func _on_manual_save_slot(slot: StringName) -> void:
 	var error := _write_save(slot, &"manual")
 	if error != OK:
-		_show_error.call_deferred("Save Failed", UISave.last_error())
+		var message := "Game Flow is finishing a non-resumable action. Try saving again in a moment." \
+				if error == ERR_BUSY else UISave.last_error()
+		_show_error.call_deferred("Save Failed", message)
 	else:
 		_show_message.call_deferred("Game Saved", "Saved to %s." % _slot_display_name(slot))
 
@@ -649,10 +723,15 @@ func _write_save(
 		include_runtime: bool = true,
 		resume_phase: StringName = PHASE_GAMEPLAY
 ) -> Error:
+	if include_runtime and not FlowSystem.is_stable_for_save():
+		push_warning("GameApp: refusing to save while Game Flow has non-resumable work in flight.")
+		return ERR_BUSY
 	var payload := {
 		"version": SAVE_SCHEMA_VERSION,
 		"resume_phase": String(resume_phase),
+		"world_active": flow_system.current_level() != null,
 		"flow": FlowState.to_dict(),
+		"flow_graph": FlowSystem.graph_state_to_dict(),
 		"player": _capture_player_state() if include_runtime else {},
 		"world": _capture_world_state() if include_runtime else {},
 	}

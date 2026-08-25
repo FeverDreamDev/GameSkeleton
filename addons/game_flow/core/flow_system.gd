@@ -41,6 +41,9 @@ signal save_requested(reason: StringName)
 ## and animating, just not steering.
 signal gameplay_input_changed(enabled: bool)
 
+## Structured token telemetry for the in-game debug window and a future editor debugger bridge.
+signal graph_telemetry(event: Dictionary)
+
 #endregion
 
 #region Mode
@@ -90,6 +93,8 @@ var persistent_actors: Node
 var cutscene_container: Node
 
 var director: FlowDirector
+var graph_runner: FlowGraphRunner
+var operation_arbiter: FlowOperationArbiter
 
 ## Supplied by the game. Given a loaded level scene, put it in the world and place the player:
 ## [code]func(scene: PackedScene, entry: FlowLevelEntry, spawn_id: StringName, data: Dictionary)
@@ -105,7 +110,11 @@ var _mode: Mode = Mode.BOOT
 ## against two of them running at once, which is how a world gets freed twice.
 var _busy: bool = false
 var _input_enabled: bool = true
+var _input_manual_enabled: bool = true
+var _input_leases: Dictionary = {}
 var _pending_save: StringName = &""
+
+var _action_providers: Dictionary = {}
 
 var _current_cutscene: FlowCutscene
 var _current_cutscene_id: StringName = &""
@@ -122,6 +131,12 @@ func _enter_tree() -> void:
 		instance = self
 
 func _exit_tree() -> void:
+	if graph_runner != null:
+		graph_runner.cancel_all()
+	if director != null:
+		director.clear_queue()
+	if operation_arbiter != null:
+		operation_arbiter.cancel_all("system_exit")
 	if instance == self:
 		instance = null
 	# A preload nobody consumed is a threaded request still holding its scene, with nothing left in
@@ -129,10 +144,24 @@ func _exit_tree() -> void:
 	# exit -- which is exactly what preloading the next level and then quitting from the menu does.
 	FlowLoader.reset()
 
+func _ensure_operation_arbiter() -> void:
+	if operation_arbiter != null:
+		return
+	operation_arbiter = FlowOperationArbiter.new()
+	operation_arbiter.name = "FlowOperationArbiter"
+	operation_arbiter.configure(
+		Callable(self, &"_execute_queued_operation"),
+		Callable(self, &"_can_execute_queued_operation")
+	)
+	operation_arbiter.changed.connect(_on_operation_arbiter_changed)
+	operation_arbiter.idle.connect(_flush_pending_save)
+	add_child(operation_arbiter)
+
 func _ready() -> void:
 	# This node has to keep answering while the tree is frozen, or a flow action could be started
 	# by a pause menu and never finish.
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	_ensure_operation_arbiter()
 
 	world_container = get_node_or_null(world_container_path)
 	persistent_actors = get_node_or_null(persistent_actors_path)
@@ -141,8 +170,15 @@ func _ready() -> void:
 	if world_container == null:
 		push_warning("FlowSystem: no world container; level transitions will not work.")
 
+	graph_runner = FlowGraphRunner.new()
+	graph_runner.name = "FlowGraphRunner"
+	add_child(graph_runner)
+	graph_runner.telemetry.connect(_on_graph_telemetry)
+	graph_runner.save_stability_changed.connect(_flush_pending_save)
+
 	director = FlowDirector.new()
 	director.name = "FlowDirector"
+	director.graph_runner = graph_runner
 	add_child(director)
 	_connect_director()
 
@@ -189,6 +225,10 @@ static func is_gameplay_active() -> bool:
 static func is_stable_for_save() -> bool:
 	if instance == null or instance._busy:
 		return false
+	if instance.operation_arbiter != null and not instance.operation_arbiter.is_idle():
+		return false
+	if instance.graph_runner != null and not instance.graph_runner.is_snapshot_safe():
+		return false
 	return instance._mode == Mode.GAMEPLAY or instance._mode == Mode.PAUSED
 
 ## Whether a major flow action is in progress.
@@ -211,6 +251,8 @@ func _set_busy(value: bool) -> void:
 		return
 	_busy = value
 	busy_changed.emit(value)
+	if not value and operation_arbiter != null:
+		operation_arbiter.notify_ready()
 
 #endregion
 
@@ -222,10 +264,39 @@ static func set_gameplay_input(enabled: bool) -> void:
 	if instance != null:
 		instance._set_gameplay_input(enabled)
 
+## Acquires an owner-scoped gameplay-input lock. Re-acquiring the same key is idempotent.
+static func acquire_gameplay_input(owner: StringName) -> void:
+	if instance != null:
+		instance._acquire_gameplay_input(owner)
+
+## Releases one owner-scoped gameplay-input lock.
+static func release_gameplay_input(owner: StringName) -> void:
+	if instance != null:
+		instance._release_gameplay_input(owner)
+
 static func is_gameplay_input_enabled() -> bool:
 	return instance == null or instance._input_enabled
 
 func _set_gameplay_input(enabled: bool) -> void:
+	if _input_manual_enabled == enabled:
+		return
+	_input_manual_enabled = enabled
+	_refresh_gameplay_input_state()
+
+func _acquire_gameplay_input(owner: StringName) -> void:
+	if owner.is_empty() or _input_leases.has(owner):
+		return
+	_input_leases[owner] = true
+	_refresh_gameplay_input_state()
+
+func _release_gameplay_input(owner: StringName) -> void:
+	if not _input_leases.has(owner):
+		return
+	_input_leases.erase(owner)
+	_refresh_gameplay_input_state()
+
+func _refresh_gameplay_input_state() -> void:
+	var enabled := _input_manual_enabled and _input_leases.is_empty()
 	if _input_enabled == enabled:
 		return
 	_input_enabled = enabled
@@ -305,9 +376,10 @@ func _transition_to_level(
 		load_failed.emit(level_id)
 		return false
 
-	var previous_input := _input_enabled
+	var previous_input := _input_manual_enabled
+	var transition_input_lease := &"__flow_transition"
 	_set_busy(true)
-	_set_gameplay_input(false)
+	_acquire_gameplay_input(transition_input_lease)
 	_loading_level = level_id
 	var previous_mode := _mode
 	_set_mode(Mode.TRANSITION)
@@ -329,6 +401,7 @@ func _transition_to_level(
 		FlowPresent.show_error("Load Failed", "Could not load level '%s':\n\n%s" % [level_id, entry.scene_path])
 		await FlowPresent.reveal(reveal_duration)
 		_set_busy(false)
+		_release_gameplay_input(transition_input_lease)
 		_set_gameplay_input(previous_input)
 		return false
 
@@ -357,6 +430,7 @@ func _transition_to_level(
 
 	await FlowPresent.reveal(reveal_duration)
 	_set_busy(false)
+	_release_gameplay_input(transition_input_lease)
 	# A successful transition always hands control to the newly installed gameplay world. The
 	# previous value only belongs to the scene we left (MENU commonly keeps it false); failures
 	# restore it above because the caller is still in that previous mode.
@@ -415,16 +489,16 @@ func _play_cutscene(cutscene_id: StringName, context: Dictionary) -> bool:
 		push_error("FlowSystem: no cutscene container; '%s' cannot play." % cutscene_id)
 		return false
 
-	var previous_input := _input_enabled
+	var cutscene_input_lease := &"__flow_cutscene"
 	_set_busy(true)
 	var previous_mode := _mode
 	_set_mode(Mode.CUTSCENE)
 	if entry.blocks_input:
-		_set_gameplay_input(false)
+		_acquire_gameplay_input(cutscene_input_lease)
 
 	var scene := await FlowLoader.load_scene(entry.scene_path)
 	if scene == null:
-		_finish_cutscene_state(previous_mode, previous_input)
+		_finish_cutscene_state(previous_mode, cutscene_input_lease if entry.blocks_input else &"")
 		FlowPresent.show_error("Cutscene Failed", "Could not load cutscene '%s'." % cutscene_id)
 		return false
 
@@ -433,7 +507,7 @@ func _play_cutscene(cutscene_id: StringName, context: Dictionary) -> bool:
 	if cutscene == null:
 		push_error("FlowSystem: the root of %s is not a FlowCutscene." % entry.scene_path)
 		node.queue_free()
-		_finish_cutscene_state(previous_mode, previous_input)
+		_finish_cutscene_state(previous_mode, cutscene_input_lease if entry.blocks_input else &"")
 		return false
 
 	_current_cutscene = cutscene
@@ -460,17 +534,150 @@ func _play_cutscene(cutscene_id: StringName, context: Dictionary) -> bool:
 	FlowEvents.log_line("cutscene %s: %s" % [cutscene_id, "skipped" if skipped else "finished"])
 	cutscene_finished.emit(cutscene_id, skipped)
 
-	_finish_cutscene_state(previous_mode, previous_input)
+	_finish_cutscene_state(previous_mode, cutscene_input_lease if entry.blocks_input else &"")
 	_flush_pending_save()
 	return true
 
 ## Hands control back after a cutscene, however it ended. Returns to GAMEPLAY rather than to
 ## whatever came before when the cutscene was entered from play, so a cutscene cannot strand the
 ## game in TRANSITION.
-func _finish_cutscene_state(previous_mode: Mode, previous_input: bool) -> void:
+func _finish_cutscene_state(previous_mode: Mode, input_lease: StringName) -> void:
 	_set_mode(Mode.GAMEPLAY if previous_mode == Mode.CUTSCENE or previous_mode == Mode.GAMEPLAY else previous_mode)
 	_set_busy(false)
-	_set_gameplay_input(previous_input)
+	if not input_lease.is_empty():
+		_release_gameplay_input(input_lease)
+
+#endregion
+
+#region Queued exclusive operations
+
+## Queues a level transition for graph/legacy execution. Unlike the direct API, simultaneous
+## requests wait their turn rather than racing FlowSystem's world-swap mutex.
+static func queue_level_transition(
+		level_id: StringName,
+		spawn_id: StringName = &"",
+		transition_data: Dictionary = {}
+) -> FlowActionHandle:
+	if instance == null:
+		return _failed_handle("no_flow_system")
+	return instance._queue_operation(&"level", {
+		"level_id": level_id,
+		"spawn_id": spawn_id,
+		"data": transition_data,
+	})
+
+## Queues a cutscene for graph/legacy execution.
+static func queue_cutscene(cutscene_id: StringName, context: Dictionary = {}) -> FlowActionHandle:
+	if instance == null:
+		return _failed_handle("no_flow_system")
+	return instance._queue_operation(&"cutscene", {
+		"cutscene_id": cutscene_id,
+		"context": context,
+	})
+
+func _queue_operation(kind: StringName, arguments: Dictionary) -> FlowActionHandle:
+	if operation_arbiter == null:
+		return _failed_handle("flow_not_ready")
+	return operation_arbiter.enqueue(kind, arguments)
+
+func _can_execute_queued_operation() -> bool:
+	return not _busy
+
+func _execute_queued_operation(kind: StringName, arguments: Dictionary) -> bool:
+	match kind:
+		&"level":
+			return await _transition_to_level(
+				arguments["level_id"], arguments["spawn_id"], arguments["data"])
+		&"cutscene":
+			return await _play_cutscene(arguments["cutscene_id"], arguments["context"])
+		_:
+			push_error("FlowSystem: unknown queued operation '%s'." % kind)
+	return false
+
+func _on_operation_arbiter_changed(_active: bool, _queued_count: int) -> void:
+	_flush_pending_save()
+
+func _cancel_operation_queue() -> void:
+	if operation_arbiter != null:
+		operation_arbiter.cancel_all("run_reset")
+
+static func _failed_handle(reason: String) -> FlowActionHandle:
+	var handle := FlowActionHandle.new()
+	handle.resolve(false, {"reason": reason})
+	return handle
+
+#endregion
+
+#region Graph runtime and custom actions
+
+static func start_master_graph(graph_id: StringName = &"") -> bool:
+	return instance != null and instance.graph_runner != null and instance.graph_runner.start_master(graph_id)
+
+static func has_active_graph() -> bool:
+	return instance != null and instance.graph_runner != null and instance.graph_runner.is_active()
+
+static func suspend_graph() -> void:
+	if instance != null and instance.graph_runner != null:
+		instance.graph_runner.suspend()
+
+static func resume_graph() -> void:
+	if instance != null and instance.graph_runner != null:
+		instance.graph_runner.resume()
+
+static func graph_state_to_dict() -> Dictionary:
+	return instance.graph_runner.to_dict() if instance != null and instance.graph_runner != null else {}
+
+static func restore_graph_state(state: Dictionary, keep_suspended: bool = true) -> bool:
+	if instance == null or instance.graph_runner == null:
+		return state.is_empty()
+	return instance.graph_runner.restore_from_dict(state, keep_suspended)
+
+## Registers a transient game-owned handler. The Callable never enters a graph Resource or save.
+## Handlers receive (arguments, context) and return FlowActionHandle, bool, Dictionary or null.
+static func register_action(action_id: StringName, handler: Callable) -> void:
+	if instance == null or action_id.is_empty() or not handler.is_valid():
+		return
+	instance._action_providers[action_id] = handler
+
+static func unregister_action(action_id: StringName, handler: Callable = Callable()) -> void:
+	if instance == null or not instance._action_providers.has(action_id):
+		return
+	if handler.is_valid() and instance._action_providers[action_id] != handler:
+		return
+	instance._action_providers.erase(action_id)
+
+static func invoke_action(
+		action_id: StringName,
+		arguments: Dictionary,
+		context: Dictionary
+) -> FlowActionHandle:
+	if instance == null or not instance._action_providers.has(action_id):
+		return _failed_handle("unknown_action:%s" % action_id)
+	var handler: Callable = instance._action_providers[action_id]
+	if not handler.is_valid():
+		instance._action_providers.erase(action_id)
+		return _failed_handle("dead_action_provider:%s" % action_id)
+	var result: Variant = handler.call(arguments, context)
+	if result is FlowActionHandle:
+		return result
+	var handle := FlowActionHandle.new()
+	if result is bool:
+		handle.resolve(result)
+	elif result is Dictionary:
+		var result_data: Dictionary = result
+		handle.resolve(bool(result_data.get("success", true)), result_data)
+	elif result == null:
+		handle.resolve(true)
+	else:
+		handle.resolve(true, {"value": result})
+	return handle
+
+static func notify_graph_save_stability_changed() -> void:
+	if instance != null:
+		instance._flush_pending_save()
+
+func _on_graph_telemetry(event: Dictionary) -> void:
+	graph_telemetry.emit(event)
 
 #endregion
 
@@ -491,7 +698,7 @@ static func pending_save() -> StringName:
 func _request_save(reason: StringName) -> void:
 	if is_stable_for_save():
 		FlowEvents.log_line("save requested: %s" % reason)
-		save_requested.emit(reason)
+		_dispatch_save_request(reason)
 		return
 	# Only the most recent reason is kept. Two autosaves queued behind one transition are one
 	# autosave; the player does not want the older of them.
@@ -504,7 +711,15 @@ func _flush_pending_save() -> void:
 	var reason := _pending_save
 	_pending_save = &""
 	FlowEvents.log_line("save requested: %s (deferred)" % reason)
+	_dispatch_save_request(reason)
+
+
+func _dispatch_save_request(reason: StringName) -> void:
 	save_requested.emit(reason)
+	# A graph Request Save is a checkpoint barrier. Its ready successor is allowed to execute only
+	# after the host's synchronous save listener has returned and observed that continuation.
+	if graph_runner != null:
+		graph_runner.notify_save_dispatched(reason)
 
 #endregion
 
@@ -519,20 +734,28 @@ static func reset_run() -> void:
 		instance._reset_run()
 
 func _reset_run() -> void:
+	if graph_runner != null:
+		graph_runner.cancel_all()
+	# Invalidate awaiting legacy continuations before cancelling their operation handles. Handle
+	# cancellation emits synchronously, so this order prevents stale actions from resuming mid-reset.
+	if director != null:
+		director.clear_queue()
+	_cancel_operation_queue()
 	FlowState.reset()
 	FlowLoader.reset()
 	FlowEvents.reset()
 	# FlowEvents.reset() just dropped the director's own subscription along with everything else.
 	_connect_director()
-	if director != null:
-		director.clear_queue()
 
 	_pending_save = &""
 	_set_busy(false)
 	_current_cutscene = null
 	_current_cutscene_id = &""
 	_loading_level = &""
+	_input_leases.clear()
+	_input_manual_enabled = true
 	_set_gameplay_input(true)
+	_refresh_gameplay_input_state()
 	_set_mode(Mode.MENU)
 
 #endregion
@@ -549,10 +772,16 @@ func debug_snapshot() -> Dictionary:
 		"loading": _loading_level,
 		"cutscene": _current_cutscene_id,
 		"queued": director.queue_size() if director != null else 0,
+		"exclusive_active": operation_arbiter != null and operation_arbiter.is_active(),
+		"exclusive_queued": operation_arbiter.queued_count() if operation_arbiter != null else 0,
 		"action": director.current_action_text() if director != null else "",
 		"pending_save": _pending_save,
 		"input": _input_enabled,
 		"flags": FlowState.flags(),
+		"values": FlowState.values(),
+		"graph_active": graph_runner != null and graph_runner.is_active(),
+		"graph_suspended": graph_runner != null and graph_runner.is_suspended(),
+		"graph_tokens": graph_runner.debug_snapshot() if graph_runner != null else [],
 	}
 
 #endregion

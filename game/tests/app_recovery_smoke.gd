@@ -127,6 +127,29 @@ func _run() -> void:
 			func() -> bool: return not UISystem.is_cursor_visible(),
 			2.0), "resuming recaptures the FPS cursor after modal teardown")
 
+	# Save & Quit must never exit when the graph is temporarily not snapshot-safe. Simulate that
+	# window with FlowSystem's busy state and drive the actual closing PauseMenu action.
+	app.call("_open_pause_menu")
+	await process_frame
+	pause_menu = app.get("_pause_menu") as PauseMenu
+	app.flow_system.call("_set_busy", true)
+	if pause_menu != null:
+		pause_menu.call("_resolve", true, PauseMenu.ID_SAVE_AND_QUIT, false)
+	app.flow_system.call("_set_busy", false)
+	await process_frame
+	await process_frame
+	var restored_pause := app.get("_pause_menu") as PauseMenu
+	_check(restored_pause != null and is_instance_valid(restored_pause),
+		"failed Save & Quit restores a live PauseMenu instead of quitting")
+	_check(paused, "failed Save & Quit keeps gameplay safely paused")
+	_dismiss_modals_except(restored_pause)
+	await process_frame
+	await process_frame
+	if restored_pause != null and is_instance_valid(restored_pause):
+		restored_pause.dismiss()
+	_check(await _wait_for(_stable_gameplay.bind(app), 5.0),
+		"canceling the restored PauseMenu returns to gameplay")
+
 	# Pause -> Load dismisses both stacked dialogs without an accidental resume race.
 	app.call("_open_pause_menu")
 	await process_frame
@@ -178,8 +201,9 @@ func _run() -> void:
 	_check(_cutscenes_started.size() == cutscenes_before_continue + 1,
 		"Continue chose the newest intro_pending save")
 
-	# A second New Game resets the static event bus. entered_terrain_test must route once, not once
-	# per prior run, and its one-shot flag must still settle in the new FlowState.
+	# A second New Game resets the static event bus. The graph must route its two recovery
+	# checkpoints and one entered-level autosave exactly once each, while the entered event itself
+	# still routes once rather than once per prior run.
 	app.call("_return_to_main_menu")
 	_check(await _wait_for(_stable_menu.bind(app), 10.0),
 		"Continue run returns to menu before the second New Game")
@@ -187,8 +211,8 @@ func _run() -> void:
 	app.call("_on_new_game_pressed")
 	_check(await _wait_for(_stable_gameplay.bind(app), 35.0),
 		"the second New Game reaches stable gameplay")
-	_check(_save_requests.size() == save_count_before_second_run + 1,
-		"the second New Game routes exactly one entered-level autosave")
+	_check(_save_requests.size() == save_count_before_second_run + 3,
+		"the second New Game routes two checkpoints and one entered-level autosave")
 	var entered_history_count := 0
 	for item: Dictionary in FlowEvents.history():
 		if StringName(item.get("id", "")) == &"entered_terrain_test":

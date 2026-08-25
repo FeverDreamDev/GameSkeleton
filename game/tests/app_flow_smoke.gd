@@ -65,6 +65,14 @@ func _run() -> void:
 		900), "boot reaches the main menu")
 	_check(app.rt_manager.get_active_rt_backend() == &"none",
 		"boot warmup stops RT before showing the menu")
+	_check(app.flow_system.database.master_graph_id == &"main_game",
+		"the application database selects the Main Game master graph")
+	var master_graph := app.flow_system.database.get_master_graph()
+	_check(master_graph != null
+		and master_graph.resource_path == "res://game/flow/master_game_flow.tres",
+		"the production master graph is application-owned outside addons")
+	_check(app.flow_system.database.events.is_empty(),
+		"entered-level save behavior no longer remains in the legacy event lane")
 
 	app.call("_on_new_game_pressed")
 	_check(await _wait_for(
@@ -74,11 +82,17 @@ func _run() -> void:
 		_cutscene_start_payloads[0] if not _cutscene_start_payloads.is_empty() else {})
 	_check(not pre_intro_payload.is_empty(),
 		"New Game autosave is readable when cutscene_started fires")
-	_check(pre_intro_payload.get("version", 0) == 1, "initial save carries the game version")
+	_check(pre_intro_payload.get("version", 0) == 2, "initial save carries the game version")
 	_check(pre_intro_payload.get("resume_phase", "") == "intro_pending",
 		"cutscene_started observes the intro_pending recovery phase")
 	_check(pre_intro_payload.get("flow", {}) is Dictionary,
 		"initial save carries FlowState")
+	_check(pre_intro_payload.get("flow_graph", {}) is Dictionary,
+		"initial save carries the versioned GameFlow graph section")
+	_check(not (pre_intro_payload.get("flow_graph", {}) as Dictionary).is_empty(),
+		"initial save captures the active master-graph continuation")
+	_check(not bool(pre_intro_payload.get("world_active", true)),
+		"the pre-intro checkpoint records that no gameplay world is installed")
 
 	_check(await _wait_for(
 		func() -> bool:
@@ -110,6 +124,8 @@ func _run() -> void:
 		"gameplay autosave captures the persistent player")
 	_check(gameplay_payload.get("world", {}) is Dictionary,
 		"gameplay autosave carries the world payload")
+	_check(bool(gameplay_payload.get("world_active", false)),
+		"gameplay autosave records that its streamed world must be restored")
 	var gameplay_flow: Dictionary = gameplay_payload.get("flow", {})
 	var gameplay_flags: Array = gameplay_flow.get(FlowState.KEY_FLAGS, [])
 	_check(String(ONE_SHOT_FLAG) in gameplay_flags,
@@ -223,8 +239,15 @@ func _run() -> void:
 	_check(_levels_entered.size() == 3,
 		"intro_pending routing installs terrain once after its intro")
 
-	var level_pending_payload: Dictionary = pre_intro_payload.duplicate(true)
-	level_pending_payload["resume_phase"] = "level_pending"
+	# Graph snapshots are authoritative continuations, so changing only their legacy resume_phase
+	# must not redirect them. Exercise level_pending through a genuine version-1 fixture instead.
+	var level_pending_payload := {
+		"version": 1,
+		"resume_phase": "level_pending",
+		"flow": (pre_intro_payload.get("flow", {}) as Dictionary).duplicate(true),
+		"player": {},
+		"world": {},
+	}
 	_check(UISave.save_slot(LEVEL_PENDING_SLOT, level_pending_payload) == OK,
 		"level-pending recovery payload writes to an isolated slot")
 	app.call("_load_slot", LEVEL_PENDING_SLOT)

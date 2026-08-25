@@ -1,0 +1,237 @@
+[gd_resource type="Resource" script_class="FlowGraph" format=3 uid="uid://bwr2i7hjgk73"]
+
+[ext_resource type="Script" uid="uid://cr6oecaqsnhyd" path="res://addons/game_flow/data/flow_graph.gd" id="1_graph"]
+[ext_resource type="Script" uid="uid://dc8ny6j42j0fh" path="res://addons/game_flow/data/flow_game_start_node.gd" id="2_start"]
+[ext_resource type="Script" uid="uid://cfvgwjyrn6vim" path="res://addons/game_flow/data/flow_if_node.gd" id="3_if"]
+[ext_resource type="Script" uid="uid://d0pti6jwh8qf7" path="res://addons/game_flow/data/flow_condition.gd" id="4_condition"]
+[ext_resource type="Script" uid="uid://5g2ei0on17p4" path="res://addons/game_flow/data/flow_end_node.gd" id="5_end"]
+[ext_resource type="Script" uid="uid://dbf0tkluut5a0" path="res://addons/game_flow/data/flow_request_save_node.gd" id="6_save"]
+[ext_resource type="Script" uid="uid://beivg5su28pdd" path="res://addons/game_flow/data/flow_play_cutscene_node.gd" id="8_cutscene"]
+[ext_resource type="Script" uid="uid://dg1pa8dwiqvak" path="res://addons/game_flow/data/flow_load_level_node.gd" id="9_level"]
+[ext_resource type="Script" uid="uid://bsjy0slwu6hbp" path="res://addons/game_flow/data/flow_set_flag_node.gd" id="10_flag"]
+[ext_resource type="Script" uid="uid://q5i2pjocea1i" path="res://addons/game_flow/data/flow_emit_event_node.gd" id="11_emit"]
+[ext_resource type="Script" uid="uid://nx2pmqhvcwf2" path="res://addons/game_flow/data/flow_graph_connection.gd" id="13_connection"]
+[ext_resource type="Script" uid="uid://lk58ndbj617m" path="res://addons/game_flow/data/flow_graph_node.gd" id="14_node"]
+
+[sub_resource type="Resource" id="Connection_start_if"]
+script = ExtResource("13_connection")
+connection_id = &"24df7139-a96a-4e9c-8af4-1a89d20e51cd"
+from_node_id = &"16885a2d-9cf8-44d3-b847-53c5b52054bd"
+to_node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
+
+[sub_resource type="Resource" id="Connection_if_restored"]
+script = ExtResource("13_connection")
+connection_id = &"f65783fc-2a76-4db4-a5ac-9af108b56dad"
+from_node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
+from_port_id = &"true"
+to_node_id = &"5bd9565a-b195-41d9-bab6-67ab3df1e65d"
+
+[sub_resource type="Resource" id="Connection_if_new"]
+script = ExtResource("13_connection")
+connection_id = &"020e35c0-faf9-44f1-b2dd-37c38beefc60"
+from_node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
+from_port_id = &"false"
+to_node_id = &"63c273b6-1cb7-44f9-99b9-67b36d0c886d"
+
+[sub_resource type="Resource" id="Connection_save_initial_wait"]
+script = ExtResource("13_connection")
+connection_id = &"ef6a0bbb-a637-459f-bfee-c80c4503ea45"
+from_node_id = &"63c273b6-1cb7-44f9-99b9-67b36d0c886d"
+to_node_id = &"4a8867b7-0823-4346-9375-2dbbd1802f91"
+
+[sub_resource type="Resource" id="Connection_intro_success"]
+script = ExtResource("13_connection")
+connection_id = &"3053124a-e668-416e-88ce-eae61038b111"
+from_node_id = &"4a8867b7-0823-4346-9375-2dbbd1802f91"
+from_port_id = &"completed"
+to_node_id = &"e39a1011-a613-4931-97f7-b46079456b48"
+
+[sub_resource type="Resource" id="Connection_intro_failure"]
+script = ExtResource("13_connection")
+connection_id = &"51a007de-4be3-43b8-99b2-253b21099039"
+from_node_id = &"4a8867b7-0823-4346-9375-2dbbd1802f91"
+from_port_id = &"failed"
+to_node_id = &"81381473-80df-4f46-b1f1-b663d646e340"
+
+[sub_resource type="Resource" id="Connection_save_level_wait"]
+script = ExtResource("13_connection")
+connection_id = &"a3b1f3e4-7645-4c17-a268-c36e21342c19"
+from_node_id = &"e39a1011-a613-4931-97f7-b46079456b48"
+to_node_id = &"d719aec5-b9bb-4ef6-a976-02a2db42cc03"
+
+[sub_resource type="Resource" id="Connection_level_success"]
+script = ExtResource("13_connection")
+connection_id = &"a9ee2f4b-40b5-45ca-8b5c-4d68794417e5"
+from_node_id = &"d719aec5-b9bb-4ef6-a976-02a2db42cc03"
+from_port_id = &"completed"
+to_node_id = &"ca435435-4812-4f0d-a2e2-a171290e6f70"
+
+[sub_resource type="Resource" id="Connection_level_failure"]
+script = ExtResource("13_connection")
+connection_id = &"409d0a30-7c94-4116-a09d-aeec66267f8d"
+from_node_id = &"d719aec5-b9bb-4ef6-a976-02a2db42cc03"
+from_port_id = &"failed"
+to_node_id = &"b70b64ae-b58c-4cf9-92c1-bd431779ecb0"
+
+[sub_resource type="Resource" id="Connection_complete_flag"]
+script = ExtResource("13_connection")
+connection_id = &"107df61a-2ae9-49bd-b8cf-982a269f9b14"
+from_node_id = &"ca435435-4812-4f0d-a2e2-a171290e6f70"
+to_node_id = &"1413973c-afbc-4826-b8e2-a18ddf84703b"
+
+[sub_resource type="Resource" id="Connection_flag_autosave"]
+script = ExtResource("13_connection")
+connection_id = &"b65e8c7d-0c16-4464-927b-71d77ef8f230"
+from_node_id = &"1413973c-afbc-4826-b8e2-a18ddf84703b"
+to_node_id = &"62e1cb38-c942-44ce-a2ec-5ac6126e2cca"
+
+[sub_resource type="Resource" id="Connection_autosave_ready"]
+script = ExtResource("13_connection")
+connection_id = &"3b17bdb4-54a6-4f14-8b44-0fe40b75ef73"
+from_node_id = &"62e1cb38-c942-44ce-a2ec-5ac6126e2cca"
+to_node_id = &"82f7c5b8-a340-4a09-af06-29d3e42e4a2f"
+
+[sub_resource type="Resource" id="Connection_ready_end"]
+script = ExtResource("13_connection")
+connection_id = &"9fe56f55-e108-4d00-b684-2183b2327f31"
+from_node_id = &"82f7c5b8-a340-4a09-af06-29d3e42e4a2f"
+to_node_id = &"ac9e2c59-1e73-43e6-ac78-e96eff890f6b"
+
+[sub_resource type="Resource" id="Connection_intro_fail_end"]
+script = ExtResource("13_connection")
+connection_id = &"bb1938dd-f7a8-4917-947c-d045506d4e6e"
+from_node_id = &"81381473-80df-4f46-b1f1-b663d646e340"
+to_node_id = &"e77fa25e-d4cc-4c4d-be06-237f19f8afea"
+
+[sub_resource type="Resource" id="Connection_level_fail_end"]
+script = ExtResource("13_connection")
+connection_id = &"daf1868a-7da1-4cd4-9dc8-cb8b56dcf7a8"
+from_node_id = &"b70b64ae-b58c-4cf9-92c1-bd431779ecb0"
+to_node_id = &"e77fa25e-d4cc-4c4d-be06-237f19f8afea"
+
+[sub_resource type="Resource" id="FlowGameStart_master"]
+script = ExtResource("2_start")
+node_id = &"16885a2d-9cf8-44d3-b847-53c5b52054bd"
+editor_position = Vector2(-60, 120)
+title_override = "New Run"
+
+[sub_resource type="Resource" id="FlowCondition_bootstrap_complete"]
+script = ExtResource("4_condition")
+source = 0
+key = &"app_master_bootstrap_complete"
+operator = 6
+value = null
+
+[sub_resource type="Resource" id="FlowIf_legacy_bootstrap"]
+script = ExtResource("3_if")
+condition = SubResource("FlowCondition_bootstrap_complete")
+node_id = &"6ed61d4c-3037-498f-84c6-a93a0fc1dc57"
+editor_position = Vector2(220, 120)
+title_override = "Already Restored?"
+
+[sub_resource type="Resource" id="FlowEnd_legacy_bootstrap"]
+script = ExtResource("5_end")
+node_id = &"5bd9565a-b195-41d9-bab6-67ab3df1e65d"
+editor_position = Vector2(540, 20)
+title_override = "Restored Run Active"
+
+[sub_resource type="Resource" id="FlowRequestSave_new_game"]
+script = ExtResource("6_save")
+reason = &"new_game"
+node_id = &"63c273b6-1cb7-44f9-99b9-67b36d0c886d"
+editor_position = Vector2(530, 170)
+title_override = "Checkpoint: Before Intro"
+
+[sub_resource type="Resource" id="FlowPlayCutscene_intro"]
+script = ExtResource("8_cutscene")
+cutscene_id = &"intro_blank"
+context = {
+"new_game": true
+}
+node_id = &"4a8867b7-0823-4346-9375-2dbbd1802f91"
+editor_position = Vector2(790, 170)
+title_override = "Introduction"
+
+[sub_resource type="Resource" id="FlowRequestSave_intro_complete"]
+script = ExtResource("6_save")
+reason = &"intro_complete"
+node_id = &"e39a1011-a613-4931-97f7-b46079456b48"
+editor_position = Vector2(1060, 170)
+title_override = "Checkpoint: Intro Complete"
+
+[sub_resource type="Resource" id="FlowLoadLevel_terrain"]
+script = ExtResource("9_level")
+level_id = &"terrain_test"
+spawn_id = &"default"
+node_id = &"d719aec5-b9bb-4ef6-a976-02a2db42cc03"
+editor_position = Vector2(1340, 170)
+title_override = "Enter Terrain Test"
+
+[sub_resource type="Resource" id="FlowSetFlag_bootstrap_complete"]
+script = ExtResource("10_flag")
+flag_id = &"app_master_bootstrap_complete"
+node_id = &"ca435435-4812-4f0d-a2e2-a171290e6f70"
+editor_position = Vector2(1610, 170)
+title_override = "Bootstrap Complete"
+
+[sub_resource type="Resource" id="FlowSetFlag_legacy_entered"]
+script = ExtResource("10_flag")
+flag_id = &"flow_ran_entered_terrain_test"
+node_id = &"1413973c-afbc-4826-b8e2-a18ddf84703b"
+editor_position = Vector2(1870, 170)
+title_override = "Terrain Entered"
+
+[sub_resource type="Resource" id="FlowRequestSave_entered"]
+script = ExtResource("6_save")
+reason = &"entered_terrain_test"
+node_id = &"62e1cb38-c942-44ce-a2ec-5ac6126e2cca"
+editor_position = Vector2(2130, 170)
+title_override = "Autosave Gameplay"
+
+[sub_resource type="Resource" id="FlowEmitEvent_ready"]
+script = ExtResource("11_emit")
+event_id = &"app_master_flow_ready"
+node_id = &"82f7c5b8-a340-4a09-af06-29d3e42e4a2f"
+editor_position = Vector2(2390, 170)
+title_override = "Application Ready"
+
+[sub_resource type="Resource" id="FlowEnd_ready"]
+script = ExtResource("5_end")
+node_id = &"ac9e2c59-1e73-43e6-ac78-e96eff890f6b"
+editor_position = Vector2(2650, 170)
+title_override = "Gameplay"
+
+[sub_resource type="Resource" id="FlowEmitEvent_cutscene_failed"]
+script = ExtResource("11_emit")
+event_id = &"app_master_flow_failed"
+data = {
+"stage": "intro_cutscene"
+}
+node_id = &"81381473-80df-4f46-b1f1-b663d646e340"
+editor_position = Vector2(1060, 370)
+title_override = "Report Intro Failure"
+
+[sub_resource type="Resource" id="FlowEmitEvent_level_failed"]
+script = ExtResource("11_emit")
+event_id = &"app_master_flow_failed"
+data = {
+"stage": "terrain_test_load"
+}
+node_id = &"b70b64ae-b58c-4cf9-92c1-bd431779ecb0"
+editor_position = Vector2(1610, 370)
+title_override = "Report Level Failure"
+
+[sub_resource type="Resource" id="FlowEnd_failed"]
+script = ExtResource("5_end")
+node_id = &"e77fa25e-d4cc-4c4d-be06-237f19f8afea"
+editor_position = Vector2(1870, 430)
+title_override = "Recovery Requested"
+
+[resource]
+script = ExtResource("1_graph")
+display_name = "Main Game"
+description = "Application-owned master flow: durable New Game checkpoints, introduction, terrain installation, gameplay autosave, and readiness/failure routing."
+nodes = Array[ExtResource("14_node")]([SubResource("FlowGameStart_master"), SubResource("FlowIf_legacy_bootstrap"), SubResource("FlowEnd_legacy_bootstrap"), SubResource("FlowRequestSave_new_game"), SubResource("FlowPlayCutscene_intro"), SubResource("FlowRequestSave_intro_complete"), SubResource("FlowLoadLevel_terrain"), SubResource("FlowSetFlag_bootstrap_complete"), SubResource("FlowSetFlag_legacy_entered"), SubResource("FlowRequestSave_entered"), SubResource("FlowEmitEvent_ready"), SubResource("FlowEnd_ready"), SubResource("FlowEmitEvent_cutscene_failed"), SubResource("FlowEmitEvent_level_failed"), SubResource("FlowEnd_failed")])
+connections = Array[ExtResource("13_connection")]([SubResource("Connection_start_if"), SubResource("Connection_if_restored"), SubResource("Connection_if_new"), SubResource("Connection_save_initial_wait"), SubResource("Connection_intro_success"), SubResource("Connection_intro_failure"), SubResource("Connection_save_level_wait"), SubResource("Connection_level_success"), SubResource("Connection_level_failure"), SubResource("Connection_complete_flag"), SubResource("Connection_flag_autosave"), SubResource("Connection_autosave_ready"), SubResource("Connection_ready_end"), SubResource("Connection_intro_fail_end"), SubResource("Connection_level_fail_end")])
+editor_scroll_offset = Vector2(43.4458, -359.60138)
+editor_zoom = 0.7865
