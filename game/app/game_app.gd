@@ -62,6 +62,11 @@ var _rt_quality: int = RTSceneManager.RTQualityPreset.NATIVE
 var _smaa_enabled: bool = true
 var _smaa_quality: int = RTSceneManager.SMAAQuality.HIGH
 var _retro_post_enabled: bool = true
+# Unlike the RT settings this one lives on the level rather than the renderer, so
+# it has to be re-applied to each newly installed world.
+var _grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
+var _fps_counter_enabled: bool = false
+var _fps_layer: CanvasLayer
 
 
 func _ready() -> void:
@@ -300,10 +305,14 @@ func _open_graphics_options() -> void:
 	_graphics_dialog.anti_aliasing_enabled = _smaa_enabled
 	_graphics_dialog.smaa_quality = _smaa_quality
 	_graphics_dialog.retro_post_enabled = _retro_post_enabled
+	_graphics_dialog.grass_quality = _grass_quality
+	_graphics_dialog.fps_counter_enabled = _fps_counter_enabled
 	_graphics_dialog.quality_selected.connect(_on_graphics_quality_selected)
 	_graphics_dialog.anti_aliasing_toggled.connect(_on_graphics_anti_aliasing_toggled)
 	_graphics_dialog.smaa_quality_selected.connect(_on_graphics_smaa_quality_selected)
 	_graphics_dialog.retro_post_toggled.connect(_on_graphics_retro_post_toggled)
+	_graphics_dialog.grass_quality_selected.connect(_on_graphics_grass_quality_selected)
+	_graphics_dialog.fps_counter_toggled.connect(_on_graphics_fps_counter_toggled)
 	_graphics_dialog.finished.connect(_on_graphics_dialog_finished.unbind(1))
 	UISystem.show_modal(_graphics_dialog)
 
@@ -601,6 +610,9 @@ func _install_world(
 	world_root.add_child(level)
 	# Before RT starts, so the level's first rendered frame already has its fog.
 	_apply_level_distance_fog(level)
+	# A freshly instanced level brings its authored grass quality, not the one the
+	# player chose earlier in the session.
+	_apply_grass_quality()
 	player.visible = true
 	_set_player_camera_current(true)
 
@@ -871,6 +883,48 @@ func _on_graphics_smaa_quality_selected(quality: int) -> void:
 func _on_graphics_retro_post_toggled(enabled: bool) -> void:
 	_retro_post_enabled = enabled
 	_apply_graphics_preferences()
+
+
+func _on_graphics_grass_quality_selected(quality: int) -> void:
+	_grass_quality = quality
+	_apply_grass_quality()
+
+
+func _on_graphics_fps_counter_toggled(enabled: bool) -> void:
+	_fps_counter_enabled = enabled
+	_apply_fps_counter()
+
+
+## The counter is created on first use and then kept, so toggling it twice does
+## not churn nodes. It lives on its own CanvasLayer below UISystem's screen layer
+## (100), which puts it over the RT present layer at -100 but under menus.
+func _apply_fps_counter() -> void:
+	if _fps_layer == null or not is_instance_valid(_fps_layer):
+		if not _fps_counter_enabled:
+			return
+		_fps_layer = CanvasLayer.new()
+		_fps_layer.name = "FpsCounterLayer"
+		_fps_layer.layer = 90
+		# Survives the pause the options menu puts the tree under, which is the
+		# one moment someone is certain to be looking at it.
+		_fps_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+		_fps_layer.add_child(UIFpsCounter.new())
+		add_child(_fps_layer)
+	_fps_layer.visible = _fps_counter_enabled
+	# Hiding a CanvasLayer stops it drawing but not its children processing, and
+	# a counter nobody can see has nothing to count.
+	_fps_layer.process_mode = (
+		Node.PROCESS_MODE_ALWAYS if _fps_counter_enabled else Node.PROCESS_MODE_DISABLED)
+
+
+## Grass quality belongs to the terrain rather than to the renderer, so it is
+## pushed at whatever terrain is currently streaming instead of going through
+## RTSceneManager with the rest. Resolved through the add-on's own system group
+## so a level does not have to expose the node to be covered by the setting.
+func _apply_grass_quality() -> void:
+	for system in get_tree().get_nodes_in_group(&"procedural_terrain_grass_system"):
+		if system is TerrainGrass3D:
+			(system as TerrainGrass3D).grass_quality = _grass_quality as TerrainGrass3D.GrassQuality
 
 
 func _on_rt_quality_changed(preset: int, _requested_scale: float) -> void:

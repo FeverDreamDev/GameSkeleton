@@ -128,6 +128,7 @@ server.
 | --- | --- |
 | `start_streaming()` / `stop_streaming()` | Manual control when `auto_start` is off |
 | `rebuild()` | Recreate the runtime from current inspector values |
+| `grass_quality` | `Off` / `Low` / `Medium` / `High`, safe to change live. See below |
 | `sample_height(world_xz)` | Terrain height in world space, chunk or no chunk |
 | `world_to_chunk(world_xz)` | Chunk coordinate containing a world position |
 | `get_chunk(coord)` / `get_loaded_chunks()` | Live chunk access |
@@ -137,6 +138,38 @@ server.
 | `invalidate_grass_region(aabb)` | Force static masking to re-run over a region |
 | `set_distance_fog(enabled, begin, end, curve, color)` | Host-renderer hook: fades the unmanaged grass on the renderer's fog curve. `color` is scene-linear radiance |
 | `chunk_loaded` / `chunk_unloaded` / `grass_rebuilt` | Streaming signals |
+
+## Grass quality at run time
+
+Shell grass is stacked layers, so it costs its shell count in overdraw across
+whatever share of the screen it covers — reliably the most expensive thing in a
+scene that uses it, and the first thing worth handing a player.
+
+`grass_quality` is built for an options menu: **High** is the authored bands,
+**Medium** and **Low** shift every band one and two variants coarser, and **Off**
+hides the canopy without unloading it. Nothing is rebuilt — each chunk already
+caches all three shell meshes, so a change is a mesh swap that applies on the
+same frame and reverses just as fast.
+
+It works that way for a reason worth knowing before "just lower the shell count"
+looks tempting: shell counts are baked into geometry, and the settings snapshot
+the worker threads read is deliberately read-only and shared. Changing them for
+real means `rebuild()`, which tears down terrain collision — with the player
+standing on it.
+
+Measured on the host project at 2560x1440, one viewpoint in open field:
+
+| Tier | Frame | FPS |
+| --- | ---: | ---: |
+| High | 5.32 ms | 188 |
+| Medium | 4.54 ms | 220 |
+| Low | 4.16 ms | 241 |
+| Off | 4.16 ms | 240 |
+
+Low and Off cost the same, so Low is the better floor — the four-shell variant is
+already close to free. Off is worth keeping in the enum for a host that wants to
+hide grass for its own reasons, but it is not a performance tier, and an options
+menu is usually better off not offering it.
 
 ## Constraints
 

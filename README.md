@@ -48,6 +48,17 @@ For visual authoring instructions and the complete designer-facing node referenc
   grass canopy so the ground stays invisible under grass.
 - The default is Native (100%) plus High SMAA. Reduced RT quality presets enable the FSR1
   EASU/RCAS path; the reticle and Win98 UI remain native-resolution layers above presentation.
+- **Graphics** in the pause menu carries RT render quality, SMAA, retro grading, grass detail
+  and an FPS counter. Grass is the one worth reaching for first: it is stacked shell layers,
+  so it costs its shell count in overdraw over whatever share of the screen it covers. At
+  2560x1440 the tiers measure 188 / 220 / 241 FPS for High / Medium / Low, against a 241 FPS
+  floor with grass hidden entirely — Low is already at that floor, which is why the menu does
+  not offer an off switch. Switching tiers swaps between shell meshes each chunk already
+  caches, so it applies on the same frame and never disturbs terrain collision. Settings are
+  session-scoped.
+- The FPS counter is `UIFpsCounter` from the Win98 add-on, on its own CanvasLayer at 90 —
+  above the RT presentation layer at -100, below `UISystem`'s screens at 100, so it reads over
+  the game and under menus. It samples four times a second rather than every frame.
 
 ## Controls
 

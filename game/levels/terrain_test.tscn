@@ -1,24 +1,75 @@
-[gd_scene load_steps=18 format=3]
+[gd_scene format=3 uid="uid://cmiat16wtju7u"]
 
-[ext_resource type="Script" path="res://game/levels/terrain_test.gd" id="1_level"]
-[ext_resource type="Script" path="res://addons/procedural_terrain_grass/terrain_grass_3d.gd" id="2_terrain"]
-[ext_resource type="PackedScene" path="res://player/player.tscn" id="3_player"]
-[ext_resource type="Script" path="res://addons/game_flow/nodes/flow_spawn.gd" id="4_spawn"]
+[ext_resource type="Script" uid="uid://br2adejmspemi" path="res://game/levels/terrain_test.gd" id="1_level"]
+[ext_resource type="Script" uid="uid://c2dnc0deup1mk" path="res://addons/procedural_terrain_grass/terrain_grass_3d.gd" id="2_terrain"]
+[ext_resource type="PackedScene" uid="uid://df7k3m8px4n1v" path="res://player/player.tscn" id="3_player"]
+[ext_resource type="Script" uid="uid://bp1y821760xep" path="res://addons/game_flow/nodes/flow_spawn.gd" id="4_spawn"]
 [ext_resource type="Material" path="res://game/materials/test_caster_blinn_phong.tres" id="5_caster_material"]
 [ext_resource type="Material" path="res://game/materials/terrain_blinn_phong.tres" id="6_terrain_material"]
+[ext_resource type="Script" uid="uid://uv3e6c53tvsw" path="res://addons/day_night_cycle/core/day_night_palette.gd" id="7_pblxi"]
 [ext_resource type="Material" path="res://game/materials/test_reflector_blinn_phong.tres" id="7_reflector_material"]
-[ext_resource type="Script" path="res://game/levels/saveable_transform_3d.gd" id="8_saveable"]
-[ext_resource type="Script" path="res://addons/day_night_cycle/day_night_cycle_3d.gd" id="9_day_night"]
+[ext_resource type="Script" uid="uid://brn0lrm3x36e3" path="res://game/levels/saveable_transform_3d.gd" id="8_saveable"]
+[ext_resource type="Script" uid="uid://bqfefga12w8y6" path="res://addons/day_night_cycle/day_night_cycle_3d.gd" id="9_day_night"]
 
 [sub_resource type="Environment" id="Environment_level"]
 background_mode = 1
 background_color = Color(0.56, 0.7, 0.85, 1)
-background_energy_multiplier = 1.0
 ambient_light_source = 2
 ambient_light_color = Color(0.42, 0.5, 0.62, 1)
 ambient_light_energy = 0.55
-tonemap_mode = 0
-tonemap_exposure = 1.0
+
+[sub_resource type="Curve" id="Curve_i635x"]
+_data = [Vector2(0, 0.45), 0.0, 0.46875012, 1, 1, Vector2(0.32, 0.6), 0.46875012, 1.9999996, 1, 1, Vector2(0.46, 0.88), 1.9999996, 0.4210526, 1, 1, Vector2(0.65, 0.96), 0.4210526, 0.114285775, 1, 1, Vector2(1, 1), 0.114285775, 0.0, 1, 1]
+point_count = 5
+
+[sub_resource type="Gradient" id="Gradient_bx6dp"]
+offsets = PackedFloat32Array(0, 0.42, 0.52, 1)
+colors = PackedColorArray(0.16, 0.2, 0.34, 1, 0.23, 0.2, 0.23, 1, 0.33, 0.29, 0.3, 1, 0.42, 0.5, 0.62, 1)
+
+[sub_resource type="Gradient" id="Gradient_f8dhd"]
+offsets = PackedFloat32Array(0, 0.45, 1)
+colors = PackedColorArray(0.014, 0.02, 0.018, 1, 0.075, 0.085, 0.055, 1, 0.115, 0.2, 0.075, 1)
+
+[sub_resource type="Gradient" id="Gradient_qi1jq"]
+offsets = PackedFloat32Array(0, 0.34, 0.45, 0.55, 0.75, 1)
+colors = PackedColorArray(0.035, 0.048, 0.09, 1, 0.14, 0.11, 0.155, 1, 0.72, 0.36, 0.19, 1, 0.78, 0.63, 0.47, 1, 0.62, 0.72, 0.825, 1, 0.56, 0.7, 0.85, 1)
+
+[sub_resource type="Curve" id="Curve_iw7nr"]
+_data = [Vector2(0, 0), 0.0, 0.0, 1, 1, Vector2(0.4, 0), 0.0, 4.5833344, 1, 1, Vector2(0.52, 0.55), 4.5833344, 0.93749994, 1, 1, Vector2(1, 1), 0.93749994, 0.0, 1, 1]
+point_count = 4
+
+[sub_resource type="Curve" id="Curve_rn6ul"]
+_data = [Vector2(0, 1), 0.0, 0.0, 1, 1, Vector2(0.18, 1), 0.0, -3.8461542, 1, 1, Vector2(0.44, 0), -3.8461542, 0.0, 1, 1, Vector2(1, 0), 0.0, 0.0, 1, 1]
+point_count = 4
+
+[sub_resource type="Curve" id="Curve_3i2nm"]
+_data = [Vector2(0, 0), 0.0, 0.0, 1, 1, Vector2(0.36, 0), 0.0, 3.750001, 1, 1, Vector2(0.44, 0.3), 3.750001, 2.857143, 1, 1, Vector2(0.58, 0.7), 2.857143, 0.71428573, 1, 1, Vector2(1, 1), 0.71428573, 0.0, 1, 1]
+point_count = 5
+
+[sub_resource type="Gradient" id="Gradient_q7tgs"]
+offsets = PackedFloat32Array(0, 0.36, 0.45, 0.6, 1)
+colors = PackedColorArray(0, 0, 0, 1, 0.35, 0.2, 0.28, 1, 1, 0.45, 0.18, 1, 1, 0.72, 0.42, 1, 0.85, 0.88, 0.95, 1)
+
+[sub_resource type="Gradient" id="Gradient_gj2ml"]
+offsets = PackedFloat32Array(0, 0.45, 0.52, 0.64, 1)
+colors = PackedColorArray(1, 0.38, 0.16, 1, 1, 0.42, 0.18, 1, 1, 0.62, 0.34, 1, 1, 0.85, 0.68, 1, 1, 0.955, 0.87, 1)
+
+[sub_resource type="Gradient" id="Gradient_yjxqd"]
+offsets = PackedFloat32Array(0, 0.35, 0.45, 0.6, 1)
+colors = PackedColorArray(0.03, 0.042, 0.095, 1, 0.055, 0.08, 0.16, 1, 0.13, 0.18, 0.33, 1, 0.17, 0.32, 0.58, 1, 0.15, 0.33, 0.66, 1)
+
+[sub_resource type="Resource" id="Resource_fvf8j"]
+script = ExtResource("7_pblxi")
+zenith_gradient = SubResource("Gradient_yjxqd")
+horizon_gradient = SubResource("Gradient_qi1jq")
+ground_gradient = SubResource("Gradient_f8dhd")
+sun_glow_gradient = SubResource("Gradient_q7tgs")
+sun_light_gradient = SubResource("Gradient_gj2ml")
+sun_energy_curve = SubResource("Curve_3i2nm")
+moon_energy_curve = SubResource("Curve_iw7nr")
+ambient_gradient = SubResource("Gradient_bx6dp")
+ambient_energy_curve = SubResource("Curve_i635x")
+star_intensity_curve = SubResource("Curve_rn6ul")
 
 [sub_resource type="BoxMesh" id="BoxMesh_caster"]
 size = Vector3(2, 3, 2)
@@ -35,19 +86,21 @@ rings = 16
 [sub_resource type="SphereShape3D" id="SphereShape_reflector"]
 radius = 1.0
 
-[node name="TerrainTest" type="Node3D"]
+[node name="TerrainTest" type="Node3D" unique_id=1105306601]
 script = ExtResource("1_level")
-level_id = &"terrain_test"
 standalone_player_scene = ExtResource("3_player")
+level_id = &"terrain_test"
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=557062639]
 environment = SubResource("Environment_level")
 
-[node name="DayNightCycle3D" type="Node3D" parent="." groups=["saveable"]]
+[node name="DayNightCycle3D" type="Node3D" parent="." unique_id=1786206511 groups=["saveable"]]
+process_priority = 90000
 script = ExtResource("9_day_night")
 ambient_materials = Array[ShaderMaterial]([ExtResource("6_terrain_material"), ExtResource("5_caster_material"), ExtResource("7_reflector_material")])
+palette = SubResource("Resource_fvf8j")
 
-[node name="TerrainGrass3D" type="Node3D" parent="."]
+[node name="TerrainGrass3D" type="Node3D" parent="." unique_id=1661387579]
 script = ExtResource("2_terrain")
 auto_start = false
 terrain_material_override = ExtResource("6_terrain_material")
@@ -56,43 +109,37 @@ terrain_receiver_only_group = &"retro_rt_receiver_only"
 terrain_load_distance = 64.0
 terrain_unload_distance = 96.0
 grass_prefetch_distance = 64.0
-max_worker_jobs = 2
-max_mesh_commits_per_frame = 2
 
-[node name="SpawnPoints" type="Node3D" parent="."]
+[node name="SpawnPoints" type="Node3D" parent="." unique_id=518666176]
 
-[node name="Default" type="Marker3D" parent="SpawnPoints"]
+[node name="Default" type="Marker3D" parent="SpawnPoints" unique_id=1025057969]
 script = ExtResource("4_spawn")
-spawn_id = &"default"
-applies_facing = true
 
-[node name="StreamingAnchor" type="Node3D" parent="."]
+[node name="StreamingAnchor" type="Node3D" parent="." unique_id=1728116720]
 
-[node name="TestCaster" type="Node3D" parent="."]
-position = Vector3(6, 1.5, -6)
+[node name="TestCaster" type="Node3D" parent="." unique_id=1722195017]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 1.5, -6)
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="TestCaster" groups=["retro_rt_managed"]]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TestCaster" unique_id=931230618 groups=["retro_rt_managed"]]
 material_override = ExtResource("5_caster_material")
 mesh = SubResource("BoxMesh_caster")
 
-[node name="StaticBody3D" type="StaticBody3D" parent="TestCaster"]
+[node name="StaticBody3D" type="StaticBody3D" parent="TestCaster" unique_id=80956653]
 collision_layer = 129
-collision_mask = 1
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="TestCaster/StaticBody3D"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TestCaster/StaticBody3D" unique_id=2028342159]
 shape = SubResource("BoxShape_caster")
 
-[node name="TestReflector" type="Node3D" parent="." groups=["saveable"]]
-position = Vector3(-5, 1, -7)
+[node name="TestReflector" type="Node3D" parent="." unique_id=2040857417 groups=["saveable"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -5, 1, -7)
 script = ExtResource("8_saveable")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="TestReflector" groups=["retro_rt_managed"]]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TestReflector" unique_id=1422470156 groups=["retro_rt_managed"]]
 material_override = ExtResource("7_reflector_material")
 mesh = SubResource("SphereMesh_reflector")
 
-[node name="StaticBody3D" type="StaticBody3D" parent="TestReflector"]
+[node name="StaticBody3D" type="StaticBody3D" parent="TestReflector" unique_id=1161230751]
 collision_layer = 129
-collision_mask = 1
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="TestReflector/StaticBody3D"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TestReflector/StaticBody3D" unique_id=1752124279]
 shape = SubResource("SphereShape_reflector")

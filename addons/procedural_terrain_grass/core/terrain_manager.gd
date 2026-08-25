@@ -84,6 +84,10 @@ var grass_material: Material
 var interaction_manager
 var grass_enabled: bool = true
 var static_masking_enabled: bool = true
+## Grass quality preference, applied by remapping which cached LOD variant each
+## band draws. See TerrainChunk._apply_lod.
+var grass_lod_bias: int = 0
+var grass_suppressed: bool = false
 
 var chunks: Dictionary = {}
 var _coord_revisions: Dictionary = {}
@@ -230,6 +234,18 @@ func set_grass_cull_height(height: float) -> void:
 			chunk.set_grass_cull_height(height)
 
 
+## Applies a grass quality preference to every loaded chunk and to every chunk
+## streamed afterwards. [param bias] shifts each distance band towards a coarser
+## cached variant; [param suppressed] hides the canopy outright.
+func set_grass_quality(bias: int, suppressed: bool) -> void:
+	if bias == grass_lod_bias and suppressed == grass_suppressed:
+		return
+	grass_lod_bias = bias
+	grass_suppressed = suppressed
+	for chunk in get_loaded_chunks():
+		chunk.refresh_grass_quality(bias, suppressed)
+
+
 func invalidate_grass_region(world_bounds: AABB) -> void:
 	if not grass_enabled or not static_masking_enabled:
 		return
@@ -313,6 +329,10 @@ func _create_pending_chunk(coord: Vector2i, distance: float) -> void:
 	_coord_revisions[coord] = revision
 	var chunk := TerrainChunkScript.new()
 	chunk.configure(coord, revision, settings, terrain_material, grass_material)
+	# Chunks stream in long after the player last touched the quality setting, so
+	# the preference has to be handed to each new one rather than only broadcast.
+	chunk.grass_lod_bias = grass_lod_bias
+	chunk.grass_suppressed = grass_suppressed
 	chunks[coord] = chunk
 	add_child(chunk)
 	_terrain_queue.append({"coord": coord, "revision": revision, "distance": distance})

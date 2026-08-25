@@ -74,6 +74,7 @@ reading as a list of separate actions. `PauseMenu` does exactly this.
 | `widgets/ui_screen.gd` | `UIScreen` | Base for a full-screen page. Override `_build()`, not `_ready()`. |
 | `widgets/ui_title_button.gd` | `UITitleButton` | The small title bar buttons. Glyphs are drawn, not imported. |
 | `widgets/ui_progress_bar.gd` | `UIProgressBar` | The chunky segmented progress bar. |
+| `widgets/ui_fps_counter.gd` | `UIFpsCounter` | Sunken frame-rate readout. Carries its own theme, so it can live on a game's HUD canvas outside the UI stack. |
 | `screens/boot_screen.gd` | `BootScreen` | Loading screen: a progress readout over whatever is behind it. |
 | `screens/main_menu.gd` | `MainMenu` | Main menu window. Emits intent; decides nothing. |
 | `screens/pause_menu.gd` | `PauseMenu` | Error-box shaped pause popup that freezes the tree. |

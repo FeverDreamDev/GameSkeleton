@@ -220,5 +220,5 @@ display_name = "Main Game"
 description = "Application-owned master flow: durable New Game checkpoints, introduction, terrain installation, gameplay autosave, and readiness/failure routing."
 nodes = Array[ExtResource("14_node")]([SubResource("FlowGameStart_master"), SubResource("FlowIf_bootstrap_complete"), SubResource("FlowEnd_restored_bootstrap"), SubResource("FlowRequestSave_new_game"), SubResource("FlowPlayCutscene_intro"), SubResource("FlowRequestSave_intro_complete"), SubResource("FlowLoadLevel_terrain"), SubResource("FlowSetFlag_bootstrap_complete"), SubResource("FlowRequestSave_entered"), SubResource("FlowEmitEvent_ready"), SubResource("FlowEnd_ready"), SubResource("FlowEmitEvent_cutscene_failed"), SubResource("FlowEmitEvent_level_failed"), SubResource("FlowEnd_failed")])
 connections = Array[ExtResource("13_connection")]([SubResource("Connection_start_if"), SubResource("Connection_if_restored"), SubResource("Connection_if_new"), SubResource("Connection_save_initial_wait"), SubResource("Connection_intro_success"), SubResource("Connection_intro_failure"), SubResource("Connection_save_level_wait"), SubResource("Connection_level_success"), SubResource("Connection_level_failure"), SubResource("Connection_complete_autosave"), SubResource("Connection_autosave_ready"), SubResource("Connection_ready_end"), SubResource("Connection_intro_fail_end"), SubResource("Connection_level_fail_end")])
-editor_scroll_offset = Vector2(-537.6079, -327.67035)
-editor_zoom = 0.3335527
+editor_scroll_offset = Vector2(-266.66727, 0)
+editor_zoom = 0.44395858

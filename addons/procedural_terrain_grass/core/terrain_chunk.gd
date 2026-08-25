@@ -20,6 +20,12 @@ var grass_revision: int = 0
 var terrain_ready: bool = false
 var grass_ready: bool = false
 var current_lod: int = LOD_HIDDEN
+## Quality bias, owned by the manager. Shifts which of the three baked variants a
+## band actually draws, so a quality change is a mesh swap rather than a rebuild.
+var grass_lod_bias: int = 0
+## Quality "off". Kept separate from LOD_HIDDEN so distance and preference do not
+## overwrite each other when either changes.
+var grass_suppressed: bool = false
 var heights := PackedFloat32Array()
 var normals := PackedVector3Array()
 var base_occupancy := PackedByteArray()
@@ -191,9 +197,27 @@ func _initial_lod(distance_to_chunk: float) -> int:
 	return LOD_HIDDEN
 
 
+## Re-applies the current band, for when the quality preference changed rather
+## than the distance.
+func refresh_grass_quality(bias: int, suppressed: bool) -> void:
+	grass_lod_bias = bias
+	grass_suppressed = suppressed
+	if grass_ready:
+		_apply_lod()
+	elif suppressed:
+		grass_mesh_instance.visible = false
+
+
 func _apply_lod() -> void:
-	if current_lod == LOD_HIDDEN:
+	if grass_suppressed or current_lod == LOD_HIDDEN:
 		grass_mesh_instance.visible = false
 		return
-	grass_mesh_instance.mesh = grass_meshes[current_lod]
+	# Shell counts are baked into geometry, and the settings snapshot the worker
+	# jobs read is deliberately read-only, so lowering them for real means
+	# tearing the runtime down -- taking terrain collision with it while the
+	# player is standing on it. Every chunk already caches all three variants,
+	# though, so a quality preference can simply draw a coarser one than the
+	# distance band asked for. Instant, reversible, and it cannot drop the floor.
+	var variant := clampi(current_lod + grass_lod_bias, LOD_NEAR, LOD_FAR)
+	grass_mesh_instance.mesh = grass_meshes[variant]
 	grass_mesh_instance.visible = true

@@ -14,6 +14,8 @@ extends SceneTree
 ## of them touch an authored resource.
 ##
 ##   PERF_GRASS=0    hide every committed grass shell mesh
+##   PERF_GRASS_QUALITY=n
+##                   grass tier: 0 off, 1 low, 2 medium, 3 high
 ##   PERF_SKY=0      hide the day/night sky dome
 ##   PERF_CLOUDS=0   cloud shadow strength to zero (the per-fragment noise field)
 ##   PERF_SMAA=0     disable the three SMAA passes
@@ -103,6 +105,9 @@ func _run() -> void:
 		var grass_material := terrain.get_grass_material() as ShaderMaterial
 		if grass_material != null:
 			grass_material.set_shader_parameter(&"u_wind_enabled", false)
+	var grass_tier := OS.get_environment("PERF_GRASS_QUALITY")
+	if grass_tier.is_valid_int():
+		terrain.grass_quality = int(grass_tier) as TerrainGrass3D.GrassQuality
 	# Grass LOD selection is hysteretic, so a chunk sitting near a band boundary
 	# can settle either way depending on the order chunks happened to commit. That
 	# is invisible in a frame-time median and completely dominates a pixel

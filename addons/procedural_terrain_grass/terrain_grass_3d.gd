@@ -15,6 +15,24 @@ extends Node3D
 ## call [method rebuild] after changing those at runtime.
 
 const SYSTEM_GROUP := &"procedural_terrain_grass_system"
+
+## Runtime grass quality, exposed for an options menu. Each tier below HIGH
+## shifts every distance band one cached LOD variant coarser, which is why it
+## costs nothing to change: the meshes already exist.
+enum GrassQuality {
+	OFF,     ## Canopy hidden. Chunks stay loaded, so it comes straight back.
+	LOW,     ## Every band draws the far variant: fewest shells, shortest canopy.
+	MEDIUM,  ## Every band drops one variant.
+	HIGH,    ## The authored bands, unchanged.
+}
+
+## GrassQuality tier -> how many variants coarser than the distance band to draw.
+const GRASS_QUALITY_LOD_BIAS := {
+	GrassQuality.LOW: 2,
+	GrassQuality.MEDIUM: 1,
+	GrassQuality.HIGH: 0,
+}
+
 const GROUND_RT_LOOKUP_INTERVAL_FRAMES := 30
 ## Where between the blade base and tip the reflected canopy is averaged. A
 ## mirror sees the canopy from outside, so it is weighted towards the tips
@@ -190,6 +208,20 @@ signal grass_rebuilt(coord: Vector2i)
 
 @export_category("Grass Appearance")
 @export var grass_enabled: bool = true
+## Runtime quality preference, safe to change while the game is running and cheap
+## enough to sit in an options menu. It does not rebuild anything: every chunk
+## already caches all three shell variants, so a lower tier simply draws a
+## coarser one than its distance band asked for. [b]High[/b] is the authored
+## look; [b]Off[/b] hides the canopy without unloading it, so turning it back on
+## is immediate.
+##
+## Shell counts themselves are baked into geometry and cannot be changed without
+## a full [method rebuild], which takes terrain collision with it -- not
+## something to do underneath a standing player.
+@export var grass_quality: GrassQuality = GrassQuality.HIGH:
+	set(value):
+		grass_quality = value
+		_apply_grass_quality()
 @export_range(0.01, 10.0, 0.01, "or_greater") var grass_height: float = 0.6:
 	set(value):
 		grass_height = value
@@ -659,6 +691,7 @@ func _create_runtime(start_when_ready: bool = auto_start) -> void:
 	_terrain_manager.interaction_manager = _interaction_manager
 
 	_replay_registrations()
+	_apply_grass_quality()
 	_refresh_target(false)
 	_apply_visual_settings()
 	if start_when_ready:
@@ -788,6 +821,17 @@ func _apply_visual_settings() -> void:
 		_interaction_manager.refresh_interaction_state()
 	if _terrain_manager != null:
 		_terrain_manager.set_grass_cull_height(grass_height)
+
+
+
+## Pushes the quality preference at the terrain manager. Safe before the runtime
+## exists: _create_runtime re-applies it once the manager is up.
+func _apply_grass_quality() -> void:
+	if _terrain_manager == null or not is_instance_valid(_terrain_manager):
+		return
+	_terrain_manager.set_grass_quality(
+		int(GRASS_QUALITY_LOD_BIAS.get(grass_quality, 0)),
+		grass_quality == GrassQuality.OFF)
 
 
 func _build_settings():

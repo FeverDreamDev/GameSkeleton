@@ -9,6 +9,8 @@ signal quality_selected(preset: int)
 signal anti_aliasing_toggled(enabled: bool)
 signal smaa_quality_selected(quality: int)
 signal retro_post_toggled(enabled: bool)
+signal grass_quality_selected(quality: int)
+signal fps_counter_toggled(enabled: bool)
 
 var rendering_method: StringName = &"unknown"
 var active_backend: StringName = &"none"
@@ -16,6 +18,8 @@ var quality_preset: int = RTSceneManager.RTQualityPreset.NATIVE
 var anti_aliasing_enabled: bool = true
 var smaa_quality: int = RTSceneManager.SMAAQuality.HIGH
 var retro_post_enabled: bool = true
+var grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
+var fps_counter_enabled: bool = false
 
 var _quality_selector: OptionButton
 var _backend_value: Label
@@ -108,12 +112,45 @@ func _build_body() -> Control:
 	smaa_row.add_child(smaa_selector)
 	UISystem.bind_button(smaa_selector)
 
+	# Grass is the single most expensive thing in the scene -- it is drawn as
+	# stacked shell layers, so it costs its shell count in overdraw over whatever
+	# fraction of the screen it covers. That makes it the most useful thing to
+	# hand the player, and the tiers are a real spread rather than three names.
+	var grass_row := HBoxContainer.new()
+	grass_row.add_theme_constant_override("separation", 12)
+	column.add_child(grass_row)
+	var grass_label := Label.new()
+	grass_label.text = "Grass detail"
+	grass_label.custom_minimum_size.x = 132.0
+	grass_row.add_child(grass_label)
+	var grass_selector := OptionButton.new()
+	grass_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# GrassQuality.OFF is deliberately not offered. It measures the same as Low --
+	# the four-shell variant is already close to free -- so it would be a choice
+	# between an empty field and a free one.
+	grass_selector.add_item("Low", TerrainGrass3D.GrassQuality.LOW)
+	grass_selector.add_item("Medium", TerrainGrass3D.GrassQuality.MEDIUM)
+	grass_selector.add_item("High", TerrainGrass3D.GrassQuality.HIGH)
+	var grass_selected_index := grass_selector.get_item_index(grass_quality)
+	if grass_selected_index >= 0:
+		grass_selector.select(grass_selected_index)
+	grass_selector.item_selected.connect(_on_grass_quality_item_selected.bind(grass_selector))
+	grass_row.add_child(grass_selector)
+	UISystem.bind_button(grass_selector)
+
 	var retro_toggle := CheckBox.new()
 	retro_toggle.text = "Retro color grading"
 	retro_toggle.button_pressed = retro_post_enabled
 	retro_toggle.toggled.connect(_on_retro_post_toggled)
 	column.add_child(retro_toggle)
 	UISystem.bind_button(retro_toggle)
+
+	var fps_toggle := CheckBox.new()
+	fps_toggle.text = "Show FPS counter"
+	fps_toggle.button_pressed = fps_counter_enabled
+	fps_toggle.toggled.connect(_on_fps_counter_toggled)
+	column.add_child(fps_toggle)
+	UISystem.bind_button(fps_toggle)
 
 	var hint := Label.new()
 	hint.theme_type_variation = &"HintLabel"
@@ -179,3 +216,13 @@ func _on_smaa_quality_item_selected(index: int, selector: OptionButton) -> void:
 func _on_retro_post_toggled(enabled: bool) -> void:
 	retro_post_enabled = enabled
 	retro_post_toggled.emit(enabled)
+
+
+func _on_grass_quality_item_selected(index: int, selector: OptionButton) -> void:
+	grass_quality = selector.get_item_id(index)
+	grass_quality_selected.emit(grass_quality)
+
+
+func _on_fps_counter_toggled(enabled: bool) -> void:
+	fps_counter_enabled = enabled
+	fps_counter_toggled.emit(enabled)
