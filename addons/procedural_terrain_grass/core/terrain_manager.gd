@@ -4,7 +4,7 @@
 # Work moves through four stages, each budgeted so no single frame stalls:
 #   1. _terrain_queue  -> BuildJob(terrain), on a worker thread when available
 #   2. _mask_queue     -> MaskJob, physics shape queries spread over frames
-#   3. _grass_queue    -> BuildJob(grass), three shell LOD variants per chunk
+#   3. _grass_queue    -> BuildJob(grass), one base grass surface per chunk
 #   4. commit queues   -> ArrayMesh construction, capped per frame
 #
 # Every queued item carries the chunk revision it was created for, so results
@@ -16,6 +16,25 @@ const IncrementalBuild = preload("res://addons/procedural_terrain_grass/core/ter
 const TerrainChunkScript = preload("res://addons/procedural_terrain_grass/core/terrain_chunk.gd")
 const TerrainGenerator = preload("res://addons/procedural_terrain_grass/core/terrain_generator.gd")
 const TerrainSettingsScript = preload("res://addons/procedural_terrain_grass/core/terrain_settings.gd")
+
+## Vertical slack the per-cell queries add below the terrain and above the grass.
+## The broad-phase envelope has to cover exactly this, or a blocker sitting in
+## the gap would never be collected as a candidate and the cells it really
+## touches would be rejected without ever being queried.
+const MASK_QUERY_PADDING_BELOW := 0.10
+const MASK_QUERY_PADDING_ABOVE := 0.15
+
+## Slack added to every candidate bound before it is used to reject a cell.
+## AABB.intersects() is exclusive -- two boxes sharing a face do not intersect --
+## while both physics backends treat face contact as an overlap, Jolt especially.
+## Without this a wall flush against a cell boundary would skip its exact query
+## and leave a strip of grass standing inside the wall.
+const BLOCKER_BOUNDS_SLACK := 0.01
+
+## How many collider/shape pairs the chunk broad phase will enumerate. Beyond
+## this the query result may be truncated, so the job cannot prove it has seen
+## every blocker and falls back to the exact per-cell scan.
+const MASK_CANDIDATE_LIMIT := 32
 
 signal chunk_loaded(coord: Vector2i, chunk)
 signal chunk_unloaded(coord: Vector2i)
@@ -34,6 +53,10 @@ class BuildJob:
 	var task_id: int = -1
 	var result: Dictionary = {}
 	var state
+	## Wall-clock microseconds this job spent generating, summed across every
+	## slice for the incremental path. Read by the streaming benchmark; the two
+	## clock reads per slice are far below the cost of the slice itself.
+	var elapsed_usec: int = 0
 
 	func prepare() -> void:
 		if state != null:
@@ -45,14 +68,19 @@ class BuildJob:
 			state.configure_grass(coord, revision, heights, normals, occupancy, fine_occupancy, snapshot)
 
 	func run() -> void:
+		var started_usec := Time.get_ticks_usec()
 		prepare()
 		while not state.step(Time.get_ticks_usec() + 1_000_000):
 			pass
 		result = state.output
+		elapsed_usec += Time.get_ticks_usec() - started_usec
 
 	func step(deadline_usec: int) -> bool:
+		var started_usec := Time.get_ticks_usec()
 		prepare()
-		if not state.step(deadline_usec):
+		var complete: bool = state.step(deadline_usec)
+		elapsed_usec += Time.get_ticks_usec() - started_usec
+		if not complete:
 			return false
 		result = state.output
 		return true
@@ -68,14 +96,47 @@ class MaskJob:
 	var next_subcell: int = 0
 	var needs_physics_scan: bool = false
 	var fallback_aabbs: Array[AABB] = []
+	## Conservative world bounds of every physics collider that can reach this
+	## chunk's cell query volumes, snapshotted at job start and already grown by
+	## BLOCKER_BOUNDS_SLACK. Values, not node references: a blocker freed mid-job
+	## must not be dereferenced, and the revision system discards the job anyway.
+	var blocker_bounds: Array[AABB] = []
+	## Only true when the job proved that every collider on the blocker mask which
+	## can reach this chunk is represented above AND that comparing against them
+	## can actually reject something. Either failure puts the job back on the
+	## exhaustive exact scan it used before Phase 2, which is why an unregistered
+	## body or an unsupported shape still carves grass correctly.
+	var broad_phase_active: bool = false
+	# The active cell's corners and origin, cached for its sixteen subcell bounds
+	# so the fine pass stops re-deriving them per subcell. Stored as the same
+	# terms the bounds expressions already used: reassociating the arithmetic
+	# would move a boundary height by an ULP and with it a subcell's mask bit.
+	var active_x: float = 0.0
+	var active_z: float = 0.0
+	var active_origin_x: float = 0.0
+	var active_origin_z: float = 0.0
+	var active_h00: float = 0.0
+	var active_h10: float = 0.0
+	var active_h01: float = 0.0
+	var active_h11: float = 0.0
+
+	## Whether any conservative candidate could contain something overlapping
+	## [param bounds]. Inclusive by construction: the candidates were grown before
+	## being stored, so face contact answers yes and costs one needless query
+	## rather than wrongly leaving grass inside a blocker.
+	func candidate_overlaps(bounds: AABB) -> bool:
+		for candidate in blocker_bounds:
+			if candidate.intersects(bounds):
+				return true
+		return false
 
 class GrassCommitJob:
 	extends RefCounted
 	var coord: Vector2i
 	var revision: int
-	var variants: Array = []
-	var next_variant: int = 0
-	var meshes: Array[ArrayMesh] = []
+	## One surface's worth of arrays. The three LOD shell sets draw this same
+	## surface, so there is nothing left to commit per variant.
+	var arrays: Array = []
 
 var settings
 var target: Node3D
@@ -109,10 +170,28 @@ var mask_query_count: int = 0
 var mesh_commit_count: int = 0
 var stale_result_count: int = 0
 
+# Cumulative benchmark counters. mask_query_count above is reset on every physics
+# frame, which is useless for a before/after total, so these run for the lifetime
+# of the manager and are only ever read.
+var mask_query_total: int = 0
+var mask_broad_phase_rejections: int = 0
+var mask_jobs_completed: int = 0
+var mask_job_usec_total: int = 0
+var terrain_build_usec_total: int = 0
+var grass_build_usec_total: int = 0
+var terrain_commit_usec_total: int = 0
+var grass_commit_usec_total: int = 0
+
 var _cell_query_shape := BoxShape3D.new()
 var _cell_query := PhysicsShapeQueryParameters3D.new()
 var _broad_query_shape := BoxShape3D.new()
 var _broad_query := PhysicsShapeQueryParameters3D.new()
+## Identity transforms plus the quantised shell byte, one buffer per LOD variant.
+## Shell distribution is a settings property, so this is built once and every
+## chunk's MultiMesh resources bulk-copy it.
+var _grass_shell_buffers: Array[PackedFloat32Array] = []
+## Shape3D instance id -> derived local bounds, for the masking broad phase.
+var _shape_bounds_cache: Dictionary = {}
 
 
 func _ready() -> void:
@@ -123,6 +202,7 @@ func _ready() -> void:
 	# which is only safe because nothing writes to it after setup.
 	_snapshot.make_read_only()
 	_height_noise = TerrainGenerator.create_noise(_snapshot)
+	_grass_shell_buffers = TerrainGenerator.grass_shell_instance_buffers(_snapshot)
 	# Single-threaded exports fall back to the incremental main-thread builder.
 	# `--force-nothreads` exercises that path on a threaded build.
 	_use_workers = OS.has_feature("threads") and not OS.get_cmdline_user_args().has("--force-nothreads")
@@ -155,7 +235,8 @@ func stop_streaming(clear_chunks: bool = false) -> void:
 	_grass_commit_queue.clear()
 	_active_incremental_job = null
 	_active_mask_job = null
-	for chunk in chunks.values():
+	for coord_variant in chunks:
+		var chunk = chunks[coord_variant]
 		if is_instance_valid(chunk):
 			chunk.queue_free()
 	chunks.clear()
@@ -185,10 +266,7 @@ func world_to_chunk(world_xz: Vector2) -> Vector2i:
 
 
 func get_loaded_chunks() -> Array:
-	var result: Array = []
-	for value in chunks.values():
-		result.append(value)
-	return result
+	return chunks.values()
 
 
 func get_chunk(coord: Vector2i):
@@ -229,7 +307,8 @@ func active_generation_job_count() -> int:
 ## Applies a runtime grass-height change to every loaded chunk's cull volume.
 ## The shells themselves are shader-driven, so no geometry has to be rebuilt.
 func set_grass_cull_height(height: float) -> void:
-	for chunk in chunks.values():
+	for coord_variant in chunks:
+		var chunk = chunks[coord_variant]
 		if is_instance_valid(chunk):
 			chunk.set_grass_cull_height(height)
 
@@ -242,7 +321,8 @@ func set_grass_quality(bias: int, suppressed: bool) -> void:
 		return
 	grass_lod_bias = bias
 	grass_suppressed = suppressed
-	for chunk in get_loaded_chunks():
+	for coord_variant in chunks:
+		var chunk = chunks[coord_variant]
 		chunk.refresh_grass_quality(bias, suppressed)
 
 
@@ -289,60 +369,88 @@ func _physics_process(_delta: float) -> void:
 
 func _update_streaming_set() -> void:
 	var target_xz := Vector2(target.global_position.x, target.global_position.z)
-	var center := world_to_chunk(target_xz)
-	var radius_chunks := ceili(settings.terrain_load_distance / float(settings.chunk_size)) + 1
+	var local_target_xz := _world_to_local_xz(target_xz)
+	var chunk_size := float(settings.chunk_size)
+	var load_distance := float(settings.terrain_load_distance)
+	var unload_distance := float(settings.terrain_unload_distance)
+	var grass_prefetch_distance := float(settings.grass_prefetch_distance)
+	var load_distance_squared := load_distance * load_distance
+	var unload_distance_squared := unload_distance * unload_distance
+	var grass_prefetch_distance_squared := grass_prefetch_distance * grass_prefetch_distance
+	var center := Vector2i(
+		floori(local_target_xz.x / chunk_size),
+		floori(local_target_xz.y / chunk_size)
+	)
+	var radius_chunks := ceili(load_distance / chunk_size) + 1
 	var desired: Dictionary = {}
 	for z in range(center.y - radius_chunks, center.y + radius_chunks + 1):
 		for x in range(center.x - radius_chunks, center.x + radius_chunks + 1):
 			var coord := Vector2i(x, z)
-			var distance := distance_to_chunk_aabb(target_xz, coord)
-			if distance <= settings.terrain_load_distance:
-				desired[coord] = distance
+			var distance_squared := _distance_squared_to_chunk_aabb_local(local_target_xz, coord, chunk_size)
+			if distance_squared <= load_distance_squared:
+				desired[coord] = true
 				if not chunks.has(coord):
-					_create_pending_chunk(coord, distance)
+					_create_pending_chunk(coord, distance_squared)
 
 	var unload: Array[Vector2i] = []
-	for coord_variant in chunks.keys():
+	for coord_variant in chunks:
 		var coord: Vector2i = coord_variant
 		if desired.has(coord):
 			continue
-		if distance_to_chunk_aabb(target_xz, coord) > settings.terrain_unload_distance:
+		if _distance_squared_to_chunk_aabb_local(local_target_xz, coord, chunk_size) > unload_distance_squared:
 			unload.append(coord)
 	for coord in unload:
 		_unload_chunk(coord)
 
+	# Unload listeners may move this translated terrain before the remaining
+	# work in this pass. Keep the captured target position, but refresh its local
+	# equivalent after those synchronous signals.
+	local_target_xz = _world_to_local_xz(target_xz)
+
 	# Catch any chunk whose mask finished while it was still outside the prefetch
 	# radius. Without this the only chance a chunk ever gets is the instant its
 	# mask completes; see _queue_grass_if_wanted.
-	for chunk in chunks.values():
+	for coord_variant in chunks:
+		var chunk = chunks[coord_variant]
 		if is_instance_valid(chunk):
-			_queue_grass_if_wanted(chunk, distance_to_chunk_aabb(target_xz, chunk.coord))
+			_queue_grass_if_wanted(
+				chunk,
+				_distance_squared_to_chunk_aabb_local(local_target_xz, chunk.coord, chunk_size),
+				grass_prefetch_distance_squared
+			)
 
-	_resort_queue(_terrain_queue, target_xz)
-	_resort_queue(_grass_queue, target_xz)
+	_resort_queue(_terrain_queue, local_target_xz, chunk_size)
+	_resort_queue(_grass_queue, local_target_xz, chunk_size)
 
 
-# Entries record the distance they were queued at, which goes stale as soon as
-# the target moves. Refreshing before the sort is what keeps "nearest first"
-# actually nearest; both queues are small enough that this is cheap.
-func _resort_queue(queue: Array[Dictionary], target_xz: Vector2) -> void:
+# Entries record the squared distance they were queued at, which goes stale as
+# soon as the target moves. Refreshing before the sort is what keeps "nearest
+# first" actually nearest; both queues are small enough that this is cheap.
+func _resort_queue(queue: Array[Dictionary], local_target_xz: Vector2, chunk_size: float) -> void:
 	for entry in queue:
-		entry["distance"] = distance_to_chunk_aabb(target_xz, entry["coord"])
-	queue.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["distance"]) < float(b["distance"]))
+		entry["distance_squared"] = _distance_squared_to_chunk_aabb_local(
+			local_target_xz, entry["coord"], chunk_size)
+	queue.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a["distance_squared"]) < float(b["distance_squared"]))
 
 
-func _create_pending_chunk(coord: Vector2i, distance: float) -> void:
+func _create_pending_chunk(coord: Vector2i, distance_squared: float) -> void:
 	var revision := int(_coord_revisions.get(coord, 0)) + 1
 	_coord_revisions[coord] = revision
 	var chunk := TerrainChunkScript.new()
-	chunk.configure(coord, revision, settings, terrain_material, grass_material)
+	chunk.configure(
+		coord, revision, settings, terrain_material, grass_material, _grass_shell_buffers)
 	# Chunks stream in long after the player last touched the quality setting, so
 	# the preference has to be handed to each new one rather than only broadcast.
 	chunk.grass_lod_bias = grass_lod_bias
 	chunk.grass_suppressed = grass_suppressed
 	chunks[coord] = chunk
 	add_child(chunk)
-	_terrain_queue.append({"coord": coord, "revision": revision, "distance": distance})
+	_terrain_queue.append({
+		"coord": coord,
+		"revision": revision,
+		"distance_squared": distance_squared,
+	})
 
 
 func _unload_chunk(coord: Vector2i) -> void:
@@ -389,7 +497,7 @@ func _next_build_job() -> BuildJob:
 	# Terrain wins ties, since a chunk cannot grow grass before it has a surface.
 	var take_terrain := grass_entry.is_empty() or (
 		not terrain_entry.is_empty()
-		and float(terrain_entry["distance"]) <= float(grass_entry["distance"])
+		and float(terrain_entry["distance_squared"]) <= float(grass_entry["distance_squared"])
 	)
 	var job := BuildJob.new()
 	job.snapshot = _snapshot
@@ -446,18 +554,20 @@ func _accept_completed_job(job: BuildJob) -> void:
 		stale_result_count += 1
 		return
 	if job.kind == &"terrain":
+		terrain_build_usec_total += job.elapsed_usec
 		if chunk.generation_revision != job.revision:
 			stale_result_count += 1
 			return
 		_terrain_commit_queue.append(job.result)
 	else:
+		grass_build_usec_total += job.elapsed_usec
 		if chunk.grass_revision != job.revision:
 			stale_result_count += 1
 			return
 		var commit := GrassCommitJob.new()
 		commit.coord = job.coord
 		commit.revision = job.revision
-		commit.variants = job.result["variants"]
+		commit.arrays = job.result["arrays"]
 		_grass_commit_queue.append(commit)
 
 
@@ -469,29 +579,33 @@ func _process_mesh_commits() -> void:
 		if chunk == null or chunk.generation_revision != int(result["revision"]):
 			stale_result_count += 1
 			continue
+		var terrain_commit_started_usec := Time.get_ticks_usec()
 		chunk.apply_terrain(result)
+		terrain_commit_usec_total += Time.get_ticks_usec() - terrain_commit_started_usec
 		mesh_commit_count += 1
 		chunk_loaded.emit(chunk.coord, chunk)
 		if grass_enabled:
 			_queue_mask_build(chunk)
 
 	while mesh_commit_count < settings.max_mesh_commits_per_frame and not _grass_commit_queue.is_empty():
-		var commit := _grass_commit_queue[0]
+		var commit := _grass_commit_queue.pop_front() as GrassCommitJob
 		var chunk = get_chunk(commit.coord)
 		if chunk == null or chunk.grass_revision != commit.revision:
-			_grass_commit_queue.pop_front()
 			stale_result_count += 1
 			continue
+		var grass_commit_started_usec := Time.get_ticks_usec()
 		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, commit.variants[commit.next_variant])
-		commit.meshes.append(mesh)
-		commit.next_variant += 1
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, commit.arrays)
+		grass_commit_usec_total += Time.get_ticks_usec() - grass_commit_started_usec
 		mesh_commit_count += 1
-		if commit.next_variant >= commit.variants.size():
-			_grass_commit_queue.pop_front()
-			var target_xz := Vector2(target.global_position.x, target.global_position.z)
-			chunk.publish_grass_meshes(commit.meshes, distance_to_chunk_aabb(target_xz, chunk.coord))
-			grass_rebuilt.emit(chunk.coord)
+		var target_xz := Vector2(target.global_position.x, target.global_position.z)
+		var local_target_xz := _world_to_local_xz(target_xz)
+		chunk.publish_grass_mesh_squared(
+			mesh,
+			_distance_squared_to_chunk_aabb_local(
+				local_target_xz, chunk.coord, float(settings.chunk_size))
+		)
+		grass_rebuilt.emit(chunk.coord)
 
 
 func _queue_mask_build(chunk) -> void:
@@ -503,29 +617,38 @@ func _queue_mask_build(chunk) -> void:
 
 func _process_mask_jobs() -> void:
 	mask_query_count = 0
+	var job_start_usec := Time.get_ticks_usec()
 	if _active_mask_job == null:
 		_active_mask_job = _begin_next_mask_job()
 	if _active_mask_job == null:
+		mask_job_usec_total += Time.get_ticks_usec() - job_start_usec
 		return
 	var job := _active_mask_job
 	var chunk = get_chunk(job.coord)
 	if chunk == null or chunk.grass_revision != job.revision:
 		_active_mask_job = null
+		mask_job_usec_total += Time.get_ticks_usec() - job_start_usec
 		return
 	if not job.needs_physics_scan and job.fallback_aabbs.is_empty():
 		_finish_mask_job(job, chunk)
+		mask_job_usec_total += Time.get_ticks_usec() - job_start_usec
 		return
 
 	var start_usec := Time.get_ticks_usec()
-	var cell_count: int = int(settings.chunk_resolution) * int(settings.chunk_resolution)
+	var resolution: int = int(settings.chunk_resolution)
+	var cell_count: int = resolution * resolution
+	var spacing: float = settings.cell_spacing()
+	# Constant for the whole call, and this loop reads it once per cell and once
+	# per subcell. Nothing inside the loop can move the system.
+	var world_transform := global_transform
 	while job.next_cell < cell_count:
 		if mask_query_count >= settings.max_mask_cell_queries:
 			break
 		if Time.get_ticks_usec() - start_usec >= settings.mask_query_budget_usec:
 			break
 		if job.active_cell >= 0:
-			var subcell_aabb := _subcell_world_aabb(chunk, job.active_cell, job.next_subcell)
-			if _aabb_hits_fallback(subcell_aabb, job.fallback_aabbs) or _query_hits_blocker(subcell_aabb, job.needs_physics_scan):
+			var subcell_aabb := _subcell_world_aabb(job, job.next_subcell, spacing, world_transform)
+			if _bounds_are_blocked(job, subcell_aabb):
 				TerrainGenerator.fine_mask_set_subcell(job.fine_mask, job.active_cell, job.next_subcell, false)
 			job.next_subcell += 1
 			if job.next_subcell >= TerrainGenerator.FINE_MASK_SUBDIVISIONS * TerrainGenerator.FINE_MASK_SUBDIVISIONS:
@@ -540,14 +663,16 @@ func _process_mask_jobs() -> void:
 		if not TerrainGenerator.mask_get(job.mask, cell_index):
 			job.next_cell += 1
 			continue
-		var cell_aabb := _cell_world_aabb(chunk, cell_index)
-		if _aabb_hits_fallback(cell_aabb, job.fallback_aabbs) or _query_hits_blocker(cell_aabb, job.needs_physics_scan):
+		var cell_aabb := _cell_world_aabb(chunk, cell_index, resolution, spacing, world_transform)
+		if _bounds_are_blocked(job, cell_aabb):
 			job.active_cell = cell_index
 			job.next_subcell = 0
+			_cache_active_cell(job, chunk, cell_index, resolution, spacing)
 		else:
 			job.next_cell += 1
 	if job.next_cell >= cell_count:
 		_finish_mask_job(job, chunk)
+	mask_job_usec_total += Time.get_ticks_usec() - job_start_usec
 
 
 func _begin_next_mask_job() -> MaskJob:
@@ -563,22 +688,142 @@ func _begin_next_mask_job() -> MaskJob:
 		job.fine_mask = chunk.base_fine_occupancy.duplicate()
 		if not static_masking_enabled:
 			return job
-		var bounds: AABB = chunk.world_aabb()
-		_broad_query_shape.size = Vector3(bounds.size.x, bounds.size.y + 0.25, bounds.size.z)
-		_broad_query.transform = Transform3D(Basis.IDENTITY, bounds.get_center())
-		job.needs_physics_scan = not get_world_3d().direct_space_state.intersect_shape(_broad_query, 1).is_empty()
+		# The envelope is the exact union of the cell query volumes, padding
+		# included. The old broad query grew the chunk AABB symmetrically by
+		# 0.125, which is under the 0.15 the cells reach above the canopy: a
+		# blocker in that band was missed here and then found by nothing.
+		var envelope := global_transform * _mask_envelope_local(chunk)
+		_collect_blocker_candidates(job, envelope)
 		if interaction_manager != null:
-			job.fallback_aabbs = interaction_manager.get_fallback_aabbs(bounds)
+			job.fallback_aabbs = interaction_manager.get_fallback_aabbs(envelope)
 		return job
 	return null
 
 
+## The union of every cell and subcell query volume in [param chunk], in the
+## system's local space.
+func _mask_envelope_local(chunk) -> AABB:
+	var size := float(settings.chunk_size)
+	var minimum: float = chunk.minimum_height - MASK_QUERY_PADDING_BELOW
+	var maximum: float = (chunk.maximum_height
+		+ float(settings.grass_height) + MASK_QUERY_PADDING_ABOVE)
+	return AABB(
+		Vector3(chunk.position.x, minimum, chunk.position.z),
+		Vector3(size, maximum - minimum, size)
+	)
+
+
+## Snapshots conservative bounds for every physics collider that can reach this
+## chunk's cell volumes, and decides whether the per-cell broad phase may run.
+##
+## The candidates come from the colliders the query actually returns, not from
+## the registration list. That is deliberate: bodies on the blocker mask which
+## never registered -- the terrain test level has one -- must keep carving grass
+## exactly as they did, and enumerating them here is what makes registration
+## stay optional rather than quietly becoming mandatory.
+##
+## Anything that cannot be bounded conservatively clears broad_phase_active and
+## the job runs the pre-Phase-2 exact scan over every cell: a shape type whose
+## extents are not derivable, a collider the query could not resolve to a node,
+## or more overlaps than MASK_CANDIDATE_LIMIT could report.
+func _collect_blocker_candidates(job: MaskJob, envelope: AABB) -> void:
+	_broad_query_shape.size = envelope.size
+	_broad_query.transform = Transform3D(Basis.IDENTITY, envelope.get_center())
+	var hits := get_world_3d().direct_space_state.intersect_shape(
+		_broad_query, MASK_CANDIDATE_LIMIT)
+	job.needs_physics_scan = not hits.is_empty()
+	if not job.needs_physics_scan:
+		return
+	if hits.size() >= MASK_CANDIDATE_LIMIT:
+		return
+
+	for hit in hits:
+		var collider := hit.get("collider") as CollisionObject3D
+		if collider == null:
+			# A shape owned by an RID rather than by a node -- a GridMap tile, a
+			# CSG body -- which this cannot bound. Fall back to exact testing.
+			job.blocker_bounds.clear()
+			return
+		var owner_id: int = collider.shape_find_owner(int(hit.get("shape", 0)))
+		if owner_id < 0:
+			job.blocker_bounds.clear()
+			return
+		# Physics resolves a shape's placement as body transform * owner
+		# transform, and Godot requires a CollisionShape3D to be a direct child
+		# for that to hold, so this is the transform the engine itself used.
+		var owner_transform: Transform3D = (collider.global_transform
+			* collider.shape_owner_get_transform(owner_id))
+		for index in collider.shape_owner_get_shape_count(owner_id):
+			var shape := collider.shape_owner_get_shape(owner_id, index)
+			var bounds := _conservative_shape_bounds(shape)
+			if not bool(bounds.get("conservative", false)):
+				job.blocker_bounds.clear()
+				return
+			job.blocker_bounds.append(
+				(owner_transform * (bounds["aabb"] as AABB)).grow(BLOCKER_BOUNDS_SLACK))
+
+	# Colliders overlapped the envelope but nothing was bounded, which should be
+	# unreachable -- a reported hit has a shape. Activating the broad phase on an
+	# empty candidate set would reject every cell and silently leave grass inside
+	# a blocker, so the exhaustive scan is the only safe reading of it.
+	if job.blocker_bounds.is_empty():
+		return
+
+	# A candidate spanning the whole chunk cannot reject a single cell, so the
+	# comparison would be pure overhead on top of the queries it never avoids.
+	# Both paths produce the same mask; this only picks the cheaper one.
+	for candidate in job.blocker_bounds:
+		if candidate.encloses(envelope):
+			return
+	job.broad_phase_active = true
+
+
+## Local-space bounds guaranteed to contain [param shape], with a
+## [code]conservative[/code] flag that is false when the type has no bound this
+## add-on can prove -- a heightmap, a world boundary, a degenerate point set.
+## Only a conservative bound may reject an exact query.
+##
+## Cached per shape resource because a concave collider's bound costs a pass over
+## every face, and a mask job would otherwise redo it for each chunk the collider
+## touches. Editing a shape in place drops its entry, so a resized blocker is
+## never compared against its old extent.
+func _conservative_shape_bounds(shape: Shape3D) -> Dictionary:
+	if shape == null:
+		return {}
+	var key := shape.get_instance_id()
+	var cached: Dictionary = _shape_bounds_cache.get(key, {})
+	if not cached.is_empty() and (cached["shape"] as WeakRef).get_ref() == shape:
+		return cached
+	var conservative: bool = TerrainGrassBlocker3D.shape_bounds_are_conservative(shape)
+	var entry := {
+		"shape": weakref(shape),
+		"conservative": conservative,
+		"aabb": TerrainGrassBlocker3D.shape_local_aabb(shape) if conservative else AABB(),
+	}
+	_shape_bounds_cache[key] = entry
+	if not shape.changed.is_connected(_drop_cached_shape_bounds):
+		shape.changed.connect(_drop_cached_shape_bounds.bind(key))
+	return entry
+
+
+func _drop_cached_shape_bounds(key: int) -> void:
+	_shape_bounds_cache.erase(key)
+
+
 func _finish_mask_job(job: MaskJob, chunk) -> void:
+	mask_jobs_completed += 1
 	if chunk.grass_revision == job.revision:
 		chunk.occupancy = job.mask
 		chunk.fine_occupancy = job.fine_mask
 		var target_xz := Vector2(target.global_position.x, target.global_position.z)
-		_queue_grass_if_wanted(chunk, distance_to_chunk_aabb(target_xz, chunk.coord))
+		var local_target_xz := _world_to_local_xz(target_xz)
+		var grass_prefetch_distance := float(settings.grass_prefetch_distance)
+		_queue_grass_if_wanted(
+			chunk,
+			_distance_squared_to_chunk_aabb_local(
+				local_target_xz, chunk.coord, float(settings.chunk_size)),
+			grass_prefetch_distance * grass_prefetch_distance
+		)
 	_active_mask_job = null
 
 
@@ -592,10 +837,14 @@ func _finish_mask_job(job: MaskJob, chunk) -> void:
 ## grow grass, however close the player later walked to it. The result is a
 ## permanent chunk-shaped bald patch, and because generation reports itself idle
 ## nothing ever comes back to fix it.
-func _queue_grass_if_wanted(chunk, distance: float) -> void:
+func _queue_grass_if_wanted(
+	chunk,
+	distance_squared: float,
+	grass_prefetch_distance_squared: float
+) -> void:
 	if not chunk.terrain_ready or chunk.grass_ready:
 		return
-	if distance > settings.grass_prefetch_distance:
+	if distance_squared > grass_prefetch_distance_squared:
 		return
 	for queued: Dictionary in _grass_queue:
 		if queued["coord"] == chunk.coord:
@@ -610,62 +859,90 @@ func _queue_grass_if_wanted(chunk, distance: float) -> void:
 	_grass_queue.append({
 		"coord": chunk.coord,
 		"revision": chunk.grass_revision,
-		"distance": distance,
+		"distance_squared": distance_squared,
 	})
 
 
-func _cell_world_aabb(chunk, cell_index: int) -> AABB:
-	var resolution: int = int(settings.chunk_resolution)
+func _cell_world_aabb(
+	chunk,
+	cell_index: int,
+	resolution: int,
+	spacing: float,
+	world_transform: Transform3D
+) -> AABB:
 	var width: int = resolution + 1
-	var x: int = cell_index % resolution
-	var z := floori(float(cell_index) / float(resolution))
+	@warning_ignore("integer_division")
+	var z: int = cell_index / resolution
+	var x: int = cell_index - z * resolution
 	var i00: int = z * width + x
 	var h0: float = chunk.heights[i00]
 	var h1: float = chunk.heights[i00 + 1]
 	var h2: float = chunk.heights[i00 + width]
 	var h3: float = chunk.heights[i00 + width + 1]
-	var minimum := minf(minf(h0, h1), minf(h2, h3)) - 0.10
-	var maximum: float = maxf(maxf(h0, h1), maxf(h2, h3)) + float(settings.grass_height) + 0.15
-	var spacing: float = settings.cell_spacing()
-	return global_transform * AABB(
+	var minimum := minf(minf(h0, h1), minf(h2, h3)) - MASK_QUERY_PADDING_BELOW
+	var maximum: float = (maxf(maxf(h0, h1), maxf(h2, h3))
+		+ float(settings.grass_height) + MASK_QUERY_PADDING_ABOVE)
+	return world_transform * AABB(
 		Vector3(chunk.position.x + float(x) * spacing, minimum, chunk.position.z + float(z) * spacing),
 		Vector3(spacing, maximum - minimum, spacing)
 	)
 
 
-func _subcell_world_aabb(chunk, cell_index: int, subcell_index: int) -> AABB:
-	var resolution: int = int(settings.chunk_resolution)
+## Caches everything the sixteen subcell bounds of the newly active cell share:
+## its four corner heights and the two origin terms. The expressions in
+## _subcell_world_aabb are otherwise left exactly as they were, because folding
+## `origin + (x + u) * spacing` into `(origin + x * spacing) + u * spacing` is
+## not the same float and would move mask bits at cell boundaries.
+func _cache_active_cell(job: MaskJob, chunk, cell_index: int, resolution: int, _spacing: float) -> void:
 	var width: int = resolution + 1
-	var x: int = cell_index % resolution
-	var z := floori(float(cell_index) / float(resolution))
+	@warning_ignore("integer_division")
+	var z: int = cell_index / resolution
+	var x: int = cell_index - z * resolution
+	var i00: int = z * width + x
+	job.active_x = float(x)
+	job.active_z = float(z)
+	job.active_origin_x = chunk.position.x
+	job.active_origin_z = chunk.position.z
+	job.active_h00 = chunk.heights[i00]
+	job.active_h10 = chunk.heights[i00 + 1]
+	job.active_h01 = chunk.heights[i00 + width]
+	job.active_h11 = chunk.heights[i00 + width + 1]
+
+
+func _subcell_world_aabb(
+	job: MaskJob,
+	subcell_index: int,
+	spacing: float,
+	world_transform: Transform3D
+) -> AABB:
 	var sub_x := subcell_index % TerrainGenerator.FINE_MASK_SUBDIVISIONS
-	var sub_z := floori(float(subcell_index) / float(TerrainGenerator.FINE_MASK_SUBDIVISIONS))
+	@warning_ignore("integer_division")
+	var sub_z: int = subcell_index / TerrainGenerator.FINE_MASK_SUBDIVISIONS
 	var fraction_step := 1.0 / float(TerrainGenerator.FINE_MASK_SUBDIVISIONS)
 	var u0 := float(sub_x) * fraction_step
 	var v0 := float(sub_z) * fraction_step
 	var u1 := u0 + fraction_step
 	var v1 := v0 + fraction_step
-	var i00: int = z * width + x
-	var h00: float = chunk.heights[i00]
-	var h10: float = chunk.heights[i00 + 1]
-	var h01: float = chunk.heights[i00 + width]
-	var h11: float = chunk.heights[i00 + width + 1]
+	var h00 := job.active_h00
+	var h10 := job.active_h10
+	var h01 := job.active_h01
+	var h11 := job.active_h11
 	var height_a := _bilinear_height(h00, h10, h01, h11, u0, v0)
 	var height_b := _bilinear_height(h00, h10, h01, h11, u1, v0)
 	var height_c := _bilinear_height(h00, h10, h01, h11, u0, v1)
 	var height_d := _bilinear_height(h00, h10, h01, h11, u1, v1)
-	var minimum := minf(minf(height_a, height_b), minf(height_c, height_d)) - 0.10
-	var maximum: float = maxf(maxf(height_a, height_b), maxf(height_c, height_d)) + float(settings.grass_height) + 0.15
+	var minimum := minf(minf(height_a, height_b), minf(height_c, height_d)) - MASK_QUERY_PADDING_BELOW
+	var maximum: float = (maxf(maxf(height_a, height_b), maxf(height_c, height_d))
+		+ float(settings.grass_height) + MASK_QUERY_PADDING_ABOVE)
 	# Jolt treats face contact as an overlap. Insetting one millimetre prevents
 	# the subcell immediately outside an aligned wall from being removed too.
-	var spacing: float = settings.cell_spacing()
 	var subcell_size: float = spacing * fraction_step
 	var query_inset := minf(0.001, subcell_size * 0.1)
-	return global_transform * AABB(
+	return world_transform * AABB(
 		Vector3(
-			chunk.position.x + (float(x) + u0) * spacing + query_inset,
+			job.active_origin_x + (job.active_x + u0) * spacing + query_inset,
 			minimum,
-			chunk.position.z + (float(z) + v0) * spacing + query_inset
+			job.active_origin_z + (job.active_z + v0) * spacing + query_inset
 		),
 		Vector3(subcell_size - query_inset * 2.0, maximum - minimum, subcell_size - query_inset * 2.0)
 	)
@@ -675,6 +952,25 @@ func _bilinear_height(h00: float, h10: float, h01: float, h11: float, u: float, 
 	return lerpf(lerpf(h00, h10, u), lerpf(h01, h11, u), v)
 
 
+## Whether one cell or subcell volume must lose its grass.
+##
+## The two candidate kinds stay separate on purpose. A registered fallback mesh
+## has no collider at all, so its AABB overlap is the answer, exactly as before.
+## A physics-backed blocker's conservative bound is never the answer: it only
+## says the exact query still has to run. Overlapping nothing conservative is the
+## one case that can skip the query, and only when the job proved it saw every
+## collider that could reach this chunk.
+func _bounds_are_blocked(job: MaskJob, bounds: AABB) -> bool:
+	if _aabb_hits_fallback(bounds, job.fallback_aabbs):
+		return true
+	if not job.needs_physics_scan:
+		return false
+	if job.broad_phase_active and not job.candidate_overlaps(bounds):
+		mask_broad_phase_rejections += 1
+		return false
+	return _query_hits_blocker(bounds)
+
+
 func _aabb_hits_fallback(bounds: AABB, fallback_aabbs: Array[AABB]) -> bool:
 	for fallback in fallback_aabbs:
 		if fallback.intersects(bounds):
@@ -682,31 +978,41 @@ func _aabb_hits_fallback(bounds: AABB, fallback_aabbs: Array[AABB]) -> bool:
 	return false
 
 
-func _query_hits_blocker(bounds: AABB, enabled: bool) -> bool:
-	if not enabled:
-		return false
+func _query_hits_blocker(bounds: AABB) -> bool:
 	_cell_query_shape.size = bounds.size
 	_cell_query.transform = Transform3D(Basis.IDENTITY, bounds.get_center())
 	mask_query_count += 1
+	mask_query_total += 1
 	return not get_world_3d().direct_space_state.intersect_shape(_cell_query, 1).is_empty()
 
 
 func _update_lods() -> void:
 	var target_xz := Vector2(target.global_position.x, target.global_position.z)
-	for chunk in get_loaded_chunks():
-		chunk.update_grass_lod(distance_to_chunk_aabb(target_xz, chunk.coord))
+	var local_target_xz := _world_to_local_xz(target_xz)
+	var chunk_size := float(settings.chunk_size)
+	for coord_variant in chunks:
+		var chunk = chunks[coord_variant]
+		chunk.update_grass_lod_squared(
+			_distance_squared_to_chunk_aabb_local(local_target_xz, chunk.coord, chunk_size))
 
 
 func distance_to_chunk_aabb(world_xz: Vector2, coord: Vector2i) -> float:
-	var size := float(settings.chunk_size)
-	var minimum := Vector2(float(coord.x) * size, float(coord.y) * size)
-	var maximum := minimum + Vector2(size, size)
 	var local_xz := _world_to_local_xz(world_xz)
+	return sqrt(_distance_squared_to_chunk_aabb_local(local_xz, coord, float(settings.chunk_size)))
+
+
+func _distance_squared_to_chunk_aabb_local(
+	local_xz: Vector2,
+	coord: Vector2i,
+	chunk_size: float
+) -> float:
+	var minimum := Vector2(float(coord.x) * chunk_size, float(coord.y) * chunk_size)
+	var maximum := minimum + Vector2(chunk_size, chunk_size)
 	var nearest := Vector2(
 		clampf(local_xz.x, minimum.x, maximum.x),
 		clampf(local_xz.y, minimum.y, maximum.y)
 	)
-	return local_xz.distance_to(nearest)
+	return local_xz.distance_squared_to(nearest)
 
 
 func _world_to_local_xz(world_xz: Vector2) -> Vector2:

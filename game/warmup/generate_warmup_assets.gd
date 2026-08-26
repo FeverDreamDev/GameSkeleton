@@ -36,6 +36,7 @@ func _generate() -> void:
 	grass_material.set_shader_parameter(&"u_tip_color", Color(0.32, 0.52, 0.12, 1.0))
 	grass_material.set_shader_parameter(&"u_density", 16.0)
 	grass_material.set_shader_parameter(&"u_max_height", 0.6)
+	grass_material.set_shader_parameter(&"u_shell_decode_scale", 1.0)
 	if ResourceSaver.save(grass_material, GRASS_MATERIAL_PATH) != OK:
 		push_error("Warmup generator: could not save grass material.")
 		quit(1)
@@ -60,9 +61,23 @@ func _generate() -> void:
 	terrain_proxy.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(terrain_proxy)
 	terrain_proxy.owner = root
-	var grass_proxy := MeshInstance3D.new()
+	# The runtime canopy is a MultiMeshInstance3D whose shells carry their level in
+	# INSTANCE_CUSTOM, so the proxy has to be one too. Instancing is a separate
+	# pipeline on Forward+ and a separate program on Compatibility, and the
+	# custom-data channel is a specialization constant on top of that: a plain
+	# MeshInstance3D proxy would report the grass warmed and leave the real first
+	# draw to compile.
+	var grass_multimesh := MultiMesh.new()
+	grass_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	grass_multimesh.use_custom_data = true
+	grass_multimesh.mesh = grass_mesh
+	grass_multimesh.instance_count = 2
+	for instance in grass_multimesh.instance_count:
+		grass_multimesh.set_instance_transform(instance, Transform3D.IDENTITY)
+		grass_multimesh.set_instance_custom_data(instance, Color(1.0, 0.0, 0.0, 0.0))
+	var grass_proxy := MultiMeshInstance3D.new()
 	grass_proxy.name = "GrassVertexColorUVFormat"
-	grass_proxy.mesh = grass_mesh
+	grass_proxy.multimesh = grass_multimesh
 	grass_proxy.position = Vector3(0.0, 0.0, -2.0)
 	grass_proxy.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(grass_proxy)

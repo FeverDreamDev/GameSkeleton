@@ -4,6 +4,7 @@ render_mode cull_back, depth_draw_opaque;
 const int MAX_INTERACTORS = 8;
 
 uniform vec4 grass_interactors[MAX_INTERACTORS];
+uniform int u_interactor_count = 0;
 uniform vec3 u_base_color : source_color = vec3(0.11, 0.24, 0.06);
 uniform vec3 u_tip_color : source_color = vec3(0.32, 0.52, 0.12);
 uniform float u_density = 16.0;
@@ -22,6 +23,12 @@ uniform vec3 u_color_noise_low_tint : source_color = vec3(0.84, 0.94, 0.76);
 uniform vec3 u_color_noise_high_tint : source_color = vec3(1.12, 1.04, 0.82);
 uniform float u_color_noise_detail_strength = 0.03;
 uniform vec2 u_system_origin_xz = vec2(0.0);
+// Pairs with how TerrainGenerator encoded the shell level into the instance
+// buffer: 1.0 where custom data is float32 and carries the finished fraction,
+// 1/255 where it is float16 and carries the byte instead. A uniform rather than
+// a literal so a compiler cannot fold the exact-by-construction multiply by one
+// into something else, and so the two backends share one compiled program.
+uniform float u_shell_decode_scale = 1.0;
 uniform float u_interaction_push_scale = 0.12;
 uniform float u_flatten_response = 1.0;
 uniform float u_min_flatten = 0.3;
@@ -34,7 +41,6 @@ uniform vec4 u_fog_params = vec4(0.0, 1.0, 1.0, 0.0);
 uniform vec3 u_fog_color = vec3(0.0);
 
 varying vec3 base_world_position;
-varying vec3 base_world_normal;
 varying float shell_level;
 varying vec2 fine_mask_bytes;
 varying float broad_color_noise;
@@ -90,10 +96,19 @@ vec2 wind_for(vec2 random_value, float bend) {
 }
 
 void vertex() {
-	shell_level = COLOR.r;
+	// The shell layer arrives per instance, not per vertex: one base grass
+	// surface per chunk is drawn once per shell by a MultiMesh, instead of the
+	// surface being duplicated into the vertex buffer sixteen times.
+	//
+	// INSTANCE_CUSTOM.x carries what COLOR.r used to. Godot truncates a vertex
+	// colour to unorm8 -- floor(f * 255.0), measured on 4.7.2, where an authored
+	// 0.25 becomes 63 and not 64 -- and the vertex fetch decodes that byte back
+	// to byte / 255.0. TerrainGenerator applies both steps on the CPU, so on
+	// Forward+ this multiply is by exactly 1.0 and changes nothing. See
+	// TerrainGenerator.shell_data_is_byte_encoded for the Compatibility case.
+	shell_level = INSTANCE_CUSTOM.x * u_shell_decode_scale;
 	fine_mask_bytes = COLOR.gb;
 	base_world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	base_world_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 	vec2 system_xz = base_world_position.xz - u_system_origin_xz;
 	broad_color_noise = smooth_value_noise(system_xz / max(u_color_noise_patch_size, 0.001));
 	VERTEX += NORMAL * (u_root_offset + shell_level * u_max_height);
@@ -121,18 +136,23 @@ void fragment() {
 	vec2 push_offset = vec2(0.0);
 	float flatten_factor = 1.0;
 
-	// Hoisted out of the loop: it is a uniform, so testing it per iteration only
-	// costs eight redundant branches on every fragment of every shell layer.
+	// Both controls are uniform across the draw, so inactive slots never enter
+	// the expensive distance and bend path.
 	if (u_interaction_enabled) {
 		vec2 stalk_world = provisional_center + u_system_origin_xz;
 		for (int i = 0; i < MAX_INTERACTORS; i++) {
+			if (i >= u_interactor_count) {
+				break;
+			}
 			vec4 data = grass_interactors[i];
 			if (data.z <= 0.0) {
 				continue;
 			}
 			vec2 to_stalk = stalk_world - data.xy;
-			float distance_to_interactor = length(to_stalk);
-			if (distance_to_interactor < data.z) {
+			float distance_squared = dot(to_stalk, to_stalk);
+			float radius_squared = data.z * data.z;
+			if (distance_squared < radius_squared) {
+				float distance_to_interactor = sqrt(distance_squared);
 				float influence = 1.0 - clamp(distance_to_interactor / data.z, 0.0, 1.0);
 				influence *= influence;
 				vec2 direction = distance_to_interactor > 0.0001 ? to_stalk / distance_to_interactor : vec2(1.0, 0.0);
@@ -145,9 +165,10 @@ void fragment() {
 
 	vec2 combined_offset = wind_offset + push_offset;
 	float maximum_offset = 0.4 / u_density;
-	float combined_length = length(combined_offset);
-	if (combined_length > maximum_offset) {
-		combined_offset *= maximum_offset / combined_length;
+	float maximum_offset_squared = maximum_offset * maximum_offset;
+	float combined_length_squared = dot(combined_offset, combined_offset);
+	if (combined_length_squared > maximum_offset_squared) {
+		combined_offset *= maximum_offset / sqrt(combined_length_squared);
 	}
 
 	// One inverse-warp refinement lets a bent cross-section cross a cell edge
@@ -158,9 +179,9 @@ void fragment() {
 	vec2 stalk_center = stalk_center_for(source_cell, cell_random);
 	wind_offset = wind_for(cell_random, bend);
 	combined_offset = wind_offset + push_offset;
-	combined_length = length(combined_offset);
-	if (combined_length > maximum_offset) {
-		combined_offset *= maximum_offset / combined_length;
+	combined_length_squared = dot(combined_offset, combined_offset);
+	if (combined_length_squared > maximum_offset_squared) {
+		combined_offset *= maximum_offset / sqrt(combined_length_squared);
 	}
 	vec2 sample_position = base_xz - combined_offset;
 
@@ -207,8 +228,10 @@ void fragment() {
 	// by attenuating ALBEDO (which scales both the diffuse and the ambient term) and
 	// adding the fog radiance back through EMISSION. That is exactly
 	// mix(lit, u_fog_color, fog), matching the two RT paths.
-	vec3 fog_world_position = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	float fog = rt_fog_factor(u_fog_params, length(fog_world_position - INV_VIEW_MATRIX[3].xyz));
+	float fog = 0.0;
+	if (u_fog_params.w >= 0.5) {
+		fog = rt_fog_factor(u_fog_params, length(VERTEX));
+	}
 	ALBEDO = color * (1.0 - fog);
 	EMISSION = u_fog_color * fog;
 	ROUGHNESS = 0.92;
@@ -216,6 +239,7 @@ void fragment() {
 	// removes the grazing-angle Fresnel rim as well. Left at 0.08 the far grass
 	// would keep a highlight against flat fog, which is the pop this hides.
 	SPECULAR = 0.08 * (1.0 - fog);
-	vec3 world_normal = normalize(mix(base_world_normal, vec3(0.0, 1.0, 0.0), h * 0.78));
-	NORMAL = normalize((VIEW_MATRIX * vec4(world_normal, 0.0)).xyz);
+	// NORMAL already arrives interpolated in view space; the second view-matrix
+	// column is world-up transformed as a direction into that same space.
+	NORMAL = normalize(mix(NORMAL, VIEW_MATRIX[1].xyz, h * 0.78));
 }

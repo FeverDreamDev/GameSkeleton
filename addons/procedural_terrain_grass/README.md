@@ -38,6 +38,9 @@ directly in code:
   **Size it to match the prop, not larger** — every centimetre of padding
   becomes a visible ring of bare ground, and the shape only has to reach the
   height the grass grows to, not the top of the prop.
+  Primitive, convex-polygon and concave-polygon shapes use their actual bounds.
+  Transform changes and in-place shape-resource edits invalidate affected grass
+  immediately; built-in blockers therefore do not need periodic bounds polling.
 - Parent a `TerrainGrassInteractor3D` under a moving body. Its **Priority**
   decides who keeps a slot when more interactors are nearby than the shader's
   limit of eight, so give the player a high value.
@@ -53,6 +56,10 @@ directly in code:
 terrain.register_static_grass_blocker(mesh_instance)
 terrain.register_grass_interactor(some_body)
 ```
+
+Arbitrary nodes registered through this API have no change-notification
+contract, so their bounds are polled at the interactor discovery interval until
+they are unregistered. `TerrainGrassBlocker3D` nodes notify instead.
 
 ## How tightly grass hugs a blocker
 
@@ -128,6 +135,84 @@ server.
 | `set_distance_fog(enabled, begin, end, curve, color)` | Host-renderer hook: fades the unmanaged grass on the renderer's fog curve. `color` is scene-linear radiance |
 | `chunk_loaded` / `chunk_unloaded` / `grass_rebuilt` | Streaming signals |
 
+## How the canopy is built
+
+A chunk publishes **one grass surface** — the terrain grid, with fully blocked
+cells left out of the index buffer and partially blocked cells carrying four
+corners of their own — and draws it once per shell through a `MultiMesh`. Each
+chunk holds three of them, Near/Medium/Far, differing only in how many instances
+they have; a `MultiMeshInstance3D` named `GrassMesh` points at whichever one the
+distance band and the quality tier select.
+
+```text
+chunk grass base ArrayMesh          1,089 vertices, 6,144 indices at 32x32
+    ├── Near   MultiMesh  16 instances
+    ├── Medium MultiMesh  10 instances
+    └── Far    MultiMesh   4 instances
+            one MultiMeshInstance3D draws exactly one of them
+```
+
+Shell instance transforms are **identity**. A shell is lifted along each terrain
+vertex's own normal inside the shader, which is what makes the canopy stand up
+off a slope instead of shearing across it, and what keeps instancing from
+rotating the normals the lighting reads. The shell level travels in
+`INSTANCE_CUSTOM.x`.
+
+Two details there are worth knowing before touching them:
+
+- **The shell level is 8-bit on purpose.** It used to live in `ARRAY_COLOR.r`,
+  and Godot stores a vertex colour as unorm8 by *truncating* — an authored 0.25
+  becomes 63/255, not 64/255. `TerrainGenerator.shell_fraction_byte()` reproduces
+  that truncation so the instanced canopy renders the same pixels the duplicated
+  geometry did, rather than merely similar ones.
+- **The two backends are handed different encodings.** Forward+ and Mobile store
+  instance custom data as float32 and receive the finished fraction, scaled by
+  `u_shell_decode_scale = 1.0`. Compatibility packs custom data into float16 —
+  hand GLES3 17/255 and 0.06665 comes back — so it receives the 0-255 byte, which
+  float16 holds exactly, and scales by 1/255 instead. See
+  `TerrainGenerator.shell_data_is_byte_encoded()`.
+
+`COLOR.gb` still carries the two exact fine-mask bytes per vertex and `UV` still
+carries the per-cell corner, so masking precision is unchanged: only the shell
+level moved from vertex data to instance data.
+
+Nothing rebuilds during play. LOD and quality changes pick a different prebuilt
+`MultiMesh`; a static-mask rebuild after a blocker moves replaces the base
+`ArrayMesh` and re-points the same three shell sets at it, leaving their instance
+buffers alone.
+
+## Static masking runs a broad phase first
+
+Carving grass out from under a blocker needs an exact physics query — an AABB is
+not a shape, and rejecting cells on bounds alone would eat grass around anything
+rotated or concave. What the masker avoids is issuing that query for cells no
+blocker can possibly reach.
+
+When a chunk's mask job starts it runs one shape query over an envelope that is
+the exact union of the cell query volumes, padding included, and snapshots
+conservative world bounds for every collider that came back. A cell overlapping
+none of them provably cannot hit anything, so its query is skipped; a cell
+overlapping any of them is tested exactly as before. Fine subcells go through the
+same gate.
+
+The candidates come from **what the query returned, not from what registered**,
+so a plain `StaticBody3D` sitting on the blocker layer without ever calling
+`register_static_grass_blocker()` keeps carving grass exactly as it did.
+
+The job falls back to the pre-existing exhaustive scan whenever it cannot prove
+it has seen everything: a shape whose bounds are not derivable (a heightmap, a
+world boundary, an empty point set), a collider the query could not resolve to a
+node (a GridMap tile, a CSG body), or more than 32 overlapping collider/shape
+pairs. It also skips the comparison when a candidate spans the whole chunk, where
+it could never reject anything. Both paths produce identical masks — verified
+byte-for-byte across eleven blocker layouts — so this only ever chooses the
+cheaper one.
+
+One thing the mask has never handled, and still does not: a collider that *moves*
+on the blocker layer without notifying the system. Registered blockers invalidate
+their region on transform or shape change; an unregistered body that drifts
+leaves a mask describing where it used to be.
+
 ## Grass quality at run time
 
 Shell grass is stacked layers, so it costs its shell count in overdraw across
@@ -137,14 +222,21 @@ scene that uses it, and the first thing worth handing a player.
 `grass_quality` is built for an options menu: **High** is the authored bands,
 **Medium** and **Low** shift every band one and two variants coarser, and **Off**
 hides the canopy without unloading it. Nothing is rebuilt — each chunk already
-caches all three shell meshes, so a change is a mesh swap that applies on the
+holds all three shell sets, so a change is a resource swap that applies on the
 same frame and reverses just as fast.
 
+When the optional Retro RT reflection-ground integration is present, the same
+authoritative active state is used there: **Off** republishes bare reflected
+terrain with no blade detail, and returning to an enabled tier refreshes the
+canopy even when the reflection window has not moved. Grass height and palette
+changes likewise invalidate the baked canopy once rather than rebaking every
+frame.
+
 It works that way for a reason worth knowing before "just lower the shell count"
-looks tempting: shell counts are baked into geometry, and the settings snapshot
-the worker threads read is deliberately read-only and shared. Changing them for
-real means `rebuild()`, which tears down terrain collision — with the player
-standing on it.
+looks tempting: shell counts come from the settings snapshot the worker threads
+read, which is deliberately read-only and shared. Changing them for real means
+`rebuild()`, which tears down terrain collision — with the player standing on it.
+Lowering a tier is free; lowering the count is not.
 
 Measured on the host project at 2560x1440, one viewpoint in open field:
 
@@ -199,10 +291,14 @@ frame because distant chunks cover so little of the screen.
 
 - The terrain root supports translation only. Rotation and non-unit scale are
   rejected with a configuration error.
-- The grass shader supports at most 8 simultaneous interactors.
+- The grass shader supports at most 8 simultaneous interactors and only loops
+  over the compact active upload, not unused slots.
 - Threads are used when the export target has them; single-threaded targets fall
   back to an incremental main-thread builder bounded by
   **Incremental Generation Budget Usec**.
+- The canopy is drawn through `MultiMesh`, so a target without instancing support
+  cannot render it. Both Godot renderers have it; the headless dummy driver does
+  not store instance data at all, which is only relevant to tests.
 
 ## Demo
 

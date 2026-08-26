@@ -22,6 +22,9 @@ SMAA, and FSR add-ons.
 
 For visual authoring instructions and the complete designer-facing node reference, see
 [`docs/GAMEFLOW_NODE_TUTORIAL.md`](docs/GAMEFLOW_NODE_TUTORIAL.md).
+The quality-neutral terrain and grass Phase 1 optimizations and their before/after
+evidence are recorded in
+[`docs/PROCEDURAL_TERRAIN_GRASS_PHASE_1_RESULTS.md`](docs/PROCEDURAL_TERRAIN_GRASS_PHASE_1_RESULTS.md).
 
 ## Rendering contract
 
@@ -83,6 +86,7 @@ The generator writes the exact runtime terrain/grass vertex-format proxies and
 
 ```powershell
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/terrain_player_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/procedural_terrain_grass/tests/phase1_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_flow_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_recovery_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd

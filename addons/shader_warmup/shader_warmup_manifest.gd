@@ -43,6 +43,12 @@ enum PairFlags {
 	## Drawn through a [MultiMesh]. Instancing sources the transform from a per-instance buffer,
 	## which is a separate pipeline on Forward+ and a separate shader variant on Compatibility.
 	MULTIMESH = 1,
+	## That [MultiMesh] carries per-instance custom data, which the renderers select with a
+	## specialization constant rather than a branch -- so INSTANCE_CUSTOM compiles a program of its
+	## own, and warming the plain instanced variant would not cover it.
+	MULTIMESH_CUSTOM_DATA = 1 << 1,
+	## That [MultiMesh] carries per-instance colours, selected the same way as the above.
+	MULTIMESH_COLORS = 1 << 2,
 }
 
 ## Distinct (material, vertex format) combinations the project actually uses.

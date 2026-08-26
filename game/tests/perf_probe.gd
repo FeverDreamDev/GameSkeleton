@@ -37,6 +37,7 @@ const VIEW_POSITION := Vector3(-1.5, 0.0, 4.0)
 const VIEW_YAW_DEGREES := -142.0
 const VIEW_PITCH_DEGREES := -9.0
 const TIME_OF_DAY := 10.5
+const TEST_SAVE_DIRECTORY := "res://.godot/perf_probe_saves"
 
 var _shell: GameApp
 var _intervals: PackedFloat64Array = []
@@ -64,6 +65,9 @@ func _wait_for(predicate: Callable, frames: int) -> bool:
 
 
 func _run() -> void:
+	# Keep the probe self-contained and writable in headless/sandboxed runners.
+	# Save persistence is unrelated to the frame being measured.
+	UISave.directory = TEST_SAVE_DIRECTORY
 	var shell_scene := load("res://game/app/main.tscn") as PackedScene
 	_shell = shell_scene.instantiate() as GameApp
 	_shell.rt_start_timeout_seconds = 30.0
@@ -215,8 +219,8 @@ func _capture() -> void:
 
 func _apply_toggles(terrain, day_night) -> void:
 	if not _env_flag("PERF_GRASS"):
-		for node in terrain.find_children("GrassMesh", "MeshInstance3D", true, false):
-			(node as MeshInstance3D).visible = false
+		for node in terrain.find_children("GrassMesh", "MultiMeshInstance3D", true, false):
+			(node as MultiMeshInstance3D).visible = false
 	if not _env_flag("PERF_SKY"):
 		var dome := day_night.find_child("SkyDome", true, false) as MeshInstance3D
 		if dome != null:
@@ -262,8 +266,18 @@ func _report(terrain) -> void:
 		manager.get_active_rt_backend(),
 		manager.get_ray_render_resolution(),
 		int(manager.get_ray_render_resolution().x) * int(manager.get_ray_render_resolution().y)])
-	var grass_meshes: int = terrain.find_children("GrassMesh", "MeshInstance3D", true, false).size()
-	print("  grass chunks %d" % grass_meshes)
+	var grass_instances: Array = terrain.find_children(
+		"GrassMesh", "MultiMeshInstance3D", true, false)
+	var visible_grass := 0
+	var drawn_shells := 0
+	for node in grass_instances:
+		var instance := node as MultiMeshInstance3D
+		if not instance.visible or instance.multimesh == null:
+			continue
+		visible_grass += 1
+		drawn_shells += instance.multimesh.instance_count
+	print("  grass chunks %d (%d drawing, %d shell instances)" % [
+		grass_instances.size(), visible_grass, drawn_shells])
 
 	if manager.profiling_enabled:
 		var profile: Dictionary = manager.get_profile_snapshot()

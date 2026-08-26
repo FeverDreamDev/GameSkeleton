@@ -19,11 +19,14 @@ var grass_material: ShaderMaterial
 var dynamic_interaction_enabled: bool = true
 
 var _static_records: Dictionary = {}
+var _polling_static_ids: Dictionary = {}
 var _explicit_interactors: Dictionary = {}
 var _discovered_bodies: Dictionary = {}
 var _selected_interactors: Array[Dictionary] = []
 var _interactor_uniforms: Array[Vector4] = []
 var _uploaded_uniforms: Array[Vector4] = []
+var _active_interactor_count: int = 0
+var _uploaded_interactor_count: int = -1
 var _uploaded_interaction_enabled: bool = true
 var _discovery_timer: float = 0.0
 var _static_poll_timer: float = 0.0
@@ -44,13 +47,20 @@ func _ready() -> void:
 	_discovery_query.collide_with_areas = false
 	if grass_material != null:
 		grass_material.set_shader_parameter("grass_interactors", _uploaded_uniforms)
+		grass_material.set_shader_parameter("u_interactor_count", 0)
+		grass_material.set_shader_parameter("u_interaction_enabled", false)
+		_uploaded_interactor_count = 0
+		_uploaded_interaction_enabled = false
 
 
 func _process(delta: float) -> void:
-	_static_poll_timer += delta
-	if _static_poll_timer >= settings.interactor_discovery_interval:
+	if not _polling_static_ids.is_empty():
+		_static_poll_timer += delta
+		if _static_poll_timer >= settings.interactor_discovery_interval:
+			_static_poll_timer = 0.0
+			_poll_static_records()
+	else:
 		_static_poll_timer = 0.0
-		_poll_static_records()
 	if not dynamic_interaction_enabled:
 		if not _selected_interactors.is_empty():
 			_selected_interactors.clear()
@@ -80,12 +90,18 @@ func register_static_grass_blocker(node: Node3D) -> void:
 		return
 	var instance_id := node.get_instance_id()
 	var bounds := _world_bounds_for(node)
+	var requires_polling := not (node is TerrainGrassBlocker3D)
 	_static_records[instance_id] = {
 		"node": weakref(node),
 		"bounds": bounds,
 		"fallback": node is MeshInstance3D,
+		"requires_polling": requires_polling,
 	}
-	if terrain_manager != null and bounds.has_volume():
+	if requires_polling:
+		_polling_static_ids[instance_id] = true
+	else:
+		_polling_static_ids.erase(instance_id)
+	if terrain_manager != null and _has_masking_footprint(bounds):
 		terrain_manager.invalidate_grass_region(bounds)
 
 
@@ -97,7 +113,8 @@ func unregister_static_grass_blocker(node: Node3D) -> void:
 		return
 	var old_bounds: AABB = _static_records[instance_id]["bounds"]
 	_static_records.erase(instance_id)
-	if terrain_manager != null and old_bounds.has_volume():
+	_polling_static_ids.erase(instance_id)
+	if terrain_manager != null and _has_masking_footprint(old_bounds):
 		terrain_manager.invalidate_grass_region(old_bounds)
 
 
@@ -146,26 +163,28 @@ func get_fallback_aabbs(overlap_bounds: AABB) -> Array[AABB]:
 
 func get_active_interactor_data() -> Array[Vector4]:
 	var result: Array[Vector4] = []
-	for index in range(settings.active_interactor_limit):
-		if _interactor_uniforms[index].z > 0.0:
-			result.append(_interactor_uniforms[index])
+	for index in range(_active_interactor_count):
+		result.append(_interactor_uniforms[index])
 	return result
 
 
 func get_active_count() -> int:
-	return _selected_interactors.size()
+	return _active_interactor_count
 
 
 func _poll_static_records() -> void:
 	var remove_ids: Array[int] = []
-	for id_variant in _static_records.keys():
+	for id_variant in _polling_static_ids.keys():
 		var instance_id := int(id_variant)
+		if not _static_records.has(instance_id):
+			remove_ids.append(instance_id)
+			continue
 		var record: Dictionary = _static_records[instance_id]
 		var reference := record["node"] as WeakRef
 		var node := reference.get_ref() as Node3D
 		if not is_instance_valid(node):
 			var removed_bounds: AABB = record["bounds"]
-			if terrain_manager != null and removed_bounds.has_volume():
+			if terrain_manager != null and _has_masking_footprint(removed_bounds):
 				terrain_manager.invalidate_grass_region(removed_bounds)
 			remove_ids.append(instance_id)
 			continue
@@ -178,6 +197,7 @@ func _poll_static_records() -> void:
 				terrain_manager.invalidate_grass_region(old_bounds.merge(new_bounds))
 	for instance_id in remove_ids:
 		_static_records.erase(instance_id)
+		_polling_static_ids.erase(instance_id)
 
 
 func _discover_dynamic_bodies() -> void:
@@ -275,33 +295,56 @@ func _find_interactor_component(node: Node3D):
 func _upload_interactors() -> void:
 	for index in range(MAX_SHADER_INTERACTORS):
 		_interactor_uniforms[index] = Vector4.ZERO
-	for index in range(_selected_interactors.size()):
-		var candidate := _selected_interactors[index]
-		var node := candidate["node"] as Node3D
-		if not is_instance_valid(node):
+	var active_count := 0
+	for candidate in _selected_interactors:
+		if active_count >= MAX_SHADER_INTERACTORS:
+			break
+		# A selected Node can be freed between the slower ranking pass and this
+		# per-frame upload. Validate the Variant before casting: casting a freed
+		# instance is itself an error in GDScript.
+		var node_value: Variant = candidate.get("node")
+		if not is_instance_valid(node_value):
+			continue
+		var node := node_value as Node3D
+		if node == null:
 			continue
 		var world_position := _node_position(node)
-		_interactor_uniforms[index] = Vector4(world_position.x, world_position.z, float(candidate["radius"]), float(candidate["strength"]))
-	_push_interaction_enabled()
-	if grass_material == null or _interactor_uniforms == _uploaded_uniforms:
+		_interactor_uniforms[active_count] = Vector4(
+			world_position.x,
+			world_position.z,
+			float(candidate["radius"]),
+			float(candidate["strength"]))
+		active_count += 1
+	_active_interactor_count = active_count
+	if grass_material == null:
 		return
-	# Uploading an unchanged array still costs a material parameter write and a
-	# uniform-buffer push, which is pure waste while nothing is moving. The
-	# material is handed the copy so it never aliases the array mutated above.
-	_uploaded_uniforms = _interactor_uniforms.duplicate()
-	grass_material.set_shader_parameter("grass_interactors", _uploaded_uniforms)
+	var count_changed := _active_interactor_count != _uploaded_interactor_count
+	# Lower the bound before replacing the array so slots that just became stale
+	# cannot be observed. When the count grows, upload the new data first so every
+	# newly reachable slot is initialized.
+	if count_changed and _active_interactor_count < _uploaded_interactor_count:
+		grass_material.set_shader_parameter("u_interactor_count", _active_interactor_count)
+	if _interactor_uniforms != _uploaded_uniforms:
+		# Uploading an unchanged array still costs a material parameter write and a
+		# uniform-buffer push, which is pure waste while nothing is moving. The
+		# material is handed the copy so it never aliases the array mutated above.
+		_uploaded_uniforms = _interactor_uniforms.duplicate()
+		grass_material.set_shader_parameter("grass_interactors", _uploaded_uniforms)
+	if count_changed and _active_interactor_count >= _uploaded_interactor_count:
+		grass_material.set_shader_parameter("u_interactor_count", _active_interactor_count)
+	if count_changed:
+		_uploaded_interactor_count = _active_interactor_count
+	_push_interaction_enabled()
 
 
-## The shader's interactor loop is a fixed eight iterations, so it costs eight
-## uniform-buffer reads and eight compares on every grass fragment whether or not
-## anything is pushing the grass around. A scene with no interactor -- the common
-## case, and the case until something registers one -- pays that across the full
-## shell overdraw for a result that cannot change. [member dynamic_interaction_enabled]
-## is authored intent; this is whether there is anything for the loop to find.
+## The count bounds the shader loop to compact valid slots. This second flag
+## makes the especially common zero-interactor case skip even entering that loop.
+## [member dynamic_interaction_enabled] is authored intent; this is whether there
+## is currently anything valid for the loop to process.
 func _push_interaction_enabled() -> void:
 	if grass_material == null:
 		return
-	var active := dynamic_interaction_enabled and not _selected_interactors.is_empty()
+	var active := dynamic_interaction_enabled and _active_interactor_count > 0
 	if active == _uploaded_interaction_enabled:
 		return
 	_uploaded_interaction_enabled = active
@@ -311,13 +354,25 @@ func _push_interaction_enabled() -> void:
 ## Called when the owner rebuilds its material, whose authored uniform defaults
 ## do not know what this manager last pushed.
 func refresh_interaction_state() -> void:
-	_uploaded_interaction_enabled = not (
-		dynamic_interaction_enabled and not _selected_interactors.is_empty())
-	_push_interaction_enabled()
+	if grass_material == null:
+		return
+	grass_material.set_shader_parameter("grass_interactors", _uploaded_uniforms)
+	grass_material.set_shader_parameter("u_interactor_count", _active_interactor_count)
+	var active := dynamic_interaction_enabled and _active_interactor_count > 0
+	grass_material.set_shader_parameter("u_interaction_enabled", active)
+	_uploaded_interactor_count = _active_interactor_count
+	_uploaded_interaction_enabled = active
 
 
 func _node_position(node: Node3D) -> Vector3:
 	return node.global_position if node.is_inside_tree() else node.position
+
+
+func _has_masking_footprint(bounds: AABB) -> bool:
+	# Grass invalidation is an XZ operation. Concave and convex collision data can
+	# legitimately be a horizontal surface with zero Y thickness, so AABB's
+	# three-dimensional has_volume() would incorrectly reject a useful blocker.
+	return bounds.size.x > 0.0 and bounds.size.z > 0.0
 
 
 func _world_bounds_for(node: Node3D) -> AABB:

@@ -40,10 +40,6 @@ var _fine_occupancy := PackedByteArray()
 var _minimum_height: float = INF
 var _maximum_height: float = -INF
 
-var _grass_layers: Array[PackedFloat32Array] = []
-var _grass_variants: Array = []
-var _variant_index: int = 0
-var _variant_layers := PackedFloat32Array()
 var _grass_vertices := PackedVector3Array()
 var _grass_normals := PackedVector3Array()
 var _grass_colors := PackedColorArray()
@@ -111,7 +107,6 @@ func configure_grass(
 		if fine_mask != 0 and fine_mask != TerrainGenerator.FULL_FINE_MASK:
 			_partial_lookup[cell_index] = _partial_cells.size()
 			_partial_cells.append(cell_index)
-	_grass_layers = TerrainGenerator.grass_shell_layer_sets(settings)
 	_phase = Phase.GRASS_PREPARE
 
 
@@ -142,7 +137,7 @@ func _step_once() -> void:
 		Phase.TERRAIN_SLOPES:
 			_step_terrain_slope_cell()
 		Phase.GRASS_PREPARE:
-			_prepare_grass_variant()
+			_prepare_grass()
 		Phase.GRASS_VERTICES:
 			_step_grass_vertex()
 		Phase.GRASS_INDICES:
@@ -242,12 +237,13 @@ func _finish_terrain() -> void:
 	_phase = Phase.DONE
 
 
-func _prepare_grass_variant() -> void:
-	_variant_layers = _grass_layers[_variant_index]
-	var base_vertex_count := _width * _width
-	var shared_vertex_count := base_vertex_count * _variant_layers.size()
-	var partial_vertex_count := _partial_cells.size() * 4 * _variant_layers.size()
-	var vertex_count := shared_vertex_count + partial_vertex_count
+# One base grass surface per chunk, drawn once per shell by three prebuilt
+# MultiMesh resources. The shell level used to be baked into duplicated geometry
+# -- the near variant alone carried sixteen copies of this grid -- and now
+# arrives per instance through INSTANCE_CUSTOM, so the worker emits a thirtieth
+# of the vertices and indices it used to.
+func _prepare_grass() -> void:
+	var vertex_count := _width * _width + _partial_cells.size() * 4
 	_grass_vertices = PackedVector3Array()
 	_grass_normals = PackedVector3Array()
 	_grass_colors = PackedColorArray()
@@ -257,7 +253,7 @@ func _prepare_grass_variant() -> void:
 	_grass_normals.resize(vertex_count)
 	_grass_colors.resize(vertex_count)
 	_grass_uvs.resize(vertex_count)
-	_grass_indices.resize(_variant_layers.size() * _resolution * _resolution * 6)
+	_grass_indices.resize(_resolution * _resolution * 6)
 	_grass_index_write = 0
 	_cursor = 0
 	_phase = Phase.GRASS_VERTICES
@@ -265,23 +261,20 @@ func _prepare_grass_variant() -> void:
 
 func _step_grass_vertex() -> void:
 	var base_vertex_count := _width * _width
-	var shared_vertex_count := base_vertex_count * _variant_layers.size()
-	if _cursor < shared_vertex_count:
-		var layer_index := floori(float(_cursor) / float(base_vertex_count))
-		var source_index := _cursor % base_vertex_count
-		var x := source_index % _width
-		var z := floori(float(source_index) / float(_width))
-		_grass_vertices[_cursor] = Vector3(float(x) * _spacing, _heights[source_index], float(z) * _spacing)
-		_grass_normals[_cursor] = _normals[source_index]
-		_grass_colors[_cursor] = Color(_variant_layers[layer_index], 1.0, 1.0, 1.0)
+	if _cursor < base_vertex_count:
+		var x := _cursor % _width
+		var z := floori(float(_cursor) / float(_width))
+		_grass_vertices[_cursor] = Vector3(float(x) * _spacing, _heights[_cursor], float(z) * _spacing)
+		_grass_normals[_cursor] = _normals[_cursor]
+		# A shared grid vertex is only ever indexed by fully unmasked cells, so
+		# both fine-mask bytes are 0xff. COLOR.r is unused: the shell level now
+		# arrives per instance instead of per vertex.
+		_grass_colors[_cursor] = Color(1.0, 1.0, 1.0, 1.0)
 		_grass_uvs[_cursor] = Vector2.ZERO
 	else:
-		var local_cursor := _cursor - shared_vertex_count
-		var partial_vertices_per_layer := _partial_cells.size() * 4
-		var layer_index := floori(float(local_cursor) / float(partial_vertices_per_layer))
-		var within_layer := local_cursor % partial_vertices_per_layer
-		var partial_index := floori(float(within_layer) / 4.0)
-		var corner := within_layer % 4
+		var within := _cursor - base_vertex_count
+		var partial_index := floori(float(within) / 4.0)
+		var corner := within % 4
 		var cell_index := _partial_cells[partial_index]
 		var x := cell_index % _resolution
 		var z := floori(float(cell_index) / float(_resolution))
@@ -293,8 +286,11 @@ func _step_grass_vertex() -> void:
 			float(z + (corner >> 1)) * _spacing
 		)
 		_grass_normals[_cursor] = _normals[source_index]
+		# Partially masked cells keep their own four corners rather than sharing
+		# the grid: two neighbours meeting at one position can carry different
+		# fine-mask bytes, and collapsing them would leak grass through a blocker.
 		_grass_colors[_cursor] = Color(
-			_variant_layers[layer_index],
+			1.0,
 			float(fine_mask & 0xff) / 255.0,
 			float((fine_mask >> 8) & 0xff) / 255.0,
 			1.0
@@ -307,9 +303,7 @@ func _step_grass_vertex() -> void:
 
 
 func _step_grass_index_cell() -> void:
-	var cells_per_layer := _resolution * _resolution
-	var layer_index := floori(float(_cursor) / float(cells_per_layer))
-	var cell_index := _cursor % cells_per_layer
+	var cell_index := _cursor
 	var fine_mask := TerrainGenerator.fine_mask_get(_fine_occupancy, cell_index)
 	if TerrainGenerator.mask_get(_occupancy, cell_index) and fine_mask != 0:
 		var x := cell_index % _resolution
@@ -319,14 +313,13 @@ func _step_grass_index_cell() -> void:
 		var i01: int
 		var i11: int
 		if fine_mask == TerrainGenerator.FULL_FINE_MASK:
-			i00 = layer_index * _width * _width + z * _width + x
+			i00 = z * _width + x
 			i10 = i00 + 1
 			i01 = i00 + _width
 			i11 = i01 + 1
 		else:
-			var shared_vertex_count := _width * _width * _variant_layers.size()
 			var partial_index := _partial_lookup[cell_index]
-			i00 = shared_vertex_count + layer_index * _partial_cells.size() * 4 + partial_index * 4
+			i00 = _width * _width + partial_index * 4
 			i10 = i00 + 1
 			i01 = i00 + 2
 			i11 = i00 + 3
@@ -338,11 +331,11 @@ func _step_grass_index_cell() -> void:
 		_grass_indices[_grass_index_write + 5] = i01
 		_grass_index_write += 6
 	_cursor += 1
-	if _cursor >= _variant_layers.size() * cells_per_layer:
-		_finish_grass_variant()
+	if _cursor >= _resolution * _resolution:
+		_finish_grass()
 
 
-func _finish_grass_variant() -> void:
+func _finish_grass() -> void:
 	_grass_indices.resize(_grass_index_write)
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -351,10 +344,5 @@ func _finish_grass_variant() -> void:
 	arrays[Mesh.ARRAY_COLOR] = _grass_colors
 	arrays[Mesh.ARRAY_TEX_UV] = _grass_uvs
 	arrays[Mesh.ARRAY_INDEX] = _grass_indices
-	_grass_variants.append(arrays)
-	_variant_index += 1
-	if _variant_index < _grass_layers.size():
-		_phase = Phase.GRASS_PREPARE
-	else:
-		output = {"coord": _coord, "revision": _revision, "variants": _grass_variants}
-		_phase = Phase.DONE
+	output = {"coord": _coord, "revision": _revision, "arrays": arrays}
+	_phase = Phase.DONE

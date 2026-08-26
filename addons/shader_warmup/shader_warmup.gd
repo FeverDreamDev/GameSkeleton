@@ -288,9 +288,14 @@ func _build_pairs(manifest: ShaderWarmupManifest) -> void:
 
 static func _describe_pair(format: int, flags: int) -> String:
 	var description := ShaderWarmupVertexFormat.describe(format)
-	if flags & ShaderWarmupManifest.PairFlags.MULTIMESH:
-		return "instanced, %s" % description
-	return description
+	if flags & ShaderWarmupManifest.PairFlags.MULTIMESH == 0:
+		return description
+	var instancing := PackedStringArray(["instanced"])
+	if flags & ShaderWarmupManifest.PairFlags.MULTIMESH_COLORS:
+		instancing.append("instance colour")
+	if flags & ShaderWarmupManifest.PairFlags.MULTIMESH_CUSTOM_DATA:
+		instancing.append("instance custom")
+	return "%s, %s" % [", ".join(instancing), description]
 
 #endregion
 
@@ -721,7 +726,7 @@ func _build_pair_proxies() -> void:
 
 		var proxy: GeometryInstance3D
 		if pair["flags"] & ShaderWarmupManifest.PairFlags.MULTIMESH:
-			proxy = _build_multimesh_proxy(mesh)
+			proxy = _build_multimesh_proxy(mesh, pair["flags"])
 		else:
 			proxy = _build_mesh_proxy(mesh, format)
 		proxy.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
@@ -754,14 +759,25 @@ func _build_mesh_proxy(mesh: ArrayMesh, format: int) -> MeshInstance3D:
 
 ## Two instances rather than one, so the draw genuinely goes through the instanced path rather
 ## than being something the driver could collapse.
-func _build_multimesh_proxy(mesh: ArrayMesh) -> MultiMeshInstance3D:
+##
+## The per-instance colour and custom-data channels are reproduced when the recorded pairing used
+## them: both are specialization constants on Forward+ and Mobile and defines on Compatibility, so
+## a shader that reads INSTANCE_CUSTOM compiles a different program from one that does not, and
+## leaving them off here would report a warmed pipeline the first real draw does not have.
+func _build_multimesh_proxy(mesh: ArrayMesh, flags: int) -> MultiMeshInstance3D:
 	var multimesh := MultiMesh.new()
 	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.use_colors = flags & ShaderWarmupManifest.PairFlags.MULTIMESH_COLORS != 0
+	multimesh.use_custom_data = flags & ShaderWarmupManifest.PairFlags.MULTIMESH_CUSTOM_DATA != 0
 	multimesh.mesh = mesh
 	multimesh.instance_count = 2
 	for instance in multimesh.instance_count:
 		multimesh.set_instance_transform(instance,
 			Transform3D(Basis(), Vector3(float(instance) * 0.8 - 0.4, 0.0, 0.0)))
+		if multimesh.use_colors:
+			multimesh.set_instance_color(instance, Color.WHITE)
+		if multimesh.use_custom_data:
+			multimesh.set_instance_custom_data(instance, Color(1.0, 0.0, 0.0, 0.0))
 
 	var proxy := MultiMeshInstance3D.new()
 	proxy.multimesh = multimesh

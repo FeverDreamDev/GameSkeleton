@@ -115,8 +115,11 @@ signal grass_rebuilt(coord: Vector2i)
 ## Blinn-Phong material when integrating with Retro RT.
 @export var terrain_material_override: ShaderMaterial:
 	set(value):
+		if terrain_material_override == value:
+			return
 		terrain_material_override = value
 		_mark_visuals_dirty()
+		_mark_reflection_ground_dirty()
 # Authored in SCENE-LINEAR radiance, not sRGB. See TerrainGenerator.terrain_color.
 #
 # Calibrated empirically, not derived: the ground is lit by the RT compositor
@@ -174,40 +177,86 @@ signal grass_rebuilt(coord: Vector2i)
 ## and shell grass is vertex-deformed and outside the managed contract entirely.
 ## The reflected surface is the grass canopy, not the bare ground, because the
 ## baked colours are already the ones calibrated against canopy radiance.
-@export var reflection_ground_enabled: bool = true
+@export var reflection_ground_enabled: bool = true:
+	set(value):
+		if reflection_ground_enabled == value:
+			return
+		reflection_ground_enabled = value
+		_mark_reflection_ground_dirty()
+		_mark_reflection_grass_params_dirty()
 ## Texels per side of the published window. The default lands close to one texel
 ## per terrain cell at the default chunk resolution, which is what makes the
 ## reflection shade on the same grid the mesh is built on.
-@export_range(32, 512, 1) var reflection_ground_resolution: int = 192
+@export_range(32, 512, 1) var reflection_ground_resolution: int = 192:
+	set(value):
+		if reflection_ground_resolution == value:
+			return
+		reflection_ground_resolution = value
+		_mark_reflection_ground_dirty()
 ## How far past the load distance the window reaches, as a multiplier. It only
 ## has to cover what a mirror can see before fog closes in.
-@export_range(1.0, 4.0, 0.05) var reflection_ground_margin: float = 1.25
+@export_range(1.0, 4.0, 0.05) var reflection_ground_margin: float = 1.25:
+	set(value):
+		if reflection_ground_margin == value:
+			return
+		reflection_ground_margin = value
+		_mark_reflection_ground_dirty()
 ## Fraction of grass_height the reflected canopy stands at. Blades do not fill
 ## their shell to the top, so reflecting the full height reads as a step up out
 ## of the ground.
-@export_range(0.0, 1.0, 0.01) var grass_canopy_fill: float = 0.8
+@export_range(0.0, 1.0, 0.01) var grass_canopy_fill: float = 0.8:
+	set(value):
+		if grass_canopy_fill == value:
+			return
+		grass_canopy_fill = value
+		if _grass_visually_active():
+			_mark_reflection_ground_dirty()
 ## Strength of the blade-scale variation a mirror sees on the reflected canopy.
 ## The published colour is an average of the blade gradient, and averaging is
 ## what makes a reflected field read as a flat painted plane next to grass that
 ## visibly has blades in it; this puts the spread back per pixel. Zero publishes
 ## the average unchanged. It is texture on a stand-in surface, not traced grass,
 ## so it cannot silhouette and pushing it high reads as noise rather than detail.
-@export_range(0.0, 1.0, 0.01) var reflection_grass_detail: float = 0.55
+@export_range(0.0, 1.0, 0.01) var reflection_grass_detail: float = 0.55:
+	set(value):
+		if reflection_grass_detail == value:
+			return
+		reflection_grass_detail = value
+		_mark_reflection_grass_params_dirty()
 ## How far towards a blade's shaded base the darkest reflected cell reaches.
 ## The default is the depth of the shell shader's own base-to-tip value ramp,
 ## which is what keeps the two looking like the same grass.
-@export_range(0.0, 1.0, 0.01) var reflection_grass_ramp_depth: float = 0.28
+@export_range(0.0, 1.0, 0.01) var reflection_grass_ramp_depth: float = 0.28:
+	set(value):
+		if reflection_grass_ramp_depth == value:
+			return
+		reflection_grass_ramp_depth = value
+		_mark_reflection_grass_params_dirty()
 ## Left empty, the node finds the manager by group and then by tree search.
 @export_node_path("Node") var rt_scene_manager_path: NodePath = ^""
 
 @export_category("Streaming")
-@export_range(1.0, 4096.0, 1.0, "or_greater") var terrain_load_distance: float = 96.0
+@export_range(1.0, 4096.0, 1.0, "or_greater") var terrain_load_distance: float = 96.0:
+	set(value):
+		if terrain_load_distance == value:
+			return
+		terrain_load_distance = value
+		_mark_reflection_ground_dirty()
+		_mark_reflection_grass_params_dirty()
 @export_range(1.0, 4096.0, 1.0, "or_greater") var terrain_unload_distance: float = 128.0
 @export_range(0.01, 10.0, 0.01, "or_greater") var stream_update_interval: float = 0.20
 @export_range(0.01, 10.0, 0.01, "or_greater") var lod_update_interval: float = 0.10
 
 @export_category("Grass Appearance")
-@export var grass_enabled: bool = true
+@export var grass_enabled: bool = true:
+	set(value):
+		if grass_enabled == value:
+			return
+		var was_visually_active := _grass_visually_active()
+		grass_enabled = value
+		if was_visually_active != _grass_visually_active():
+			_mark_reflection_ground_dirty()
+			_mark_reflection_grass_params_dirty()
 ## Runtime quality preference, safe to change while the game is running and cheap
 ## enough to sit in an options menu. It does not rebuild anything: every chunk
 ## already caches all three shell variants, so a lower tier simply draws a
@@ -220,16 +269,31 @@ signal grass_rebuilt(coord: Vector2i)
 ## something to do underneath a standing player.
 @export var grass_quality: GrassQuality = GrassQuality.HIGH:
 	set(value):
+		if grass_quality == value:
+			return
+		var was_visually_active := _grass_visually_active()
 		grass_quality = value
 		_apply_grass_quality()
+		# LOW, MEDIUM and HIGH share one analytic canopy. Only crossing the
+		# OFF boundary changes whether that canopy exists in the reflection.
+		if was_visually_active != _grass_visually_active():
+			_mark_reflection_ground_dirty()
+			_mark_reflection_grass_params_dirty()
 @export_range(0.01, 10.0, 0.01, "or_greater") var grass_height: float = 0.6:
 	set(value):
+		if grass_height == value:
+			return
 		grass_height = value
 		_mark_visuals_dirty()
+		if _grass_visually_active():
+			_mark_reflection_ground_dirty()
 @export_range(1.0, 128.0, 1.0, "or_greater") var grass_density: float = 16.0:
 	set(value):
+		if grass_density == value:
+			return
 		grass_density = value
 		_mark_visuals_dirty()
+		_mark_reflection_grass_params_dirty()
 @export_range(0.0, 90.0, 0.5) var max_grass_slope_degrees: float = 38.0
 @export_range(0.0, 4096.0, 1.0, "or_greater") var grass_prefetch_distance: float = 96.0
 @export_range(0.0, 0.1, 0.001) var root_offset: float = 0.006:
@@ -238,12 +302,20 @@ signal grass_rebuilt(coord: Vector2i)
 		_mark_visuals_dirty()
 @export var grass_base_color: Color = Color(0.11, 0.24, 0.06):
 	set(value):
+		if grass_base_color == value:
+			return
 		grass_base_color = value
 		_mark_visuals_dirty()
+		if _grass_visually_active():
+			_mark_reflection_ground_dirty()
 @export var grass_tip_color: Color = Color(0.32, 0.52, 0.12):
 	set(value):
+		if grass_tip_color == value:
+			return
 		grass_tip_color = value
 		_mark_visuals_dirty()
+		if _grass_visually_active():
+			_mark_reflection_ground_dirty()
 @export var grass_color_noise_enabled: bool = true:
 	set(value):
 		grass_color_noise_enabled = value
@@ -359,13 +431,15 @@ var _visuals_dirty: bool = true
 var _fog_params := Vector4(0.0, 1.0, 1.0, 0.0)
 var _fog_color := Vector3.ZERO
 # Reflection ground layer published to Retro RT. The bake runs on a worker
-# thread and only when the streaming target has left the window it was baked
-# for, so a standing player pays nothing for it at all.
+# thread and only when the streaming target leaves its window or an input that
+# changes the image is dirtied, so a stationary unchanged scene pays nothing.
 var _rt_manager: Node
 var _ground_rt_lookup_cooldown: int = 0
 var _ground_bake_task: int = -1
 var _ground_bake_origin := Vector2.ZERO
 var _ground_bake_settings: Dictionary = {}
+var _ground_bake_system_origin := Vector3.ZERO
+var _ground_bake_grass_active: bool = false
 var _ground_bake_canopy_fill: float = 0.0
 var _ground_bake_canopy_color := Color.BLACK
 var _ground_bake_result: Dictionary = {}
@@ -374,6 +448,8 @@ var _ground_window_size: float = 0.0
 var _ground_window_resolution: int = 0
 var _ground_window_valid: bool = false
 var _ground_layer_published: bool = false
+var _reflection_ground_dirty: bool = true
+var _reflection_grass_params_dirty: bool = true
 var _registered_static: Dictionary = {}
 var _registered_interactors: Dictionary = {}
 var _preview_noise: FastNoiseLite
@@ -424,9 +500,10 @@ func _notification(what: int) -> void:
 	if what != NOTIFICATION_TRANSFORM_CHANGED:
 		return
 	# Chunk placement and the grass shader both key off the system origin, and
-	# the preview noise caches it too.
+	# the preview noise and reflected heightfield cache it too.
 	_preview_noise = null
 	_mark_visuals_dirty()
+	_mark_reflection_ground_dirty()
 	if Engine.is_editor_hint():
 		update_configuration_warnings()
 
@@ -557,6 +634,9 @@ func get_runtime_stats() -> Dictionary:
 			"mesh_commits": 0,
 			"generation_backend": "Not initialized",
 			"active_interactors": 0,
+			"total_mask_queries": 0,
+			"total_mask_rejections": 0,
+			"total_mask_usec": 0,
 		}
 	return {
 		"loaded_chunks": _terrain_manager.chunks.size(),
@@ -566,6 +646,11 @@ func get_runtime_stats() -> Dictionary:
 		"mesh_commits": _terrain_manager.mesh_commit_count,
 		"generation_backend": _terrain_manager.generation_backend_name(),
 		"active_interactors": get_active_interactor_count(),
+		# Lifetime totals. mask_queries above is reset every physics frame, which
+		# reads well on an overlay and is useless for a before/after comparison.
+		"total_mask_queries": _terrain_manager.mask_query_total,
+		"total_mask_rejections": _terrain_manager.mask_broad_phase_rejections,
+		"total_mask_usec": _terrain_manager.mask_job_usec_total,
 	}
 
 
@@ -716,6 +801,8 @@ func _dispose_runtime() -> void:
 	_ground_bake_result = {}
 	_ground_window_valid = false
 	_ground_layer_published = false
+	_reflection_ground_dirty = true
+	_reflection_grass_params_dirty = true
 	if is_instance_valid(_terrain_manager):
 		_terrain_manager.shutdown()
 		remove_child(_terrain_manager)
@@ -756,10 +843,23 @@ func _create_materials() -> void:
 	var empty_interactors: Array[Vector4] = []
 	empty_interactors.resize(MAX_SHADER_INTERACTORS)
 	_grass_material.set_shader_parameter("grass_interactors", empty_interactors)
+	_grass_material.set_shader_parameter("u_interactor_count", 0)
 
 
 func _mark_visuals_dirty() -> void:
 	_visuals_dirty = true
+
+
+func _grass_visually_active() -> bool:
+	return grass_enabled and grass_quality != GrassQuality.OFF
+
+
+func _mark_reflection_ground_dirty() -> void:
+	_reflection_ground_dirty = true
+
+
+func _mark_reflection_grass_params_dirty() -> void:
+	_reflection_grass_params_dirty = true
 
 
 func _apply_visual_settings() -> void:
@@ -792,6 +892,10 @@ func _apply_visual_settings() -> void:
 		_grass_material.set_shader_parameter("u_density", grass_density)
 		_grass_material.set_shader_parameter("u_max_height", grass_height)
 		_grass_material.set_shader_parameter("u_root_offset", root_offset)
+		# Must match the encoding TerrainGenerator wrote into the shell instance
+		# buffers, which depends on the backend's custom-data precision.
+		_grass_material.set_shader_parameter(
+			"u_shell_decode_scale", TerrainGeneratorScript.shell_decode_scale())
 		_grass_material.set_shader_parameter("u_wind_direction", direction)
 		_grass_material.set_shader_parameter("u_wind_speed", wind_speed)
 		_grass_material.set_shader_parameter("u_wind_strength", wind_strength)
@@ -948,7 +1052,7 @@ func _on_grass_rebuilt(coord: Vector2i) -> void:
 ## Keeps the published ground layer following the streaming target. Called once
 ## per frame from _process, and cheap on the frames it decides to do nothing:
 ## the bake itself runs on a worker thread and only when the target has left the
-## window it was baked for.
+## window it was baked for or a reflected-image input has changed.
 func _update_reflection_ground() -> void:
 	_resolve_ground_rt_manager()
 	if _rt_manager == null or not _rt_manager.has_method(&"configure_ground_layer"):
@@ -960,13 +1064,21 @@ func _update_reflection_ground() -> void:
 			_rt_manager.call(
 				&"configure_ground_layer", null, Vector2.ZERO, 0.0, Vector2.ZERO, Color.BLACK)
 		return
+	if _reflection_grass_params_dirty and _ground_layer_published:
+		_publish_reflection_grass_params()
 	if _ground_bake_task != -1:
 		if not WorkerThreadPool.is_task_completed(_ground_bake_task):
 			return
 		WorkerThreadPool.wait_for_task_completion(_ground_bake_task)
 		_ground_bake_task = -1
-		_publish_reflection_ground()
-		return
+		# A property can change while this task is running. Publishing that stale
+		# result would leave the old canopy visible for the duration of a second
+		# bake, so discard it and launch the replacement immediately below.
+		if _reflection_ground_dirty:
+			_ground_bake_result = {}
+		else:
+			_publish_reflection_ground()
+			return
 	if _active_target == null or not is_instance_valid(_active_target):
 		return
 	var window_size := maxf(terrain_load_distance * 2.0 * reflection_ground_margin, 1.0)
@@ -978,7 +1090,8 @@ func _update_reflection_ground() -> void:
 	# a texel every time the window recentres, and the reflection crawls.
 	var center := (Vector2(target.x, target.z) / texel_size).floor() * texel_size
 	if (
-			_ground_window_valid
+			not _reflection_ground_dirty
+			and _ground_window_valid
 			and _ground_window_size == window_size
 			and _ground_window_resolution == resolution
 			and center.distance_to(_ground_window_center) < window_size * 0.15
@@ -990,16 +1103,16 @@ func _update_reflection_ground() -> void:
 	_ground_window_valid = true
 	_ground_bake_origin = center - Vector2(window_size, window_size) * 0.5
 	_ground_bake_settings = _build_settings().snapshot()
-	_ground_bake_canopy_fill = grass_canopy_fill if grass_enabled else 0.0
+	_ground_bake_system_origin = _origin_position()
+	_ground_bake_grass_active = _grass_visually_active()
+	_ground_bake_canopy_fill = grass_canopy_fill
 	# The grass palette is authored in sRGB, unlike the terrain colours, which are
 	# authored directly in scene-linear. Decoding here is what the source_color
 	# hints on the shell shader do for it at compile time.
-	_ground_bake_canopy_color = (
-		grass_base_color.srgb_to_linear().lerp(
-			grass_tip_color.srgb_to_linear(), GROUND_CANOPY_COLOR_MIX)
-		if grass_enabled
-		else Color.BLACK)
+	_ground_bake_canopy_color = grass_base_color.srgb_to_linear().lerp(
+		grass_tip_color.srgb_to_linear(), GROUND_CANOPY_COLOR_MIX)
 	_ground_bake_result = {}
+	_reflection_ground_dirty = false
 	_ground_bake_task = WorkerThreadPool.add_task(
 		_bake_reflection_ground, true, "TerrainGrass3D reflection ground bake")
 
@@ -1012,6 +1125,8 @@ func _bake_reflection_ground() -> void:
 	var resolution := _ground_window_resolution
 	var window_size := _ground_window_size
 	var origin := _ground_bake_origin
+	var system_origin := _ground_bake_system_origin
+	var grass_active := _ground_bake_grass_active
 	var texel_size := window_size / float(resolution)
 	var noise := TerrainGeneratorScript.create_noise(settings)
 	# One extra ring so every published texel has the four neighbours its normal
@@ -1024,7 +1139,7 @@ func _bake_reflection_ground() -> void:
 		for x in padded:
 			var world_x := origin.x + (float(x) - 0.5) * texel_size
 			heights[z * padded + x] = TerrainGeneratorScript.sample_height(
-				noise, world_x, world_z, settings)
+				noise, world_x - system_origin.x, world_z - system_origin.z, settings)
 	var pixels := PackedFloat32Array()
 	pixels.resize(resolution * resolution * 4)
 	var slope_cosine := float(settings["max_grass_slope_cos"])
@@ -1048,8 +1163,11 @@ func _bake_reflection_ground() -> void:
 			# The mesher is deciding whether to place a blade; this is a surface
 			# a ray gets marched against, and a cliff in it would put a wrong
 			# normal along every grass edge.
-			var cover := smoothstep(slope_cosine - 0.08, slope_cosine, normal.y)
-			var top := height + canopy_height * cover
+			var cover := (
+				smoothstep(slope_cosine - 0.08, slope_cosine, normal.y)
+				if grass_active
+				else 0.0)
+			var top := height + system_origin.y + canopy_height * cover
 			# Where grass covers the ground, a mirror sees the canopy rather than
 			# what is under it. terrain_color is deliberately dark enough to vanish
 			# beneath the blades, so reflecting it directly would read as bare soil
@@ -1093,20 +1211,31 @@ func _publish_reflection_ground() -> void:
 	# Pushed alongside the layer rather than baked into it: the march resolves
 	# one smooth canopy and this is the per-pixel spread the bake averaged away,
 	# so it belongs to the shader that shades the surface, not to the surface.
+	_ground_layer_published = true
+	_ground_bake_result = {}
+	_publish_reflection_grass_params()
+
+
+func _publish_reflection_grass_params() -> void:
+	if _rt_manager == null:
+		return
+	if not _rt_manager.has_method(&"configure_ground_grass"):
+		# This hook is optional for older reflection hosts. Once a resolved host
+		# proves it does not implement it, do not retry the same lookup every frame.
+		_reflection_grass_params_dirty = false
+		return
 	# Blade frequency is grass_density unchanged, because that is the same grid
 	# grass_shell.gdshader lays its stalks on -- reflected blades landing on a
 	# different pitch than the real ones is what would read as noise. The fade
 	# reach is the load distance: past it there is no streamed grass to stand in
 	# for, and fog has closed over whatever the mirror shows there anyway.
-	if _rt_manager.has_method(&"configure_ground_grass"):
-		_rt_manager.call(
-			&"configure_ground_grass",
-			grass_density,
-			reflection_grass_detail if grass_enabled else 0.0,
-			reflection_grass_ramp_depth,
-			terrain_load_distance)
-	_ground_layer_published = true
-	_ground_bake_result = {}
+	_rt_manager.call(
+		&"configure_ground_grass",
+		grass_density,
+		reflection_grass_detail if _grass_visually_active() else 0.0,
+		reflection_grass_ramp_depth,
+		terrain_load_distance)
+	_reflection_grass_params_dirty = false
 
 
 ## The ambient the real terrain is lit by, read off the material a day/night

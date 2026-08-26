@@ -8,8 +8,13 @@ const FINE_MASK_SUBDIVISIONS := 4
 const FINE_MASK_BYTES_PER_CELL := 2
 const FULL_FINE_MASK := 0xffff
 
-## Number of grass shell meshes cached per chunk, one per LOD band.
+## Number of grass shell MultiMesh resources cached per chunk, one per LOD band.
 const GRASS_LOD_VARIANT_COUNT := 3
+
+## Floats one MultiMesh instance occupies in [member MultiMesh.buffer] for
+## TRANSFORM_3D with custom data and no colours: twelve for the transform, four
+## for INSTANCE_CUSTOM. Verified against 4.7.2 rather than assumed.
+const GRASS_INSTANCE_STRIDE := 16
 
 
 static func create_noise(settings: Dictionary) -> FastNoiseLite:
@@ -42,6 +47,100 @@ static func _make_shell_layers(count: int, maximum: float) -> PackedFloat32Array
 	for index in range(count):
 		layers[index] = maximum * float(index) / float(maxi(count - 1, 1))
 	return layers
+
+
+## A shell fraction as the shell shader has always actually received it.
+##
+## The duplicated-shell architecture wrote the fraction into ARRAY_COLOR.r, and
+## Godot stores a vertex colour as unorm8 by TRUNCATING: the byte is
+## floor(f * 255.0), not the nearest one. Measured on 4.7.2, where an authored
+## 0.25 comes back as 63/255 and not 64/255. The shader therefore never saw the
+## authored float, and reproducing that byte exactly -- rather than handing the
+## instanced path a freshly rounded float -- is what makes the two architectures
+## render the same pixels.
+##
+## See [method shell_fraction_quantized] for why the byte is decoded here rather
+## than in the shader.
+static func shell_fraction_byte(fraction: float) -> int:
+	return clampi(int(clampf(fraction, 0.0, 1.0) * 255.0), 0, 255)
+
+
+## The shell fraction the shader reads, decoded from its 8-bit form here rather
+## than in GLSL.
+##
+## Dividing by 255.0 in the shader is not the same operation the vertex fetch
+## performed: a shader compiler is free to fold a division by a constant into a
+## multiply by its reciprocal, and 1/255 is not exactly representable, so a
+## handful of shells came back one ULP off. That is invisible in the shell height
+## itself and not invisible at a blade silhouette, where it flips the
+## edge_coverage and random_height discards on isolated fragments -- 187 pixels
+## of a 2560x1440 frame, measured.
+##
+## float32(byte / 255.0) computed in double precision is exactly the float the
+## hardware produces when it decodes a unorm8 vertex colour, so handing the
+## shader the finished value and doing no arithmetic on it reproduces the
+## duplicated-shell output bit for bit.
+static func shell_fraction_quantized(fraction: float) -> float:
+	return float(shell_fraction_byte(fraction)) / 255.0
+
+
+## Whether shell instance data has to travel as the raw 0-255 byte rather than
+## as the finished fraction, and the constant the shader multiplies it back by.
+##
+## MultiMesh instance custom data is not stored at the same precision on every
+## backend. Forward+ and Mobile keep float32; Compatibility packs colours and
+## custom data into float16 -- measured on 4.7.2, where handing GLES3 the value
+## 17/255 gets 0.06665 back, an error of 1.6e-5 that grows to 2.4e-4 near the
+## canopy top. So each backend is handed the encoding that survives it:
+##
+##   Forward+/Mobile  the finished fraction, scaled by 1.0. Multiplying by
+##                    exactly one is exact, so the instanced canopy is
+##                    bit-identical to the duplicated-shell one it replaces --
+##                    verified at 0 of 3,686,400 differing pixels.
+##   Compatibility    the byte, scaled by 1/255. Every integer up to 2048 is
+##                    exact in float16, so only the shader's own multiply rounds:
+##                    about 1e-7 instead of 2.4e-4.
+static func shell_data_is_byte_encoded() -> bool:
+	return RenderingServer.get_current_rendering_method() == "gl_compatibility"
+
+
+## Value for the shader's u_shell_decode_scale, paired with the encoding above.
+static func shell_decode_scale() -> float:
+	return 1.0 / 255.0 if shell_data_is_byte_encoded() else 1.0
+
+
+## One [member MultiMesh.buffer] payload per LOD variant: identity transforms
+## and the encoded shell level in INSTANCE_CUSTOM.x.
+##
+## The shell distribution depends only on the settings, so every chunk's three
+## MultiMesh resources share these three buffers. Built through a throwaway
+## MultiMesh rather than by packing floats by hand, so the transform layout comes
+## from the engine instead of from an assumption about it.
+##
+## Main thread only: MultiMesh instance data lives in the rendering server.
+static func grass_shell_instance_buffers(settings: Dictionary) -> Array[PackedFloat32Array]:
+	var buffers: Array[PackedFloat32Array] = []
+	var byte_encoded := shell_data_is_byte_encoded()
+	for layers in grass_shell_layer_sets(settings):
+		var template := MultiMesh.new()
+		template.transform_format = MultiMesh.TRANSFORM_3D
+		template.use_custom_data = true
+		# A MultiMesh rebuilds its bounds from the base mesh whenever instance
+		# data changes and errors when it has none. These templates exist only to
+		# have the engine lay their buffer out, never to be drawn, so an empty
+		# placeholder is all the base they need.
+		template.mesh = PlaceholderMesh.new()
+		template.instance_count = layers.size()
+		for index in range(layers.size()):
+			# Identity, deliberately. A shell is lifted along each terrain vertex
+			# normal inside the shader, so translating the instance would both
+			# flatten the canopy on slopes and rotate the normals lighting reads.
+			template.set_instance_transform(index, Transform3D.IDENTITY)
+			var encoded := (float(shell_fraction_byte(layers[index])) if byte_encoded
+				else shell_fraction_quantized(layers[index]))
+			template.set_instance_custom_data(index, Color(encoded, 0.0, 0.0, 0.0))
+		buffers.append(template.buffer)
+	return buffers
 
 
 static func mask_get(mask: PackedByteArray, cell_index: int) -> bool:

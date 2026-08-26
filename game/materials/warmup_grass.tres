@@ -1,4 +1,4 @@
-[gd_resource type="ShaderMaterial" format=3]
+[gd_resource type="ShaderMaterial" format=4]
 
 [ext_resource type="Shader" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="1_x1jol"]
 
@@ -6,27 +6,29 @@
 resource_name = "Runtime Grass Shell Warmup"
 render_priority = 0
 shader = ExtResource("1_x1jol")
-shader_parameter/grass_interactors = null
+shader_parameter/grass_interactors = PackedVector4Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+shader_parameter/u_interactor_count = 0
 shader_parameter/u_base_color = Color(0.11, 0.24, 0.06, 1)
 shader_parameter/u_tip_color = Color(0.32, 0.52, 0.12, 1)
 shader_parameter/u_density = 16.0
 shader_parameter/u_max_height = 0.6
-shader_parameter/u_root_offset = null
-shader_parameter/u_wind_direction = null
-shader_parameter/u_wind_speed = null
-shader_parameter/u_wind_strength = null
-shader_parameter/u_wind_enabled = null
-shader_parameter/u_interaction_enabled = null
-shader_parameter/u_color_noise_enabled = null
-shader_parameter/u_color_noise_strength = null
-shader_parameter/u_color_noise_seed = null
-shader_parameter/u_color_noise_patch_size = null
-shader_parameter/u_color_noise_low_tint = null
-shader_parameter/u_color_noise_high_tint = null
-shader_parameter/u_color_noise_detail_strength = null
-shader_parameter/u_system_origin_xz = null
-shader_parameter/u_interaction_push_scale = null
-shader_parameter/u_flatten_response = null
-shader_parameter/u_min_flatten = null
-shader_parameter/u_fog_params = null
-shader_parameter/u_fog_color = null
+shader_parameter/u_root_offset = 0.006
+shader_parameter/u_wind_direction = Vector2(0.957826, 0.287348)
+shader_parameter/u_wind_speed = 2.4
+shader_parameter/u_wind_strength = 0.035
+shader_parameter/u_wind_enabled = true
+shader_parameter/u_interaction_enabled = true
+shader_parameter/u_color_noise_enabled = true
+shader_parameter/u_color_noise_strength = 0.18
+shader_parameter/u_color_noise_seed = 7331
+shader_parameter/u_color_noise_patch_size = 6.0
+shader_parameter/u_color_noise_low_tint = Color(0.84, 0.94, 0.76, 1)
+shader_parameter/u_color_noise_high_tint = Color(1.12, 1.04, 0.82, 1)
+shader_parameter/u_color_noise_detail_strength = 0.03
+shader_parameter/u_system_origin_xz = Vector2(0, 0)
+shader_parameter/u_shell_decode_scale = 1.0
+shader_parameter/u_interaction_push_scale = 0.12
+shader_parameter/u_flatten_response = 1.0
+shader_parameter/u_min_flatten = 0.3
+shader_parameter/u_fog_params = Vector4(0, 1, 1, 0)
+shader_parameter/u_fog_color = Vector3(0, 0, 0)

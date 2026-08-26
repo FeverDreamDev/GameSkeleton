@@ -281,7 +281,7 @@ func _harvest(value: Variant, depth: int = 0) -> void:
 		# the same mesh, because that is a different draw: the transform arrives from a
 		# per-instance buffer rather than from a uniform.
 		_record_mesh_pairings((resource as MultiMesh).mesh,
-			ShaderWarmupManifest.PairFlags.MULTIMESH, depth)
+			_multimesh_flags(resource as MultiMesh), depth)
 	elif resource is MeshLibrary:
 		var library := resource as MeshLibrary
 		for item in library.get_item_list():
@@ -388,6 +388,18 @@ func _record_mesh_pairings(mesh: Mesh, flags: int, depth: int) -> void:
 		# Recorded after the harvest, which is what put the material in the index.
 		_record_pairing(material, ShaderWarmupVertexFormat.of_surface(mesh, surface), flags)
 
+## What about [param multimesh] selects a compiled program rather than only its contents. The two
+## optional per-instance channels are specialization constants on the RD renderers and defines on
+## Compatibility, so a MultiMesh that reads INSTANCE_CUSTOM needs its own warmup pass.
+func _multimesh_flags(multimesh: MultiMesh) -> int:
+	var flags := ShaderWarmupManifest.PairFlags.MULTIMESH
+	if multimesh.use_custom_data:
+		flags |= ShaderWarmupManifest.PairFlags.MULTIMESH_CUSTOM_DATA
+	if multimesh.use_colors:
+		flags |= ShaderWarmupManifest.PairFlags.MULTIMESH_COLORS
+	return flags
+
+
 ## Pairs a node's override materials with the mesh they land on.
 ##
 ## [param properties] is one node's stored properties from a [SceneState]. The generic harvest has
@@ -401,7 +413,7 @@ func _pair_node_overrides(properties: Dictionary) -> void:
 		mesh = properties["mesh"]
 	elif properties.get("multimesh") is MultiMesh:
 		mesh = (properties["multimesh"] as MultiMesh).mesh
-		flags = ShaderWarmupManifest.PairFlags.MULTIMESH
+		flags = _multimesh_flags(properties["multimesh"] as MultiMesh)
 	if mesh == null:
 		return
 

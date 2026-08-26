@@ -1,6 +1,7 @@
 @tool
-# One streamed terrain tile: a terrain mesh, a heightmap collider, and the three
-# cached grass shell meshes the LOD bands switch between.
+# One streamed terrain tile: a terrain mesh, a heightmap collider, and one base
+# grass surface drawn through the three cached shell MultiMeshes the LOD bands
+# switch between.
 extends Node3D
 
 const TerrainGenerator = preload("res://addons/procedural_terrain_grass/core/terrain_generator.gd")
@@ -34,14 +35,27 @@ var base_fine_occupancy := PackedByteArray()
 var fine_occupancy := PackedByteArray()
 var minimum_height: float = 0.0
 var maximum_height: float = 0.0
-var grass_meshes: Array[ArrayMesh] = []
+## The one grass surface this chunk publishes. All three shell MultiMeshes point
+## at it; a static-mask rebuild replaces it without touching their instance data.
+var grass_base_mesh: ArrayMesh
+## Near/Medium/Far shell instance sets, prebuilt at configure time. Their
+## distributions are not prefixes of one another -- Near ends at 1.00, Medium at
+## 0.95, Far at the configured far top -- so visible_instance_count cannot select
+## between them and three resources are what an LOD swap chooses from.
+var grass_multimeshes: Array[MultiMesh] = []
 
 var terrain_mesh_instance: MeshInstance3D
-var grass_mesh_instance: MeshInstance3D
+var grass_mesh_instance: MultiMeshInstance3D
 var terrain_body: StaticBody3D
 var terrain_collision: CollisionShape3D
 var _settings
 var _terrain_material: Material
+var _lod_near_to_medium_squared: float
+var _lod_medium_to_near_squared: float
+var _lod_medium_to_far_squared: float
+var _lod_far_to_medium_squared: float
+var _lod_far_to_hidden_squared: float
+var _lod_hidden_to_far_squared: float
 
 
 func configure(
@@ -49,17 +63,24 @@ func configure(
 	revision: int,
 	settings,
 	terrain_material: Material,
-	grass_material: Material
+	grass_material: Material,
+	shell_instance_buffers: Array[PackedFloat32Array]
 ) -> void:
 	coord = chunk_coord
 	generation_revision = revision
 	grass_revision = revision
 	_settings = settings
 	_terrain_material = terrain_material
+	_lod_near_to_medium_squared = settings.lod_near_to_medium * settings.lod_near_to_medium
+	_lod_medium_to_near_squared = settings.lod_medium_to_near * settings.lod_medium_to_near
+	_lod_medium_to_far_squared = settings.lod_medium_to_far * settings.lod_medium_to_far
+	_lod_far_to_medium_squared = settings.lod_far_to_medium * settings.lod_far_to_medium
+	_lod_far_to_hidden_squared = settings.lod_far_to_hidden * settings.lod_far_to_hidden
+	_lod_hidden_to_far_squared = settings.lod_hidden_to_far * settings.lod_hidden_to_far
 	name = "TerrainChunk_%d_%d" % [coord.x, coord.y]
 	position = Vector3(float(coord.x) * settings.chunk_size, 0.0, float(coord.y) * settings.chunk_size)
 
-	grass_mesh_instance = MeshInstance3D.new()
+	grass_mesh_instance = MultiMeshInstance3D.new()
 	grass_mesh_instance.name = "GrassMesh"
 	grass_mesh_instance.material_override = grass_material
 	# Shell grass is many overlapping layers; casting shadows from all of them
@@ -68,6 +89,17 @@ func configure(
 	grass_mesh_instance.visible = false
 	grass_mesh_instance.extra_cull_margin = settings.grass_height + CULL_MARGIN_SLACK
 	add_child(grass_mesh_instance)
+
+	# Instance data is built once here and never rewritten: an LOD change picks a
+	# different resource, and a mask rebuild only swaps the mesh underneath these.
+	for buffer in shell_instance_buffers:
+		var multimesh := MultiMesh.new()
+		multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		multimesh.use_custom_data = true
+		@warning_ignore("integer_division")
+		multimesh.instance_count = buffer.size() / TerrainGenerator.GRASS_INSTANCE_STRIDE
+		multimesh.buffer = buffer
+		grass_multimeshes.append(multimesh)
 
 	terrain_body = StaticBody3D.new()
 	terrain_body.name = "StaticBody3D"
@@ -131,68 +163,81 @@ func set_grass_cull_height(height: float) -> void:
 	grass_mesh_instance.extra_cull_margin = height + CULL_MARGIN_SLACK
 
 
-func publish_grass_meshes(meshes: Array[ArrayMesh], distance_to_chunk: float) -> void:
-	grass_meshes = meshes
-	grass_ready = grass_meshes.size() == TerrainGenerator.GRASS_LOD_VARIANT_COUNT
+func publish_grass_mesh(mesh: ArrayMesh, distance_to_chunk: float) -> void:
+	publish_grass_mesh_squared(mesh, distance_to_chunk * distance_to_chunk)
+
+
+## Points the three shell MultiMeshes at a newly committed base surface.
+##
+## Their instance buffers are deliberately left alone: shell counts and fractions
+## are settings, not chunk data, so a remask after a blocker moves rewrites the
+## geometry underneath the same shells rather than rebuilding them.
+func publish_grass_mesh_squared(mesh: ArrayMesh, distance_squared_to_chunk: float) -> void:
+	grass_base_mesh = mesh
+	for multimesh in grass_multimeshes:
+		multimesh.mesh = mesh
+	grass_ready = mesh != null \
+		and grass_multimeshes.size() == TerrainGenerator.GRASS_LOD_VARIANT_COUNT
 	if not grass_ready:
-		grass_mesh_instance.mesh = null
+		grass_mesh_instance.multimesh = null
 		grass_mesh_instance.visible = false
 		return
-	current_lod = _initial_lod(distance_to_chunk)
+	current_lod = _initial_lod_squared(distance_squared_to_chunk)
 	_apply_lod()
 
 
 func update_grass_lod(distance_to_chunk: float) -> void:
+	update_grass_lod_squared(distance_to_chunk * distance_to_chunk)
+
+
+func update_grass_lod_squared(distance_squared_to_chunk: float) -> void:
 	if not grass_ready:
 		return
 	var next_lod := current_lod
 	match current_lod:
 		LOD_NEAR:
-			if distance_to_chunk > _settings.lod_far_to_hidden:
+			if distance_squared_to_chunk > _lod_far_to_hidden_squared:
 				next_lod = LOD_HIDDEN
-			elif distance_to_chunk > _settings.lod_medium_to_far:
+			elif distance_squared_to_chunk > _lod_medium_to_far_squared:
 				next_lod = LOD_FAR
-			elif distance_to_chunk > _settings.lod_near_to_medium:
+			elif distance_squared_to_chunk > _lod_near_to_medium_squared:
 				next_lod = LOD_MEDIUM
 		LOD_MEDIUM:
-			if distance_to_chunk < _settings.lod_medium_to_near:
+			if distance_squared_to_chunk < _lod_medium_to_near_squared:
 				next_lod = LOD_NEAR
-			elif distance_to_chunk > _settings.lod_far_to_hidden:
+			elif distance_squared_to_chunk > _lod_far_to_hidden_squared:
 				next_lod = LOD_HIDDEN
-			elif distance_to_chunk > _settings.lod_medium_to_far:
+			elif distance_squared_to_chunk > _lod_medium_to_far_squared:
 				next_lod = LOD_FAR
 		LOD_FAR:
-			if distance_to_chunk < _settings.lod_medium_to_near:
+			if distance_squared_to_chunk < _lod_medium_to_near_squared:
 				next_lod = LOD_NEAR
-			elif distance_to_chunk < _settings.lod_far_to_medium:
+			elif distance_squared_to_chunk < _lod_far_to_medium_squared:
 				next_lod = LOD_MEDIUM
-			elif distance_to_chunk > _settings.lod_far_to_hidden:
+			elif distance_squared_to_chunk > _lod_far_to_hidden_squared:
 				next_lod = LOD_HIDDEN
 		LOD_HIDDEN:
-			if distance_to_chunk < _settings.lod_medium_to_near:
+			if distance_squared_to_chunk < _lod_medium_to_near_squared:
 				next_lod = LOD_NEAR
-			elif distance_to_chunk < _settings.lod_far_to_medium:
+			elif distance_squared_to_chunk < _lod_far_to_medium_squared:
 				next_lod = LOD_MEDIUM
-			elif distance_to_chunk < _settings.lod_hidden_to_far:
+			elif distance_squared_to_chunk < _lod_hidden_to_far_squared:
 				next_lod = LOD_FAR
 	if next_lod != current_lod:
 		current_lod = next_lod
 		_apply_lod()
 
 
-func world_aabb() -> AABB:
-	return global_transform * AABB(
-		Vector3(0.0, minimum_height, 0.0),
-		Vector3(float(_settings.chunk_size), maximum_height - minimum_height + _settings.grass_height, float(_settings.chunk_size))
-	)
-
-
 func _initial_lod(distance_to_chunk: float) -> int:
-	if distance_to_chunk <= _settings.lod_near_to_medium:
+	return _initial_lod_squared(distance_to_chunk * distance_to_chunk)
+
+
+func _initial_lod_squared(distance_squared_to_chunk: float) -> int:
+	if distance_squared_to_chunk <= _lod_near_to_medium_squared:
 		return LOD_NEAR
-	if distance_to_chunk <= _settings.lod_medium_to_far:
+	if distance_squared_to_chunk <= _lod_medium_to_far_squared:
 		return LOD_MEDIUM
-	if distance_to_chunk <= _settings.lod_far_to_hidden:
+	if distance_squared_to_chunk <= _lod_far_to_hidden_squared:
 		return LOD_FAR
 	return LOD_HIDDEN
 
@@ -212,12 +257,16 @@ func _apply_lod() -> void:
 	if grass_suppressed or current_lod == LOD_HIDDEN:
 		grass_mesh_instance.visible = false
 		return
-	# Shell counts are baked into geometry, and the settings snapshot the worker
-	# jobs read is deliberately read-only, so lowering them for real means
-	# tearing the runtime down -- taking terrain collision with it while the
-	# player is standing on it. Every chunk already caches all three variants,
-	# though, so a quality preference can simply draw a coarser one than the
-	# distance band asked for. Instant, reversible, and it cannot drop the floor.
+	# Shell counts come from the settings snapshot the worker jobs read, which is
+	# deliberately read-only, so lowering them for real means tearing the runtime
+	# down -- taking terrain collision with it while the player is standing on
+	# it. Every chunk already holds all three shell sets, though, so a quality
+	# preference can simply draw a coarser one than the distance band asked for.
+	# Instant, reversible, and it cannot drop the floor.
 	var variant := clampi(current_lod + grass_lod_bias, LOD_NEAR, LOD_FAR)
-	grass_mesh_instance.mesh = grass_meshes[variant]
+	var wanted := grass_multimeshes[variant]
+	# Assigning the same resource again would still re-register the instance base
+	# with the rendering server, and this runs on every LOD tick.
+	if grass_mesh_instance.multimesh != wanted:
+		grass_mesh_instance.multimesh = wanted
 	grass_mesh_instance.visible = true
