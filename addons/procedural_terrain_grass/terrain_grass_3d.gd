@@ -857,6 +857,16 @@ func _configuration_errors() -> PackedStringArray:
 		errors.append("Terrain height color maximum must be greater than its minimum.")
 	if terrain_unload_distance < terrain_load_distance:
 		errors.append("Terrain unload distance must be greater than or equal to load distance.")
+	# Grass has to exist everywhere it can be drawn. A chunk stays loaded out to
+	# terrain_unload_distance and keeps showing grass out to lod_far_to_hidden, so
+	# prefetching any less leaves a band where chunks are visible but were never
+	# eligible for grass -- a permanent chunk-shaped bald patch, with generation
+	# reporting itself idle the whole time. Matching load distance exactly is not
+	# enough either: a chunk sitting on the boundary lands microns outside it.
+	if grass_enabled and grass_prefetch_distance < lod_far_to_hidden:
+		errors.append(
+			"Grass prefetch distance (%.1f) must be at least the grass hide distance (%.1f), or chunks between them show bare terrain."
+			% [grass_prefetch_distance, lod_far_to_hidden])
 	errors.append_array(_lod_threshold_errors())
 	if active_interactor_limit < 1 or active_interactor_limit > MAX_SHADER_INTERACTORS:
 		errors.append("Active interactor limit must be between 1 and the shader maximum of %d." % MAX_SHADER_INTERACTORS)

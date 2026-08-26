@@ -25,6 +25,7 @@ extends SceneTree
 ##   PERF_LABEL=str  printed with the result so a sweep is readable
 ##   PERF_LOD=a,b     grass LOD band distances in metres (near->medium, medium->far)
 ##   PERF_PITCH=deg   camera pitch override, for framing a distant LOD seam
+##   PERF_YAW=deg     camera yaw override, for sweeping the area around spawn
 ##
 ## Run at the project's authored resolution, which is what the RT stack sizes
 ## itself from:
@@ -138,7 +139,8 @@ func _run() -> void:
 		VIEW_POSITION.x,
 		float(terrain.sample_height(Vector2(VIEW_POSITION.x, VIEW_POSITION.z))) + 1.6,
 		VIEW_POSITION.z)
-	player.rotation.y = deg_to_rad(VIEW_YAW_DEGREES)
+	var yaw := OS.get_environment("PERF_YAW")
+	player.rotation.y = deg_to_rad(float(yaw) if yaw.is_valid_float() else VIEW_YAW_DEGREES)
 	var view = player.get_node("ViewRoot")
 	var pitch := OS.get_environment("PERF_PITCH")
 	view.apply_view(deg_to_rad(float(pitch) if pitch.is_valid_float() else VIEW_PITCH_DEGREES))

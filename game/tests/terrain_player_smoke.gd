@@ -78,6 +78,28 @@ func _run() -> void:
 		_check(float(reflector_material.get_shader_parameter(&"reflection_strength")) > 0.0,
 			"reflective test prop has non-zero reflection strength")
 
+	# Every chunk close enough to draw grass has to actually have some. Grass is
+	# queued when a chunk's mask finishes and the chunk is inside
+	# grass_prefetch_distance; a chunk that is loaded but outside it at that
+	# moment keeps its terrain and stays bald, and generation reports itself idle
+	# the whole time, so nothing ever comes back for it. That reads in game as a
+	# chunk-sized patch of bare ground that never fills in.
+	while not terrain.is_generation_idle():
+		await process_frame
+	var bald: PackedStringArray = []
+	for loaded in terrain.get_loaded_chunks():
+		var distance := terrain.distance_to_chunk_aabb(player_xz, loaded.coord)
+		if distance > terrain.lod_far_to_hidden:
+			continue
+		if not loaded.terrain_ready:
+			continue
+		if not loaded.grass_ready:
+			bald.append("%s at %.1f m" % [loaded.coord, distance])
+	_check(bald.is_empty(),
+		"every chunk inside the grass hide distance has grass: %s" % ", ".join(bald))
+	_check(terrain.grass_prefetch_distance >= terrain.lod_far_to_hidden,
+		"grass is prefetched at least as far as it is drawn")
+
 	level.queue_free()
 	player.queue_free()
 	await process_frame

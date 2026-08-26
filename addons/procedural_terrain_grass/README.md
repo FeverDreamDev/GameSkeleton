@@ -160,6 +160,27 @@ already close to free. Off is worth keeping in the enum for a host that wants to
 hide grass for its own reasons, but it is not a performance tier, and an options
 menu is usually better off not offering it.
 
+## Grass prefetch has to cover everything that can be drawn
+
+**Keep `grass_prefetch_distance` at or above `lod_far_to_hidden`.** A chunk's
+grass is queued at one moment — when its occupancy mask finishes — and only if
+the chunk is inside the prefetch radius right then. Nothing reconsiders it later
+on distance alone, so a chunk that was outside the radius at that instant keeps
+its terrain and never grows grass, however close you walk to it afterwards. The
+symptom is a chunk-shaped patch of bare ground that never fills in, with
+`is_generation_idle()` reporting true the whole time.
+
+Setting prefetch equal to `terrain_load_distance` is not enough, and is the easy
+mistake: chunks stay loaded out to `terrain_unload_distance`, so one sitting on
+the load boundary is microns outside the prefetch radius while remaining visible.
+The host project hit exactly this — load 64, prefetch 64, hide 86 — and four
+chunks on the +x/+z side of the player came out bald because their distance
+rounded to 64.006 while their mirror images at 63.994 were fine.
+
+`_configuration_errors()` now reports this, and the manager re-checks eligibility
+on every streaming update so a chunk that misses its first chance is picked up
+later rather than never.
+
 ## LOD bands and distance fog
 
 The LOD distances default to `26 / 52 / 86`, which suit the default

@@ -311,6 +311,13 @@ func _update_streaming_set() -> void:
 	for coord in unload:
 		_unload_chunk(coord)
 
+	# Catch any chunk whose mask finished while it was still outside the prefetch
+	# radius. Without this the only chance a chunk ever gets is the instant its
+	# mask completes; see _queue_grass_if_wanted.
+	for chunk in chunks.values():
+		if is_instance_valid(chunk):
+			_queue_grass_if_wanted(chunk, distance_to_chunk_aabb(target_xz, chunk.coord))
+
 	_resort_queue(_terrain_queue, target_xz)
 	_resort_queue(_grass_queue, target_xz)
 
@@ -571,10 +578,40 @@ func _finish_mask_job(job: MaskJob, chunk) -> void:
 		chunk.occupancy = job.mask
 		chunk.fine_occupancy = job.fine_mask
 		var target_xz := Vector2(target.global_position.x, target.global_position.z)
-		var distance := distance_to_chunk_aabb(target_xz, chunk.coord)
-		if distance <= settings.grass_prefetch_distance:
-			_grass_queue.append({"coord": chunk.coord, "revision": chunk.grass_revision, "distance": distance})
+		_queue_grass_if_wanted(chunk, distance_to_chunk_aabb(target_xz, chunk.coord))
 	_active_mask_job = null
+
+
+## Queues a chunk's grass if it is close enough and is not already queued or
+## being built.
+##
+## This has to be re-checked as the target moves, not decided once. A chunk that
+## finishes its mask while it is still outside the prefetch radius -- which
+## happens routinely at spawn, where the streaming target jumps from the
+## placement anchor to the player -- would otherwise keep its terrain and never
+## grow grass, however close the player later walked to it. The result is a
+## permanent chunk-shaped bald patch, and because generation reports itself idle
+## nothing ever comes back to fix it.
+func _queue_grass_if_wanted(chunk, distance: float) -> void:
+	if not chunk.terrain_ready or chunk.grass_ready:
+		return
+	if distance > settings.grass_prefetch_distance:
+		return
+	for queued: Dictionary in _grass_queue:
+		if queued["coord"] == chunk.coord:
+			return
+	for job in _active_build_jobs:
+		if job.kind == &"grass" and job.coord == chunk.coord:
+			return
+	if _active_incremental_job != null \
+			and _active_incremental_job.kind == &"grass" \
+			and _active_incremental_job.coord == chunk.coord:
+		return
+	_grass_queue.append({
+		"coord": chunk.coord,
+		"revision": chunk.grass_revision,
+		"distance": distance,
+	})
 
 
 func _cell_world_aabb(chunk, cell_index: int) -> AABB:

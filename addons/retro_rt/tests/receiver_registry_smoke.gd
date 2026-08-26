@@ -40,11 +40,9 @@ func _run() -> void:
 	if spawn != &"default":
 		_finish()
 		return
-	# The level now carries a day/night cycle whose cloud shadow casters are
-	# traversable RT geometry. Moving traversable geometry legitimately dirties
-	# the TLAS, which would mask the receiver-registry regressions this probe
-	# exists to catch. Freeze the sky for the same reason the player is frozen
-	# below: everything except the receiver stream has to hold still.
+	# Freeze the sky for the same reason the player is frozen below: everything
+	# except the receiver stream has to hold still, or a legitimate TLAS revision
+	# masks the receiver-registry regressions this probe exists to catch.
 	var day_night := level.get_day_night()
 	day_night.set_time_running(false)
 	day_night.set_wind_speed(0.0)
@@ -79,6 +77,20 @@ func _run() -> void:
 
 	# Exercise a true grow, then tombstone reuse, before the terrain stream. This
 	# covers hardware SSBO/GPU-slot growth as well as software clone registration.
+	#
+	# Let generation settle first. The slot assertions below are exact counts over
+	# a fifteen-frame window, so a terrain chunk publishing inside that window
+	# reads as the probe having grown an extra slot. That made this test sensitive
+	# to anything that changes generation timing -- widening grass prefetch was
+	# enough to trip it -- which is a property of the test, not of the registry it
+	# is checking.
+	var settle := 0
+	while settle < 2000 and not level.get_terrain().is_generation_idle():
+		settle += 1
+		await process_frame
+	_check(level.get_terrain().is_generation_idle(),
+		"terrain generation settles before the slot probe")
+
 	var initial_profile := manager.get_profile_snapshot()
 	var initial_slots := int(initial_profile.get("stable_instance_slots", -1))
 	var initial_tlas_revision := int(initial_profile.get("tlas_revision", -1))
