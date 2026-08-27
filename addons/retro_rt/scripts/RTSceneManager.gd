@@ -740,6 +740,10 @@ func _process(_delta: float) -> void:
 			return
 		_software_tracer.reassert_overrides()
 	if _post_stack:
+		# No-op unless the flag actually changed, so this is a bool compare per
+		# frame. Armed here rather than at the profile read because the server
+		# timers need to have been running for the frames being measured.
+		_post_stack.set_pass_profiling_enabled(profiling_enabled)
 		var post_error := _post_stack.process_frame()
 		if not post_error.is_empty():
 			_fail(post_error)

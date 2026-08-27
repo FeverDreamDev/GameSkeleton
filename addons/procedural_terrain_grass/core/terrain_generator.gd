@@ -41,11 +41,25 @@ static func grass_shell_layer_sets(settings: Dictionary) -> Array[PackedFloat32A
 	]
 
 
+## Shell heights for one LOD variant, emitted canopy-first.
+##
+## The order is the draw order: MultiMesh instances rasterize in buffer order,
+## and Godot's opaque sort works per GeometryInstance3D, so it cannot reorder
+## shells inside one chunk. Emitting the canopy first puts the shells nearest a
+## camera above the field in front, which is what lets the depth prepass reject
+## the shells underneath before their fragment shader runs. Ground-first is the
+## same picture drawn in the worst possible order -- every shell fully shaded,
+## nothing ever occluded.
+##
+## The set of heights is unchanged, so every shell still lands at exactly the
+## height it did before; only the sequence differs. Two shells never share a
+## depth, so there is no ordering ambiguity to resolve.
 static func _make_shell_layers(count: int, maximum: float) -> PackedFloat32Array:
 	var layers := PackedFloat32Array()
 	layers.resize(count)
+	var last := maxi(count - 1, 1)
 	for index in range(count):
-		layers[index] = maximum * float(index) / float(maxi(count - 1, 1))
+		layers[index] = maximum * float(last - index) / float(last)
 	return layers
 
 

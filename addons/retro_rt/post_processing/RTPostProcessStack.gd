@@ -29,6 +29,9 @@ var _resolve_viewport: SubViewport
 # Allocated only while the render size differs from the output size. Native is a
 # true FSR bypass and owns no upscale buffer at all.
 var _easu_viewport: SubViewport
+## Whether the rendering server's per-viewport timers are armed. See
+## [method set_pass_profiling_enabled].
+var _pass_profiling_enabled := false
 var _edge_material: ShaderMaterial
 var _blend_material: ShaderMaterial
 var _resolve_material: ShaderMaterial
@@ -434,6 +437,7 @@ func get_profile_snapshot() -> Dictionary:
 		_render_size.x * _render_size.y * bytes_per_target_pixel * 4)
 	if _easu_viewport != null:
 		persistent_bytes += _output_size.x * _output_size.y * bytes_per_target_pixel
+	var pass_timings := _measured_pass_timings()
 	var sharpen_mode := _sharpen_mode() if _active else SHARPEN_NONE
 	var sharpen_name: StringName = &"none"
 	if sharpen_mode == SHARPEN_CAS:
@@ -441,6 +445,7 @@ func get_profile_snapshot() -> Dictionary:
 	elif sharpen_mode == SHARPEN_RCAS:
 		sharpen_name = &"rcas"
 	return {
+		"post_pass_gpu_ms": pass_timings,
 		"post_anti_aliasing_enabled": bool(_settings.get("post_anti_aliasing_enabled", true)),
 		"post_smaa_quality": int(_settings.get("post_smaa_quality", 2)),
 		"post_smaa_quality_name": RTVisualContract.quality_name(int(_settings.get("post_smaa_quality", 2))),
@@ -518,6 +523,57 @@ func get_profile_snapshot() -> Dictionary:
 		"post_cas_enabled": _active and _cas_enabled(),
 		"post_cas_sharpness": _get_cas_sharpness(_settings),
 	}
+
+
+## Turns on the rendering server's own per-viewport GPU/CPU timers for every pass
+## this stack owns, plus the root that presents them.
+##
+## The SMAA and present passes are 2D canvas draws inside SubViewports, so a
+## CompositorEffect cannot bracket them with [method RenderingDevice.capture_timestamp]
+## the way the ray dispatch is bracketed -- there is no render-thread hook to hang
+## the markers on. This is the only mechanism that can attribute their cost, and
+## it is the same one the editor's own frame profiler uses.
+##
+## Measurement is not free, so this follows [code]profiling_enabled[/code] rather
+## than being left on.
+func set_pass_profiling_enabled(enabled: bool) -> void:
+	if _pass_profiling_enabled == enabled:
+		return
+	_pass_profiling_enabled = enabled
+	for entry in _profiled_viewports():
+		var viewport: Viewport = entry[1]
+		if viewport != null and viewport.get_viewport_rid().is_valid():
+			RenderingServer.viewport_set_measure_render_time(
+				viewport.get_viewport_rid(), enabled)
+
+
+## Named GPU milliseconds per owned pass, empty while profiling is off.
+func _measured_pass_timings() -> Dictionary:
+	if not _pass_profiling_enabled:
+		return {}
+	var timings: Dictionary = {}
+	for entry in _profiled_viewports():
+		var viewport: Viewport = entry[1]
+		if viewport == null or not viewport.get_viewport_rid().is_valid():
+			continue
+		timings[entry[0]] = (
+			RenderingServer.viewport_get_measured_render_time_gpu(viewport.get_viewport_rid()))
+	return timings
+
+
+## Label/viewport pairs in execution order. The root is last because it presents
+## what the others produced.
+func _profiled_viewports() -> Array:
+	var entries: Array = [
+		[&"scene", _scene_viewport],
+		[&"smaa_edges", _edge_viewport],
+		[&"smaa_weights", _blend_viewport],
+		[&"smaa_resolve", _resolve_viewport],
+	]
+	if _easu_viewport != null:
+		entries.append([&"fsr_easu", _easu_viewport])
+	entries.append([&"root_present", _root_viewport])
+	return entries
 
 
 func get_debug_stage_images() -> Dictionary:

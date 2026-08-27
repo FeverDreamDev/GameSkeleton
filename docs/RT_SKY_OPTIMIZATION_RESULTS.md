@@ -283,3 +283,254 @@ Reproduce the main comparison with:
 ```bash
 PERF_CLOCK=1 PERF_PROFILE=1 PERF_LABEL=after godot --path . --script res://game/tests/perf_probe.gd
 ```
+
+---
+
+# GPU Pass — Grass, Retro RT, SMAA, Sky
+
+The CPU pass above removed redundant main-thread work but did not move frame
+time, because the frame is GPU-bound. This pass targets the GPU side, at native
+quality, without disturbing the resolution-scaling presets.
+
+**Result: median frame 5.498 ms → 5.025 ms (−8.6%), 181.9 → 199.0 FPS.** Every
+shipped change is verified at zero differing pixels.
+
+## Three measurement faults found first
+
+None of these are optimizations. All three had to be fixed before any number in
+this section could be trusted, and two of them silently understate cost.
+
+**1. The benchmark was vsync-capped.** The project sets no vsync mode, so
+Godot's default (enabled) applied, and on a 240 Hz panel every frame landed on a
+4.167 ms boundary. With everything switched off — no grass, no sky, no SMAA, no
+RT — the frame still measured 4.164 ms while total measured GPU work was
+1.620 ms. **Nothing below 4.167 ms was measurable at all**, so any optimization
+reaching that floor would have read as "no further change". Grass measured
+1.92 ms capped and **3.154 ms uncapped**. `perf_probe.gd` now disables vsync
+itself rather than relying on a flag being remembered.
+
+**2. `PERF_RT=0` also re-enabled two shadow-map cascades.** Both the sun and the
+moon are authored `shadow_enabled = true`, and Retro RT suppresses them while it
+runs; stopping RT restores them. The old "RT costs 1.67 ms" was really
+(RT stack) minus (two 4-split directional cascades). Those cascades measure
+0.405 ms on their own. `PERF_NATIVE_SHADOWS=0` now forces them off so both
+halves of the comparison match.
+
+**3. `PERF_SMAA=0` left the resolve pass running**, by explicit design, so the
+earlier 0.47 ms was the two preprocessing passes only.
+
+`RenderingServer.viewport_set_measure_render_time` was unused in the project. It
+is now wired into the post stack behind `profiling_enabled`, which is what
+attributes the SMAA and present passes — they are 2D canvas draws with no
+render-thread hook, so `capture_timestamp` cannot bracket them.
+
+## Where the frame actually goes
+
+Vsync off, native shadows off, base 5.560 ms. This replaces the earlier table,
+which was measured through the cap.
+
+| Subsystem | Cost | Share |
+|---|---|---|
+| **Grass** | **3.154 ms** | **57%** |
+| Retro RT (gross) | 1.576 ms | 28% |
+| SMAA (all three passes) | 0.553 ms | 10% |
+| Sky | 0.084 ms | 1.5% |
+
+Per-viewport GPU time, base build:
+
+```text
+scene 4.306   smaa_edges 0.135   smaa_weights 0.188   smaa_resolve 0.235   root_present 0.117
+```
+
+**The scene render is ~80% of the frame and the entire post chain is 0.674 ms.**
+That killed the bandwidth hypothesis this pass started with: the four full-res
+RGBA16F targets were estimated at 0.6–1.1 ms of traffic and are not close to it.
+
+## Changes
+
+All three are grass, all bit-exact, all verified at 0/3686400 differing pixels
+against a same-build control.
+
+**1. Canopy-first shell order** (`core/terrain_generator.gd`) — **−0.330 ms.**
+Shells were emitted ground-first, and MultiMesh instances rasterize in buffer
+order while Godot's opaque sort works per `GeometryInstance3D` — so it cannot
+reorder shells inside a chunk. With the camera above the field that drew them
+far-to-near: the worst possible order, every shell fully shaded, nothing ever
+occluded. Emitting the canopy first lets the depth prepass reject the shells
+underneath. The set of heights is unchanged; only the sequence differs, and two
+shells never share a depth.
+
+**2. Cell reuse across the warp refinement** (`shaders/grass_shell.gdshader`) —
+**−0.125 ms.** The wind/interaction warp is clamped to 0.4 of a cell, so most
+fragments land back in the cell they started from. The second `hash22` and the
+second `wind_for` are pure functions of that cell, so when it has not changed
+they recompute bit-identical numbers — three sines to arrive where we already
+were. Now recomputed only when the warp genuinely crosses an edge, which is the
+case the refinement exists to serve.
+
+**3. Shared logarithm for the two blade tapers** — **−0.039 ms.** `width_taper`
+and `length_taper` are the same base raised to different exponents, and `pow` is
+`exp2(y * log2(x))`, so the logarithm is taken once instead of twice.
+
+## Before and after
+
+Native, vsync off, native shadows off, 1200 frames after 300 warm-up, median of
+3, baseline re-run back-to-back with the final build.
+
+| | Before | After | Change |
+|---|---|---|---|
+| Median | 5.498 ms (181.9 FPS) | **5.025 ms (199.0 FPS)** | **−8.6%, +17.1 FPS** |
+| p95 | 5.937 ms | 5.424 ms | −8.6% |
+| p99 | 6.009 ms | 5.583 ms | −7.1% |
+| Scene pass GPU | 4.305 ms | 3.886 ms | −9.7% |
+
+Run spread was ~0.05 ms per set and the two sets do not overlap.
+
+### Resolution-scaling presets still work, and benefit
+
+Required, since the presets must remain available and composite a cheaper base.
+
+| Preset | Render size | Before | After | Change |
+|---|---|---|---|---|
+| QUALITY (0.85) | 2176×1224 | 4.550 ms | 4.265 ms | −6.3% |
+| BALANCED (0.75) | 1920×1080 | 3.844 ms | 3.612 ms | −6.0% |
+
+Both engage at the correct internal size with the FSR target allocated, and no
+contract failure is raised.
+
+## Rejected, with the measurement that rejected it
+
+- **Conservative early silhouette rejection.** Bounding the blade ellipse before
+  the two `pow`s, the rotation and the `fwidth` is sound in principle — but the
+  `fwidth`-driven edge band widens the acceptance region view-dependently and
+  without bound, which is the minification behaviour that keeps distant grass
+  from aliasing. At a 1.5× radius margin it cut visible blades: **6.59% of pixels
+  differing, max delta 243/255, for 0.028 ms.** No margin is both tight enough to
+  pay and loose enough to be safe.
+- **8-bit SMAA edge and blend-weight targets.** The reference SMAA formats, and
+  three of the four offscreen targets hold LDR data. Measured **slower**
+  (5.066 → 5.125 ms) *and* 0.416% of pixels differing at up to 5/255. These
+  passes are not bandwidth-bound at this resolution.
+- **Disabling the depth prepass.** 5.105 → **9.362 ms**. Early-Z rejection in
+  the colour pass is doing enormous work; the prepass stays.
+- **The per-vertex colour noise.** Four sines per vertex across ~313k vertex
+  invocations, and stubbing it changed nothing measurable (4.041 vs 4.027 ms).
+  The shader is fragment-bound, not vertex-bound.
+
+## Diagnostics, for whoever optimizes this next
+
+Throwaway builds that change the image, measured only to locate cost. They are
+the map of what is left in the grass fragment shader:
+
+| Stub | Saving |
+|---|---|
+| Both silhouette `pow` calls removed | 0.500 ms |
+| `fwidth` in the edge band removed | 0.347 ms |
+| `hash22` sine removed (4 per fragment) | 0.261 ms |
+| `wind_for` stubbed (2 sines, kills the warp) | 0.219 ms |
+
+The remaining cost is concentrated in the blade silhouette test, which every
+covered fragment of every shell runs in the prepass. It is not reachable without
+either changing blade shape or finding a rejection that survives the `fwidth`
+band.
+
+## Also worth knowing
+
+**Night and sunset captures cannot verify anything.** `_star_seed` is drawn from
+a per-run RNG (`day_night_cycle_3d.gd:861`), so two runs of the *same build*
+differ by **15.3% of pixels at night** and 0.46% at sunset — larger than the
+differences under test. Midday and horizon-heavy views are reproducible and both
+came back at exactly 0. Pinning the seed under `PERF_SHOT`, the way wind and
+twinkle already are, would make the night path testable.
+
+## Verification
+
+- Midday and horizon-heavy captures: **0/3686400 pixels differ**, each change
+  also verified individually at 0 against a same-build control
+- `day_night_smoke.gd` PASS, `receiver_registry_smoke.gd` PASS,
+  `phase2_smoke.gd` OK
+- `phase2_bench.gd`: shells 16/10/4, 1089 vertices and 6144 indices per chunk,
+  mask hash 2109454005 — geometry unchanged, only draw sequence
+- CPU non-regression: manager `_process` 192 µs, `light_influence_updates` 0
+  with a moving sun, receiver-list rebuilds 43 across 1029 polled frames
+
+New probe toggles: `PERF_NATIVE_SHADOWS`, `PERF_RT_QUALITY`, `PERF_VSYNC`,
+`PERF_GROUND`, plus per-pass GPU timing under `PERF_PROFILE=1`.
+
+```bash
+PERF_NATIVE_SHADOWS=0 PERF_CLOCK=1 PERF_PROFILE=1 godot --path . --script res://game/tests/perf_probe.gd
+```
+
+---
+
+## Follow-up: the blade-cell lattice artifact
+
+Reported from a top-down view — a bright green grid boxing in each blade group,
+crawling as the camera moved. **Pre-existing, not introduced by the work above:**
+a straight-down A/B of the optimized build against the pre-optimization build
+came back at 0/3686400 pixels differing. Worth noting that none of the earlier
+captures covered a top-down camera, which is why it took a bug report rather than
+the pixel suite to surface it.
+
+### Cause
+
+`grass_shell.gdshader`, the blade silhouette test:
+
+```glsl
+float edge_width = max(fwidth(ellipse_distance) * 1.25, 0.025);
+float edge_coverage = 1.0 - smoothstep(1.0 - edge_width, 1.0 + edge_width, ellipse_distance);
+if (edge_coverage < 0.42) { discard; }
+```
+
+`ellipse_distance` is assembled entirely from per-cell values — the cell hash,
+the stalk centre, the blade orientation, and both blade axes. All of them are
+constant inside a 6.25 cm blade cell and **jump at its border**.
+
+`fwidth()` reports how much a value changes across a 2x2 pixel quad. On a quad
+straddling a cell border it samples that jump rather than a gradient and returns
+an enormous number. `edge_width` inflates far past the blade, and
+`edge_coverage` collapses toward **0.5 everywhere along the border** — above the
+0.42 threshold. Fragments therefore survive the discard where no blade exists,
+shaded at `mix(0.88, 1.0, ~0.5)` ~= 94% brightness, and the cell lattice draws
+itself across the field. It is worst looking down (most cell borders per pixel)
+and crawls in motion because the lattice is world-anchored while the pixel quads
+are not.
+
+### Fix
+
+The band still wants to be one pixel wide in the ellipse's own space, but the
+footprint is now taken from `base_xz` — the fragment's world position, which is
+continuous across cell borders — and carried into ellipse space analytically
+(`d(dot(e,e)) = 2 * |e| * d|e|`, with the narrower axis bounding `d|e|`). The
+discontinuity is gone by construction rather than clamped after the fact.
+
+A one-token alternative (`clamp(fwidth(...), 0.025, 1.0)`) also removes most of
+the lattice and is noted here in case the analytic version ever needs backing
+out, but it caps a symptom and leaves residual grid at extreme angles.
+
+### Result
+
+**It is also a performance win**, because the runaway band had been keeping dead
+fragments alive through the discard and shading them:
+
+| | Before fix | After fix |
+|---|---|---|
+| Median | 5.025 ms (199.0 FPS) | **4.789 ms (208.8 FPS)** |
+| p95 | 5.424 ms | 5.085 ms |
+
+Verified clean at -88, -40 and -9 degrees pitch. The image change is large
+(40.6% of pixels) because the coverage test changes for every fragment near a
+cell border — that is the artifact being removed, and it is the one change in
+this document that is *intended* to alter the picture.
+
+`phase2_smoke.gd` OK, `receiver_registry_smoke.gd` PASS.
+
+## GPU pass, final totals
+
+Including the lattice fix, against the pre-GPU-pass baseline:
+
+| Configuration | Before | After | Change |
+|---|---|---|---|
+| Native | 5.498 ms (181.9 FPS) | **4.789 ms (208.8 FPS)** | **−12.9%, +26.9 FPS** |
+| QUALITY (0.85) | 4.550 ms (219.8 FPS) | 4.018 ms (248.9 FPS) | −11.7% |
+| BALANCED (0.75) | 3.844 ms (260.1 FPS) | 3.367 ms (297.0 FPS) | −12.4% |

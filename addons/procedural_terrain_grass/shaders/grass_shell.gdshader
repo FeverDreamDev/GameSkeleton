@@ -175,9 +175,18 @@ void fragment() {
 	// without deriving wind identity from an already wind-displaced coordinate.
 	vec2 source_coordinate = base_xz - combined_offset;
 	vec2 source_cell = floor(source_coordinate * u_density);
-	vec2 cell_random = hash22(source_cell);
+	// The warp is clamped to 0.4 of a cell just above, so most fragments land
+	// back in the cell they started from. Both values below are pure functions of
+	// the cell, so when the cell has not changed they reproduce exactly what is
+	// already in hand -- three sines spent to arrive at bit-identical numbers.
+	// Recomputed only when the warp genuinely crossed an edge, which is the case
+	// this refinement exists to serve.
+	vec2 cell_random = provisional_random;
+	if (any(notEqual(source_cell, provisional_cell))) {
+		cell_random = hash22(source_cell);
+		wind_offset = wind_for(cell_random, bend);
+	}
 	vec2 stalk_center = stalk_center_for(source_cell, cell_random);
-	wind_offset = wind_for(cell_random, bend);
 	combined_offset = wind_offset + push_offset;
 	combined_length_squared = dot(combined_offset, combined_offset);
 	if (combined_length_squared > maximum_offset_squared) {
@@ -199,13 +208,36 @@ void fragment() {
 		stalk_delta.x * sine_angle + stalk_delta.y * cosine_angle
 	);
 	float width_variation = mix(0.88, 1.12, cell_random.x);
-	float width_taper = pow(shape_height, 0.42);
-	float length_taper = pow(shape_height, 0.75);
+	// Both tapers are the same base raised to different exponents, and pow is
+	// exp2(y * log2(x)) -- so the logarithm is shared rather than taken twice.
+	// Three transcendentals instead of four, for the same two numbers: this is
+	// the most expensive block in the shader and the prepass runs it once per
+	// shell. shape_height is zero on the ground shell, where log2 gives -inf and
+	// exp2 brings it back to exactly the 0.0 that pow returns.
+	float taper_log = log2(shape_height);
+	float width_taper = exp2(0.42 * taper_log);
+	float length_taper = exp2(0.75 * taper_log);
 	float blade_width = mix(0.46, 0.018, width_taper) * width_variation;
 	float blade_length = mix(0.60, 0.18, length_taper) * mix(0.9, 1.1, cell_random.y);
 	vec2 ellipse = blade_space / vec2(blade_width, blade_length);
 	float ellipse_distance = dot(ellipse, ellipse);
-	float edge_width = max(fwidth(ellipse_distance) * 1.25, 0.025);
+	// The softening band wants to be one pixel wide measured in this ellipse's own
+	// space. It cannot be read from fwidth(ellipse_distance): every term feeding
+	// that value -- the cell hash, the stalk centre, the orientation, both axes --
+	// is constant inside a cell and jumps at its border. A quad straddling a
+	// border therefore samples the jump rather than a gradient and returns
+	// something enormous, the band grows far wider than the blade, and coverage
+	// flattens towards 0.5 all along the border. That clears the threshold below,
+	// so fragments survive where no blade exists and the 6.25 cm cell lattice
+	// draws itself across the field as a bright grid that crawls when the camera
+	// moves.
+	//
+	// base_xz is the fragment's world position, which is continuous across those
+	// borders, so the footprint comes from there and is carried into ellipse space
+	// by hand: d(dot(e, e)) = 2 * |e| * d|e|, and the narrower axis bounds d|e|.
+	float footprint = length(fwidth(base_xz)) * u_density;
+	float ellipse_footprint = footprint / max(min(blade_width, blade_length), 0.001);
+	float edge_width = max(2.0 * sqrt(ellipse_distance) * ellipse_footprint * 1.25, 0.025);
 	float edge_coverage = 1.0 - smoothstep(1.0 - edge_width, 1.0 + edge_width, ellipse_distance);
 	if (edge_coverage < 0.42) {
 		discard;

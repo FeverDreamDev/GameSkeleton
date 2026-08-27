@@ -23,8 +23,15 @@ extends SceneTree
 ##   PERF_GRADE=0    disable the RetroGrade present pass
 ##   PERF_RT=0       stop ray tracing entirely
 ##   PERF_GROUND=0   keep RT but disable the analytic reflection-ground trace
+##   PERF_NATIVE_SHADOWS=0
+##                   force sun/moon shadow maps off; REQUIRED in both halves of
+##                   an RT on/off comparison, since stopping RT restores them
+##   PERF_RT_QUALITY=n
+##                   RT quality preset: 0 native, 1 quality, 2 balanced, 3 performance
 ##   PERF_BACKEND=software
 ##                   force the Compatibility tracer instead of hardware RT
+##   PERF_VSYNC=1    restore vsync; OFF by default because the display cap
+##                   otherwise floors every measurement at the refresh interval
 ##   PERF_CLOCK=1    let the day/night clock run; OFF BY DEFAULT, and required
 ##                   for any measurement involving a moving sun
 ##   PERF_TIME=f     time of day, default 10.5
@@ -73,6 +80,14 @@ func _wait_for(predicate: Callable, frames: int) -> bool:
 
 
 func _run() -> void:
+	# Without this the probe measures the display, not the renderer. The project
+	# leaves vsync at its default (enabled), so on a 240 Hz panel every frame
+	# lands on a 4.167 ms boundary and nothing below that is measurable -- an
+	# optimisation that took the frame from 4.3 ms to 3.0 ms would read as no
+	# change at all. Timing runs need the cap off; PERF_VSYNC=1 restores it for
+	# anyone deliberately measuring presentation behaviour.
+	if OS.get_environment("PERF_VSYNC") != "1":
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	# Keep the probe self-contained and writable in headless/sandboxed runners.
 	# Save persistence is unrelated to the frame being measured.
 	UISave.directory = TEST_SAVE_DIRECTORY
@@ -261,6 +276,19 @@ func _apply_toggles(terrain, day_night) -> void:
 	# themselves -- a reflection ray that misses then resolves to the environment.
 	if not _env_flag("PERF_GROUND"):
 		_shell.rt_manager.ground_march_steps = 0
+	# The scaled presets composite the same scene at fewer pixels, so a native
+	# optimisation has to be shown still working -- and still paying off -- there.
+	var quality_preset := OS.get_environment("PERF_RT_QUALITY")
+	if quality_preset.is_valid_int():
+		_shell.rt_manager.set_rt_quality(int(quality_preset))
+	# Retro RT suppresses every native shadow map while it runs, so stopping RT
+	# also RESTORES two 4-split directional cascades over the whole scene. An
+	# RT on/off comparison therefore measures (RT stack) minus (the shadow maps RT
+	# was suppressing) and understates RT. Forcing shadows off in BOTH halves of
+	# the comparison is what makes the delta mean "the cost of the RT stack".
+	if not _env_flag("PERF_NATIVE_SHADOWS"):
+		for light in day_night.find_children("*", "DirectionalLight3D", true, false):
+			(light as DirectionalLight3D).shadow_enabled = false
 
 
 func _percentile(sorted: PackedFloat64Array, fraction: float) -> float:
@@ -282,7 +310,7 @@ func _report(terrain) -> void:
 
 	var toggles: PackedStringArray = []
 	for name in [
-			"PERF_GRASS", "PERF_SKY", "PERF_CLOUDS", "PERF_STARS", "PERF_GROUND",
+			"PERF_GRASS", "PERF_SKY", "PERF_CLOUDS", "PERF_STARS", "PERF_GROUND", "PERF_NATIVE_SHADOWS",
 			"PERF_SMAA", "PERF_GRADE", "PERF_RT"]:
 		if not _env_flag(name):
 			toggles.append(name.trim_prefix("PERF_").to_lower() + "=off")
@@ -334,6 +362,18 @@ func _report(terrain) -> void:
 			int(profile.get("managed_instances", -1)),
 			int(profile.get("receiver_only_instances", -1)),
 			float(profile.get("dispatch_gpu_seconds", 0.0)) * 1000.0])
+		# Per-viewport GPU time, which is the only way to attribute the SMAA and
+		# present passes -- they are 2D canvas draws with no render-thread hook.
+		var pass_gpu: Dictionary = profile.get("post_pass_gpu_ms", {})
+		if not pass_gpu.is_empty():
+			var parts: PackedStringArray = []
+			var total := 0.0
+			for name in pass_gpu:
+				var milliseconds := float(pass_gpu[name])
+				total += milliseconds
+				parts.append("%s %.3f" % [name, milliseconds])
+			parts.append("SUM %.3f" % total)
+			print("  pass gpu ms: %s" % ", ".join(parts))
 
 
 ## Amplified difference image, written next to the capture whenever PERF_REF is
