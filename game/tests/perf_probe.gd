@@ -28,6 +28,18 @@ extends SceneTree
 ##   PERF_NATIVE_SHADOWS=0
 ##                   force sun/moon shadow maps off; REQUIRED in both halves of
 ##                   an RT on/off comparison, since stopping RT restores them
+##   PERF_OCCLUSION=1 attach a terrain occluder per chunk and enable occlusion
+##                   culling. MEASUREMENT ONLY -- evaluated and rejected: it culls
+##                   0-1.75% of primitives (terrain meshes only, never grass) and
+##                   costs more on the main thread than it saves on the GPU.
+##                   Retained so the result is reproducible if terrain relief,
+##                   chunk size or draw distance ever change.
+##   PERF_VRS=n      uniform variable-rate-shading density over the scene pass.
+##                   MEASUREMENT ONLY -- evaluated and rejected: Godot 4.7 accepts
+##                   the texture and vrs_mode silently but applies no rate change
+##                   in this Forward+ SubViewport setup, at any density. Retained
+##                   because it is the check that would notice a future engine
+##                   version wiring it up.
 ##   PERF_RT_QUALITY=n
 ##                   RT quality preset: 0 native, 1 quality, 2 balanced, 3 performance
 ##   PERF_BACKEND=software
@@ -195,6 +207,22 @@ func _run() -> void:
 	for i in 240:
 		await process_frame
 
+	# SPIKE, measurement only: attach a terrain occluder per loaded chunk and turn
+	# the rasterizer's occlusion culling on. Deliberately crude -- full-resolution,
+	# main thread, attached once after streaming settles rather than wired into the
+	# streaming lifecycle. The only question it answers is whether terrain relief
+	# at this chunk size hides whole instances at all; if it does not, none of the
+	# real integration is worth building.
+	if OS.get_environment("PERF_OCCLUSION") == "1":
+		_attach_terrain_occluders(terrain)
+	# SPIKE, measurement only: uniform variable rate shading over the whole scene
+	# pass. A uniform rate is deliberate -- before building any mask it has to be
+	# established that VRS is applied at all on this driver and what the ceiling
+	# is. PERF_VRS carries the density value written to every texel.
+	var vrs_density := OS.get_environment("PERF_VRS")
+	if vrs_density.is_valid_int():
+		_apply_uniform_vrs(int(vrs_density))
+
 	var warmup := _env_int("PERF_WARMUP", 300)
 	for i in warmup:
 		await process_frame
@@ -211,6 +239,95 @@ func _run() -> void:
 	_report(terrain)
 	await _capture()
 	quit(0)
+
+
+## Applies a uniform variable-rate-shading density over the scene pass.
+##
+## The density texture is one texel per 16x16 block of the render target, which is
+## the granularity the hardware works at, and the red channel selects the rate.
+## Filling it uniformly answers the only question worth asking first: whether VRS
+## reaches this driver at all, and what a given rate is worth before any mask is
+## built to restrict it. A silently wrong texture size or channel reads as "no
+## gain", which is indistinguishable from the technique not helping -- so the
+## resolved size is printed rather than assumed.
+func _apply_uniform_vrs(density: int) -> void:
+	var scene_viewport: SubViewport = _shell.rt_manager.get_scene_viewport()
+	if scene_viewport == null:
+		printerr("perf_probe: no scene viewport; VRS spike skipped")
+		return
+	if density <= 0:
+		scene_viewport.vrs_mode = Viewport.VRS_DISABLED
+		print("perf_probe: VRS disabled")
+		return
+	var render_size: Vector2i = scene_viewport.size
+	var vrs_size := Vector2i(
+		maxi(1, int(ceil(float(render_size.x) / 16.0))),
+		maxi(1, int(ceil(float(render_size.y) / 16.0))))
+	var image := Image.create(vrs_size.x, vrs_size.y, false, Image.FORMAT_R8)
+	image.fill(Color8(density, 0, 0))
+	scene_viewport.vrs_texture = ImageTexture.create_from_image(image)
+	scene_viewport.vrs_mode = Viewport.VRS_TEXTURE
+	scene_viewport.vrs_update_mode = Viewport.VRS_UPDATE_ONCE
+	print("perf_probe: VRS density %d over %s texels for a %s render target"
+		% [density, vrs_size, render_size])
+
+
+## Builds one ArrayOccluder3D per loaded chunk from the height grid the chunk
+## already holds for its collider, and enables occlusion culling on the viewport
+## that actually renders 3D.
+##
+## Every chunk keeps `heights` as a (resolution + 1) squared grid in chunk-local
+## space, the same data the HeightMapShape3D is built from, so the occluder needs
+## no new sampling and no bake step -- it is a direct re-expression of geometry
+## already in memory.
+func _attach_terrain_occluders(terrain) -> void:
+	var scene_viewport: SubViewport = _shell.rt_manager.get_scene_viewport()
+	if scene_viewport == null:
+		printerr("perf_probe: no scene viewport; occlusion spike skipped")
+		return
+	# Must be the scene SubViewport. The root renders no 3D while RT is active, so
+	# setting this there or as a project setting does nothing at all.
+	scene_viewport.use_occlusion_culling = true
+
+	var manager = terrain.get("_terrain_manager")
+	if manager == null:
+		printerr("perf_probe: no terrain manager; occlusion spike skipped")
+		return
+	var settings = manager.settings
+	var side: int = int(settings.chunk_resolution) + 1
+	var spacing: float = settings.cell_spacing()
+
+	# A regular grid, identical in layout to the terrain surface itself.
+	var indices := PackedInt32Array()
+	for z in side - 1:
+		for x in side - 1:
+			var origin := z * side + x
+			indices.append_array([
+				origin, origin + side, origin + 1,
+				origin + 1, origin + side, origin + side + 1])
+
+	var attached := 0
+	for coord in manager.chunks:
+		var chunk = manager.chunks[coord]
+		var heights: PackedFloat32Array = chunk.heights
+		if heights.size() != side * side:
+			continue
+		var vertices := PackedVector3Array()
+		vertices.resize(heights.size())
+		for z in side:
+			for x in side:
+				var index := z * side + x
+				vertices[index] = Vector3(
+					float(x) * spacing, heights[index], float(z) * spacing)
+		var occluder := ArrayOccluder3D.new()
+		occluder.set_arrays(vertices, indices)
+		var instance := OccluderInstance3D.new()
+		instance.name = "__PerfOccluder"
+		instance.occluder = occluder
+		chunk.add_child(instance)
+		attached += 1
+	print("perf_probe: occlusion spike attached %d chunk occluders (%d tris each)"
+		% [attached, indices.size() / 3])
 
 
 ## Optional image check. PERF_SHOT writes the parked viewpoint to a PNG; adding
@@ -356,6 +473,23 @@ func _report(terrain) -> void:
 		drawn_shells += instance.multimesh.instance_count
 	print("  grass chunks %d (%d drawing, %d shell instances)" % [
 		grass_instances.size(), visible_grass, drawn_shells])
+	# What the renderer actually submitted, as opposed to what the scene tree
+	# holds. The counts above are nodes; these are draws, and they are the only
+	# way to see a culling change -- an object the frustum or an occluder rejected
+	# still exists as a visible node.
+	#
+	# Read from the scene SubViewport, never the root: the root renders no 3D
+	# while RT is active, so asking it reports zero objects and looks like a
+	# spectacular culling win.
+	var scene_viewport := manager.get_scene_viewport()
+	if scene_viewport != null:
+		print("  drawn: %d objects, %d primitives, %d draw calls" % [
+			scene_viewport.get_render_info(
+				Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_OBJECTS_IN_FRAME),
+			scene_viewport.get_render_info(
+				Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME),
+			scene_viewport.get_render_info(
+				Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)])
 
 	if manager.profiling_enabled:
 		var profile: Dictionary = manager.get_profile_snapshot()

@@ -841,3 +841,137 @@ the sine hash). There is no further output-identical headroom in this shader tha
 measurement has been able to find. Anything beyond this point is a deliberate
 quality decision — fewer shells, a coarser blade model, or a temporal technique —
 not an optimization.
+
+---
+
+## Occlusion culling and VRS — both evaluated, both rejected
+
+The last two techniques that fit this architecture: non-temporal, exposed by
+Godot, compatible with the visual contract. Both were implemented as spikes,
+measured, and rejected. **Neither is viable here**, for unrelated reasons.
+
+### What was kept: the render-target seam and a real culling metric
+
+Two things came out of this that are worth keeping regardless.
+
+**The scene viewport is now reachable.** All 3D renders into a private
+`SubViewport` inside `RTPostProcessStack`, and the root viewport has
+`disable_3d` set — so occlusion culling, VRS, and renderer statistics all address
+that node or address nothing. `get_scene_viewport()` on the post stack, with a
+pass-through on `RTSceneManager`, is now the documented seam. Setting any of those
+on the root viewport or as a project setting is silently a no-op, which is exactly
+the kind of thing that produces a confident wrong measurement.
+
+**The probe reports what the renderer actually drew.** It previously counted
+*nodes* — "grass chunks 24 (20 drawing)" — which cannot show a culling change,
+because an object the frustum or an occluder rejected is still a visible node.
+It now prints objects, primitives and draw calls from
+`get_render_info(RENDER_INFO_TYPE_VISIBLE, ...)` on the scene viewport.
+
+The first thing that metric revealed: at the default camera the frame draws
+**19 objects / 264,204 primitives / 19 draw calls**, from a scene tree holding
+roughly fifty visual nodes. Frustum culling is already doing most of the work
+available.
+
+### Occlusion culling — culls almost nothing, and costs more than it saves
+
+A crude spike: `use_occlusion_culling` on the scene viewport plus one
+full-resolution `ArrayOccluder3D` per chunk, built from the 33×33 height grid each
+chunk already holds for its `HeightMapShape3D`. No bake step and no new geometry
+were needed — that data is a direct re-expression of the collider.
+
+Nine camera angles, objects and primitives drawn, occlusion off → on:
+
+| View | Objects | Primitives culled | Frame time |
+|---|---|---:|---:|
+| yaw 0, pitch −9 | 25 → 25 | **0** | +0.045 ms |
+| yaw 0, pitch 0 | 25 → 25 | **0** | +0.019 ms |
+| yaw 0, pitch 5 | 25 → 25 | **0** | +0.132 ms |
+| yaw 90 | 22 → 22 | **0** | +0.061 ms |
+| yaw 180 | 21 → 21 | **0** | +0.163 ms |
+| yaw 45 | 25 → 25 | **0** | +0.054 ms |
+| yaw 270 | 23 → 20 | 6,144 (1.75%) | +0.189 ms |
+| yaw −142, pitch 0 | 19 → 17 | 4,096 (1.6%) | +0.179 ms |
+| yaw −142, pitch 5 | 19 → 17 | 4,096 (1.6%) | +0.158 ms |
+
+**Five of nine angles cull nothing at all, the best case culls 1.75% of
+primitives, and frame time is worse in all nine pairs** — about +0.11 ms on
+average. The mechanism is definitely working (it culls *something* at three
+angles), so this is a real negative, not a misconfiguration.
+
+Two structural reasons, both fatal:
+
+**Everything culled is terrain, never grass.** Every figure above is an exact
+multiple of 2,048 — the triangle count of one terrain mesh. Grass is never culled
+once. Grass carries an expanded custom AABB to cover shell lift and wind sway,
+and blades stand up to 0.6 m above the surface, so a grass instance stays visible
+over a ridge that already hides the terrain beneath it. Culling terrain is close
+to worthless here: terrain is 2,048 triangles of cheap shading against grass's
+32,768 triangles of 16-shell overdraw.
+
+**The CPU cost is the real killer.** Godot's occlusion culling software-rasterizes
+every occluder on the main thread each frame — here 24 × 2,048 = 49,152 triangles.
+Decimating the occluders (the planned next step) would cut that by 16–64×, but it
+cannot rescue the technique: a conservative decimated occluder must sit *below* the
+true surface, so it would cull strictly less than the 1.75% ceiling measured with
+full-resolution occluders. Cheaper cause, same absent effect.
+
+This is the third time in this project that a correct culling change has produced
+no benefit — the fog-band cull and the light-layer change were the others. The
+common thread is that the frame is bound by *fragment shading of near geometry*,
+which no amount of instance-level culling touches.
+
+### VRS — accepted by the engine, applied by nothing
+
+`vrs_mode = VRS_TEXTURE` on the scene viewport with a uniform density texture,
+one texel per 16×16 block of the render target, red channel carrying the rate.
+
+| Density | Frame time |
+|---|---:|
+| baseline (off) | 4.393 ms |
+| 1 | 4.403 ms |
+| 2 | 4.416 ms |
+| 3 | 4.361 ms |
+| 4 | 4.395 ms |
+
+Nothing, at any rate. **The decisive test is the image, not the clock:** at
+density 4 a capture differs from the no-VRS reference by **36 pixels at 1/255** on
+a 3.6 Mpixel frame. Coarse shading at that rate would be unmistakably blocky. The
+raster output is unchanged, so no rate change is being applied.
+
+It is not a format or sizing mistake. Godot accepts the texture in `R8`, `RGB8`
+and `RGBA8` alike, `vrs_mode` reads back as set, the texture reads back at the
+right size, and no warning or error is emitted at any point. Godot 4.7 also
+exposes **no way to query VRS support** — there is no `SUPPORTS_*` feature flag
+and no VRS-related `LIMIT_*` on `RenderingDevice` — so a caller cannot even detect
+that the request went nowhere.
+
+**Godot 4.7 accepts the whole VRS configuration silently and applies no shading
+rate change in this Forward+ SubViewport setup.** Whether SubViewport VRS is
+unwired in this renderer or needs something undocumented, the outcome is the same,
+and the failure mode is the dangerous one: it looks exactly like a working feature
+that happens not to help. Shipping it as a setting would have shipped a switch
+that does nothing.
+
+Worth noting the plan predicted VRS would disappoint, but for a different reason —
+that its safe region (distant, sub-pixel grass) and its valuable region (near,
+16-shell grass) are anti-correlated. That argument was never reached; the
+mechanism never engaged.
+
+### Both spikes are retained as measurement tools
+
+`PERF_OCCLUSION=1` and `PERF_VRS=n` stay in the probe, env-gated and documented as
+measurement-only with their results. Occlusion culling is worth re-running if
+terrain relief, chunk size or draw distance change, since its failure is a
+property of this terrain's geometry rather than of the technique. The VRS toggle
+is the check that would notice a future Godot version wiring it up.
+
+### Where this leaves the frame
+
+Every non-temporal technique available in this engine has now been measured.
+Per-fragment shader cost is exhausted, instance-level culling does not reach the
+bottleneck, and variable rate shading does not function. **The frame is at its
+practical ceiling at 4.32 ms / 231 FPS**, within 4% of this machine's 240 Hz
+refresh, and further gains require a deliberate quality decision — fewer shells, a
+coarser blade model, or a temporal technique the visual contract currently
+forbids — rather than an optimization.

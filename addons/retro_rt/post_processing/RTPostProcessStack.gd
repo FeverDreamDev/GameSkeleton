@@ -606,6 +606,17 @@ func get_render_size() -> Vector2i:
 	return _render_size
 
 
+## The SubViewport every 3D pass actually renders into.
+##
+## Exposed because the root Viewport has [code]disable_3d[/code] set, so anything
+## that has to reach the real 3D render target -- renderer visibility statistics,
+## occlusion culling, variable rate shading -- addresses this one or addresses
+## nothing. Callers configure the render target; they must not reparent it, resize
+## it or replace its world, all of which this stack owns and re-asserts.
+func get_scene_viewport() -> SubViewport:
+	return _scene_viewport
+
+
 func get_debug_contract_snapshot() -> Dictionary:
 	# Validation-only seam for confirming that presentation and every SMAA source
 	# texture stay in their intended pixel domains after a quality switch.

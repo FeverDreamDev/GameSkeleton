@@ -2078,6 +2078,18 @@ func get_rt_quality_name() -> StringName:
 	return RT_QUALITY_NAMES[int(rt_quality)]
 
 
+## The SubViewport the scene is rendered into, or null before the post stack runs.
+##
+## The root Viewport renders no 3D at all once this manager is active, so callers
+## that need the real render target -- renderer visibility statistics, occlusion
+## culling, variable rate shading -- have to go through here. Setting any of those
+## on the root Viewport or as a project setting is silently a no-op.
+func get_scene_viewport() -> SubViewport:
+	if _post_stack and _post_stack.has_method("get_scene_viewport"):
+		return _post_stack.call("get_scene_viewport")
+	return null
+
+
 func get_ray_render_resolution() -> Vector2i:
 	if _post_stack and _post_stack.has_method("get_render_size"):
 		var post_size: Variant = _post_stack.call("get_render_size")
