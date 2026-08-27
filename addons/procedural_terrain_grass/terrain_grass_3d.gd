@@ -682,6 +682,9 @@ func set_distance_fog(
 		return
 	_fog_params = next_params
 	_fog_color = color
+	# The fog reach decides how far grass can still be seen, so the hide band has
+	# to follow it rather than staying at its authored distance.
+	_refresh_fog_capped_lod()
 	_mark_visuals_dirty()
 
 
@@ -938,10 +941,58 @@ func _apply_grass_quality() -> void:
 		grass_quality == GrassQuality.OFF)
 
 
+## Distance past which a grass chunk cannot contribute anything but fog colour.
+##
+## Distance fog reaches exactly 1.0 at its end -- smoothstep saturates and the
+## curve exponent leaves it at one -- and at that point the shell shader scales
+## ALBEDO to zero and emits the flat fog radiance. A chunk entirely beyond that
+## renders the same colour as the fogged terrain behind it, so drawing it is
+## work that cannot change a pixel.
+##
+## The LOD metric is the distance to the chunk's AABB, i.e. its nearest point, so
+## capping the hide band here only removes chunks whose whole footprint is past
+## the fog end. Authored [member lod_far_to_hidden] still applies when it is the
+## tighter of the two, and when fog is disabled it is the only rule.
+func _fog_capped_far_to_hidden() -> float:
+	if _fog_params.w < 0.5:
+		return lod_far_to_hidden
+	return minf(lod_far_to_hidden, maxf(_fog_params.y, 0.0))
+
+
+## Re-show distance for [method _fog_capped_far_to_hidden], preserving the
+## authored hysteresis gap so a chunk sitting on the fog boundary cannot flicker.
+func _fog_capped_hidden_to_far() -> float:
+	var hide := _fog_capped_far_to_hidden()
+	var authored_gap := maxf(lod_far_to_hidden - lod_hidden_to_far, 0.0)
+	return minf(lod_hidden_to_far, maxf(hide - authored_gap, 0.0))
+
+
+## Pushes the fog-derived hide band onto the live settings object and every
+## chunk already built from it. No-op until the runtime exists.
+func _refresh_fog_capped_lod() -> void:
+	if _settings == null:
+		return
+	var hide := _fog_capped_far_to_hidden()
+	var show := _fog_capped_hidden_to_far()
+	if (
+			is_equal_approx(_settings.lod_far_to_hidden, hide)
+			and is_equal_approx(_settings.lod_hidden_to_far, show)
+	):
+		return
+	_settings.lod_far_to_hidden = hide
+	_settings.lod_hidden_to_far = show
+	if _terrain_manager != null and is_instance_valid(_terrain_manager):
+		_terrain_manager.refresh_lod_thresholds()
+
+
 func _build_settings():
 	var result = TerrainSettingsScript.new()
 	for property in TerrainSettingsScript.MIRRORED_PROPERTIES:
 		result.set(property, get(property))
+	# Applied after the mirror so the authored values stay the inspector contract
+	# and the cap is derived from them rather than overwriting them.
+	result.lod_far_to_hidden = _fog_capped_far_to_hidden()
+	result.lod_hidden_to_far = _fog_capped_hidden_to_far()
 	if Engine.is_editor_hint():
 		# The editor patch is generated while the editor waits on it, so it is
 		# deliberately small and grassless whatever the runtime settings say.

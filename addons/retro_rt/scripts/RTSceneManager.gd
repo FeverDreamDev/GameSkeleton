@@ -1335,8 +1335,18 @@ func _runtime_scene_contract_failure() -> String:
 	var viewport := get_viewport()
 	if viewport == null:
 		return "Ray tracing requires a valid Viewport."
-	if viewport.get_camera_3d() == null:
+	var camera := viewport.get_camera_3d()
+	if camera == null:
 		return "Ray tracing requires an active Camera3D in the managed Viewport."
+	if (
+			_active_backend == RTBackend.HARDWARE
+			and (camera.cull_mask & RT_CARRIER_LAYER_MASK) == 0
+	):
+		return (
+			"The active Camera3D (%s) cull_mask must include render layer %d, which "
+			+ "hardware RT reserves for managed geometry and the material-ID carrier. "
+			+ "Enable that camera layer."
+			) % [camera.get_path(), RT_CARRIER_LAYER]
 	if (_resolve_effective_environment().get("environment") as Environment) == null:
 		return (
 			"The managed Viewport has no effective Environment. Add a camera Environment, "
@@ -3183,6 +3193,7 @@ func _discover_lights(apply_differential_overrides: bool = true) -> void:
 			var light_id := light.get_instance_id()
 			if not previous_ids.has(light_id):
 				_suppress_native_light_shadow(light)
+				_suppress_light_on_managed(light)
 				_light_shadow_states[light_id] = light.shadow_enabled
 	_lights = discovered
 	# Resolved once here rather than per light per frame in _make_light_snapshot.
@@ -3557,6 +3568,7 @@ func _apply_renderer_overrides() -> void:
 	for light in _lights:
 		if is_instance_valid(light):
 			_suppress_native_light_shadow(light)
+			_suppress_light_on_managed(light)
 			_light_shadow_states[light.get_instance_id()] = light.shadow_enabled
 
 
@@ -3578,10 +3590,10 @@ func _apply_material_renderer_override(material_index: int) -> void:
 			material.get_rid(), RT_MATERIAL_ID_PARAMETER, material_index + 1)
 
 
-func _apply_instance_renderer_override(mesh_node: MeshInstance3D, instance_index: int, apply_id: bool, add_carrier_layer: bool) -> void:
+func _apply_instance_renderer_override(mesh_node: MeshInstance3D, instance_index: int, apply_id: bool, use_carrier_layer: bool) -> void:
 	if not mesh_node.get_instance().is_valid():
 		return
-	var renderer_layers := mesh_node.layers | RT_CARRIER_LAYER_MASK if add_carrier_layer else mesh_node.layers
+	var renderer_layers := RT_CARRIER_LAYER_MASK if use_carrier_layer else mesh_node.layers
 	RenderingServer.instance_set_layer_mask(mesh_node.get_instance(), renderer_layers)
 	if apply_id:
 		RenderingServer.instance_geometry_set_shader_parameter(mesh_node.get_instance(), &"rt_instance_id", instance_index + 1)
@@ -3592,9 +3604,18 @@ func _suppress_native_light_shadow(light: Light3D) -> void:
 		RenderingServer.light_set_shadow(light.get_base(), false)
 
 
+func _suppress_light_on_managed(light: Light3D) -> void:
+	if _active_backend != RTBackend.HARDWARE:
+		return
+	if light.get_base().is_valid():
+		RenderingServer.light_set_cull_mask(
+			light.get_base(), light.light_cull_mask & ~RT_CARRIER_LAYER_MASK)
+
+
 func _restore_light_override(light: Light3D) -> void:
 	if light.get_base().is_valid():
 		RenderingServer.light_set_shadow(light.get_base(), light.shadow_enabled)
+		RenderingServer.light_set_cull_mask(light.get_base(), light.light_cull_mask)
 
 
 func _poll_light_shadow_overrides() -> void:
@@ -3606,8 +3627,10 @@ func _poll_light_shadow_overrides() -> void:
 		var shadow_enabled := light.shadow_enabled
 		# As with instance layers, an authored toggle can change away and back
 		# between polls. Reasserting this small renderer-only override guarantees
-		# native shadow maps never leak into the hardware-RT path.
+		# native shadow maps never leak into either RT path and authored lights never
+		# enter the hardware carrier layer.
 		_suppress_native_light_shadow(light)
+		_suppress_light_on_managed(light)
 		if not _light_shadow_states.has(light_id) or bool(_light_shadow_states[light_id]) != shadow_enabled:
 			_light_shadow_states[light_id] = shadow_enabled
 

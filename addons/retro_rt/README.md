@@ -107,6 +107,9 @@ has to stay inside the shared contract:
 
 - an active `Camera3D` and a resolvable `Environment` (camera → `world_environment_path`
   → `World3D`);
+- on hardware RT, the active camera's `cull_mask` includes render layer 20. The
+  add-on reserves that layer for managed geometry and its material-ID carrier;
+  omitting it is an explicit contract failure rather than an empty scene;
 - background `BG_CLEAR_COLOR`, `BG_COLOR` or `BG_SKY`;
 - **Linear** tonemapping at exposure `1.0`;
 - no Environment fog or volumetric fog (RTSceneManager owns an equivalent

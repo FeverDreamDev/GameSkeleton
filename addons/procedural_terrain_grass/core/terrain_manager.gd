@@ -986,6 +986,19 @@ func _query_hits_blocker(bounds: AABB) -> bool:
 	return not get_world_3d().direct_space_state.intersect_shape(_cell_query, 1).is_empty()
 
 
+## Re-derives every loaded chunk's LOD band distances and re-selects immediately.
+##
+## Called when something outside the terrain changes a threshold the chunks
+## cached -- in practice the renderer resolving its fog reach, which caps how far
+## grass is worth drawing. Without the immediate re-selection a chunk would keep
+## its stale band until the next LOD tick moved the streaming target.
+func refresh_lod_thresholds() -> void:
+	for coord_variant in chunks:
+		chunks[coord_variant].refresh_lod_thresholds()
+	if target != null and is_instance_valid(target):
+		_update_lods()
+
+
 func _update_lods() -> void:
 	var target_xz := Vector2(target.global_position.x, target.global_position.z)
 	var local_target_xz := _world_to_local_xz(target_xz)

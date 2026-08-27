@@ -71,12 +71,7 @@ func configure(
 	grass_revision = revision
 	_settings = settings
 	_terrain_material = terrain_material
-	_lod_near_to_medium_squared = settings.lod_near_to_medium * settings.lod_near_to_medium
-	_lod_medium_to_near_squared = settings.lod_medium_to_near * settings.lod_medium_to_near
-	_lod_medium_to_far_squared = settings.lod_medium_to_far * settings.lod_medium_to_far
-	_lod_far_to_medium_squared = settings.lod_far_to_medium * settings.lod_far_to_medium
-	_lod_far_to_hidden_squared = settings.lod_far_to_hidden * settings.lod_far_to_hidden
-	_lod_hidden_to_far_squared = settings.lod_hidden_to_far * settings.lod_hidden_to_far
+	refresh_lod_thresholds()
 	name = "TerrainChunk_%d_%d" % [coord.x, coord.y]
 	position = Vector3(float(coord.x) * settings.chunk_size, 0.0, float(coord.y) * settings.chunk_size)
 
@@ -184,6 +179,24 @@ func publish_grass_mesh_squared(mesh: ArrayMesh, distance_squared_to_chunk: floa
 		return
 	current_lod = _initial_lod_squared(distance_squared_to_chunk)
 	_apply_lod()
+
+
+## Re-reads the LOD band distances from the shared settings object.
+##
+## The squared thresholds are cached because the comparison runs for every loaded
+## chunk on every LOD tick, but the settings they come from can change after a
+## chunk exists -- the fog reach caps the hide distance, and fog is resolved by
+## the renderer well after the terrain starts streaming. Chunks hold the settings
+## by reference, so re-deriving here is all that a live change needs.
+func refresh_lod_thresholds() -> void:
+	if _settings == null:
+		return
+	_lod_near_to_medium_squared = _settings.lod_near_to_medium * _settings.lod_near_to_medium
+	_lod_medium_to_near_squared = _settings.lod_medium_to_near * _settings.lod_medium_to_near
+	_lod_medium_to_far_squared = _settings.lod_medium_to_far * _settings.lod_medium_to_far
+	_lod_far_to_medium_squared = _settings.lod_far_to_medium * _settings.lod_far_to_medium
+	_lod_far_to_hidden_squared = _settings.lod_far_to_hidden * _settings.lod_far_to_hidden
+	_lod_hidden_to_far_squared = _settings.lod_hidden_to_far * _settings.lod_hidden_to_far
 
 
 func update_grass_lod(distance_to_chunk: float) -> void:

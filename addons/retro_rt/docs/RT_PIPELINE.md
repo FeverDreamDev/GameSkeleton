@@ -241,6 +241,20 @@ near/far planes, aspect policy, cull mask, Environment, and CameraAttributes.
 It never copies the authored camera's `compositor`. Hardware RT continues to
 use the compositor installed on the World3D scenario by RTSceneManager.
 
+Hardware RT reserves render layer 20 for the material-ID carrier. While the
+carrier is active, each managed renderer instance is placed on that layer alone
+and authored lights have that layer removed from their renderer cull masks. This
+skips Godot's otherwise-empty raster `light()` invocation for every authored
+light over managed pixels. Both changes are `RenderingServer` overrides: the
+authored `MeshInstance3D.layers` and `Light3D.light_cull_mask` properties remain
+unchanged and are still what the shared receiver/light candidate lists publish.
+Software RT and the editor preview keep the authored renderer masks.
+
+Because the private capture camera mirrors rather than widens the gameplay
+camera mask, a hardware camera must include layer 20. Startup and runtime camera
+switches validate that bit and fail with the camera path and reserved layer when
+it is missing; the add-on never silently edits the authored mask.
+
 ## Shared post-processing: SMAA 1x and FSR 1
 
 Every runtime backend uses `RTPostProcessStack`. Anti-aliasing is SMAA 1x on

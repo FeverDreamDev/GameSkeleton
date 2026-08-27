@@ -22,6 +22,8 @@ extends SceneTree
 ##   PERF_SMAA=0     disable the three SMAA passes
 ##   PERF_GRADE=0    disable the RetroGrade present pass
 ##   PERF_RT=0       stop ray tracing entirely
+##   PERF_CARRIER=0  hide the hardware material-ID carrier; MEASUREMENT ONLY,
+##                   deliberately breaks managed-pixel lighting
 ##   PERF_GROUND=0   keep RT but disable the analytic reflection-ground trace
 ##   PERF_NATIVE_SHADOWS=0
 ##                   force sun/moon shadow maps off; REQUIRED in both halves of
@@ -181,6 +183,12 @@ func _run() -> void:
 	var view = player.get_node("ViewRoot")
 	var pitch := OS.get_environment("PERF_PITCH")
 	view.apply_view(deg_to_rad(float(pitch) if pitch.is_valid_float() else VIEW_PITCH_DEGREES))
+	# A capture compares separate launches, so even sub-pixel physics settling of
+	# the player moves the whole terrain silhouette and creates a false image diff.
+	# Timing runs keep normal processing; capture runs freeze the parked hierarchy
+	# after its authored camera transform has been applied.
+	if not OS.get_environment("PERF_SHOT").is_empty():
+		player.process_mode = Node.PROCESS_MODE_DISABLED
 
 	# Streaming has to settle before the warmup, or the measured window includes
 	# mesh commits that a later run will not have.
@@ -269,6 +277,14 @@ func _apply_toggles(terrain, day_night) -> void:
 		_shell.rt_manager.post_anti_aliasing_enabled = false
 	if not _env_flag("PERF_GRADE"):
 		_shell.rt_manager.retro_post_enabled = false
+	# The carrier is a deliberately overbright directional light whose only job is
+	# to transport material/instance IDs through separate specular. Hiding it
+	# measures that raster light pass, but decode_visibility_id then rejects every
+	# managed pixel, so this is an attribution toggle rather than a playable mode.
+	if not _env_flag("PERF_CARRIER"):
+		var carrier := _shell.rt_manager.get_node_or_null("__RTMaterialIDCarrier") as Light3D
+		if carrier != null:
+			carrier.visible = false
 	if not _env_flag("PERF_RT"):
 		_shell.rt_manager.stop_rt()
 	# Zero march steps is the shader's own "layer disabled" encoding, so this
@@ -311,13 +327,15 @@ func _report(terrain) -> void:
 	var toggles: PackedStringArray = []
 	for name in [
 			"PERF_GRASS", "PERF_SKY", "PERF_CLOUDS", "PERF_STARS", "PERF_GROUND", "PERF_NATIVE_SHADOWS",
-			"PERF_SMAA", "PERF_GRADE", "PERF_RT"]:
+			"PERF_SMAA", "PERF_GRADE", "PERF_CARRIER", "PERF_RT"]:
 		if not _env_flag(name):
 			toggles.append(name.trim_prefix("PERF_").to_lower() + "=off")
 	if toggles.is_empty():
 		toggles.append("all on")
 
 	print("perf_probe [%s] %s" % [label, ", ".join(toggles)])
+	if not _env_flag("PERF_CARRIER"):
+		print("  WARNING: carrier=off deliberately breaks managed-pixel lighting; measurement only")
 	print("  median %.3f ms (%.1f FPS)   p95 %.3f ms   p99 %.3f ms   n=%d" % [
 		median, 1000.0 / maxf(median, 0.0001), p95, p99, _intervals.size()])
 
@@ -364,6 +382,15 @@ func _report(terrain) -> void:
 			float(profile.get("dispatch_gpu_seconds", 0.0)) * 1000.0])
 		# Per-viewport GPU time, which is the only way to attribute the SMAA and
 		# present passes -- they are 2D canvas draws with no render-thread hook.
+		#
+		# These are a SINGLE FRAME, not a distribution: the rendering server
+		# reports the last frame's timing, so this line is one sample no matter how
+		# many frames were measured. It is the right tool for "which pass is
+		# expensive" and the wrong one for "did this change save 0.2 ms" -- a
+		# median of three runs of this statistic is a median of three frames. Use
+		# the frame-interval median above for before/after, and where the two
+		# disagree, believe the distribution. A change was once credited with a
+		# 6.5% scene-pass win on this line while frame time moved the other way.
 		var pass_gpu: Dictionary = profile.get("post_pass_gpu_ms", {})
 		if not pass_gpu.is_empty():
 			var parts: PackedStringArray = []

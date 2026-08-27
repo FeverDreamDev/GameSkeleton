@@ -54,6 +54,18 @@ func _run() -> void:
 	player.velocity = Vector3.ZERO
 	player.process_mode = Node.PROCESS_MODE_DISABLED
 
+	# This authored local light is deliberately present before RT starts. Hardware
+	# removes it from the private carrier layer at the RenderingServer only, while
+	# both backends must keep its authored mask in the RT receiver candidate lists.
+	var caster_mesh := level.get_node("TestCaster/MeshInstance3D") as MeshInstance3D
+	var local_light := OmniLight3D.new()
+	local_light.name = "LocalOmniProbe"
+	local_light.omni_range = 8.0
+	local_light.light_energy = 2.0
+	var authored_light_mask := local_light.light_cull_mask
+	world.add_child(local_light)
+	local_light.global_position = caster_mesh.global_position + Vector3(0.0, 2.0, 0.0)
+
 	var manager := RTSceneManager.new()
 	manager.name = "RTSceneManager"
 	manager.auto_start = false
@@ -90,6 +102,7 @@ func _run() -> void:
 		await process_frame
 	_check(level.get_terrain().is_generation_idle(),
 		"terrain generation settles before the slot probe")
+	await _check_local_light_updates(manager, local_light, caster_mesh, authored_light_mask)
 
 	var initial_profile := manager.get_profile_snapshot()
 	var initial_slots := int(initial_profile.get("stable_instance_slots", -1))
@@ -172,7 +185,34 @@ func _run() -> void:
 		"tombstoned receiver slots are reused")
 	print("receiver_registry_smoke profile: %s" % after)
 
+	# The post camera mirrors the authored camera mask exactly. Hardware requires
+	# its reserved carrier bit; software has no carrier and must not inherit that
+	# contract. Call the validator directly so the negative case does not install
+	# an expected failure overlay or emit an expected push_error in routine CI.
+	var camera := root.get_camera_3d()
+	_check(camera != null, "the managed viewport keeps an active camera")
+	if camera != null:
+		var camera_mask := camera.cull_mask
+		_check((camera_mask & RTSceneManager.RT_CARRIER_LAYER_MASK) != 0,
+			"the authored camera includes the hardware carrier layer")
+		camera.cull_mask = camera_mask & ~RTSceneManager.RT_CARRIER_LAYER_MASK
+		var camera_failure := String(manager.call("_runtime_scene_contract_failure"))
+		if hardware_requested:
+			_check(
+				camera_failure.contains("cull_mask must include render layer 20"),
+				"hardware RT rejects a camera that omits the carrier layer")
+		else:
+			_check(camera_failure.is_empty(),
+				"software RT does not require the hardware carrier layer")
+		camera.cull_mask = camera_mask
+	_check(bool(after.get("post_internal_camera_visual_state_matches", false)),
+		"the internal post camera mirrors the authored camera state")
+	_check(local_light.light_cull_mask == authored_light_mask,
+		"RT renderer overrides never mutate the authored local-light mask")
+
 	manager.stop_rt()
+	_check(local_light.light_cull_mask == authored_light_mask,
+		"stopping RT preserves the authored local-light mask")
 	world.queue_free()
 	await process_frame
 	_finish()
@@ -187,6 +227,117 @@ func _make_probe_receiver(material: ShaderMaterial, node_name: String) -> MeshIn
 	receiver.add_to_group(&"retro_rt_managed")
 	receiver.add_to_group(&"retro_rt_receiver_only")
 	return receiver
+
+
+func _check_local_light_updates(
+		manager: RTSceneManager,
+		light: OmniLight3D,
+		caster_mesh: MeshInstance3D,
+		authored_light_mask: int) -> void:
+	var near_snapshot: Dictionary = manager.get("_current_snapshot")
+	var light_index := _snapshot_light_index(near_snapshot, light.name)
+	var caster_index := _snapshot_instance_index(near_snapshot, "TestCaster/MeshInstance3D")
+	_check(light_index >= 0, "the local omni is published to RT")
+	_check(caster_index >= 0, "the managed TestCaster is published as an RT receiver")
+	if light_index >= 0:
+		var light_records: Array = (near_snapshot.get("light", {}) as Dictionary).get("records", [])
+		var record: Dictionary = light_records[light_index]
+		_check(int(record.get("type", -1)) == 1, "the local light keeps its omni RT type")
+		_check(int(record.get("cull_mask", 0)) == (authored_light_mask & ((1 << 20) - 1)),
+			"the RT snapshot keeps the omni's authored cull mask")
+	if caster_index >= 0:
+		var instance_layers: PackedInt32Array = near_snapshot.get(
+			"instance_layers", PackedInt32Array())
+		_check(
+			caster_index < instance_layers.size()
+			and instance_layers[caster_index] == caster_mesh.layers,
+			"the RT snapshot keeps the receiver's authored layers")
+	_check(_snapshot_has_candidate(near_snapshot, caster_index, light_index),
+		"the nearby omni reaches the managed receiver through RT")
+
+	var near_position := light.global_position
+	var before_far := manager.get_profile_snapshot()
+	light.global_position = Vector3(100000.0, 100000.0, 100000.0)
+	var far_snapshot: Dictionary
+	for _frame in 30:
+		await process_frame
+		far_snapshot = manager.get("_current_snapshot")
+		light_index = _snapshot_light_index(far_snapshot, light.name)
+		caster_index = _snapshot_instance_index(far_snapshot, "TestCaster/MeshInstance3D")
+		if not _snapshot_has_candidate(far_snapshot, caster_index, light_index):
+			break
+	var after_far := manager.get_profile_snapshot()
+	_check(not _snapshot_has_candidate(far_snapshot, caster_index, light_index),
+		"moving the omni away removes it from the receiver's RT candidates")
+	_check(int(after_far.get("light_influence_updates", 0))
+			> int(before_far.get("light_influence_updates", 0)),
+		"moving a local light records an influence update")
+	_check(int(after_far.get("receiver_light_list_rebuilds", 0))
+			> int(before_far.get("receiver_light_list_rebuilds", 0)),
+		"moving a local light rebuilds the receiver lists")
+	_check(int(after_far.get("receiver_light_revision", 0))
+			> int(before_far.get("receiver_light_revision", 0)),
+		"moving a local light advances the receiver-list revision")
+
+	light.global_position = near_position
+	var restored_snapshot: Dictionary
+	for _frame in 30:
+		await process_frame
+		restored_snapshot = manager.get("_current_snapshot")
+		light_index = _snapshot_light_index(restored_snapshot, light.name)
+		caster_index = _snapshot_instance_index(
+			restored_snapshot, "TestCaster/MeshInstance3D")
+		if _snapshot_has_candidate(restored_snapshot, caster_index, light_index):
+			break
+	var after_restore := manager.get_profile_snapshot()
+	_check(_snapshot_has_candidate(restored_snapshot, caster_index, light_index),
+		"moving the omni back restores its RT receiver contribution")
+	_check(int(after_restore.get("light_influence_updates", 0))
+			> int(after_far.get("light_influence_updates", 0)),
+		"restoring a local light records another influence update")
+	_check(int(after_restore.get("receiver_light_list_rebuilds", 0))
+			> int(after_far.get("receiver_light_list_rebuilds", 0)),
+		"restoring a local light rebuilds the receiver lists again")
+	_check(light.light_cull_mask == authored_light_mask,
+		"local-light movement leaves the authored cull mask unchanged")
+
+
+func _snapshot_light_index(snapshot: Dictionary, light_name: StringName) -> int:
+	var light_records: Array = (snapshot.get("light", {}) as Dictionary).get("records", [])
+	for index in light_records.size():
+		var record: Dictionary = light_records[index]
+		if StringName(record.get("name", &"")) == light_name:
+			return index
+	return -1
+
+
+func _snapshot_instance_index(snapshot: Dictionary, path_suffix: String) -> int:
+	var instances: Array = snapshot.get("instances", [])
+	for index in instances.size():
+		var record: Dictionary = instances[index]
+		if String(record.get("path", "")).ends_with(path_suffix):
+			return index
+	return -1
+
+
+func _snapshot_has_candidate(
+		snapshot: Dictionary, instance_index: int, light_index: int) -> bool:
+	if instance_index < 0 or light_index < 0:
+		return false
+	var starts: PackedInt32Array = snapshot.get(
+		"receiver_light_starts", PackedInt32Array())
+	var counts: PackedInt32Array = snapshot.get(
+		"receiver_light_counts", PackedInt32Array())
+	var indices: PackedInt32Array = snapshot.get(
+		"receiver_light_indices", PackedInt32Array())
+	if instance_index >= starts.size() or instance_index >= counts.size():
+		return false
+	var start := starts[instance_index]
+	var count := counts[instance_index]
+	for offset in count:
+		if start + offset < indices.size() and indices[start + offset] == light_index:
+			return true
+	return false
 
 
 func _finish() -> void:

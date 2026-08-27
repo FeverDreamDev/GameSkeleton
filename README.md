@@ -31,6 +31,10 @@ evidence are recorded in
 - Forward+ and Vulkan are preferred. Godot may fall back to D3D12 and then OpenGL
   Compatibility; Retro RT `AUTO` chooses hardware only on supported Forward+/Vulkan and
   otherwise uses its software path.
+- Hardware RT reserves render layer 20 for managed geometry and the material-ID carrier.
+  Every active gameplay camera must include that bit in `cull_mask`; the manager reports a
+  contract failure with the camera path if it does not. Authored mesh/light masks still own
+  RT candidate culling and are never mutated by the renderer-only override.
 - Terrain chunks use the shared Blinn–Phong material with baked vertex colours. They are
   registered as `retro_rt_receiver_only`, have a zero ray mask, and have raster shadow
   casting disabled: they receive RT light/shadow results without casting RT shadows or
@@ -91,6 +95,8 @@ The generator writes the exact runtime terrain/grass vertex-format proxies and
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_recovery_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/ground_layer_smoke.gd
+# Optional hardware variant; exercises carrier-layer camera and local-light contracts.
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --hardware
 ```
 
 ## Frame-time probe
@@ -112,6 +118,10 @@ trace. `PERF_BACKEND=software` forces the Compatibility tracer on a machine that
 would otherwise select hardware RT. `PERF_PROFILE=1` adds the RT manager's
 main-thread cost and its snapshot counters.
 
+`PERF_CARRIER=0` is an attribution toggle only. It hides the hardware material-ID
+carrier, deliberately makes managed pixels lose RT lighting, and prints a warning;
+it must never be used as a gameplay or image-quality setting.
+
 **`PERF_CLOCK=1` is off by default, and every measurement involving a moving sun
 needs it.** With the clock frozen the sun never moves, so anything that only
 costs something while lights change measures as exactly zero — while the shipping
@@ -126,4 +136,6 @@ independently of the clock) and, with `PERF_PIN_LOD=1`, the grass LOD bands —
 their hysteresis otherwise settles two different ways and swamps the comparison
 at ~5% of pixels. Even pinned, the grass mask build is not bit-reproducible
 between launches; roughly 1000 pixels at 1/255 is the floor. Hide the grass to
-get an exactly reproducible frame.
+get an exactly reproducible frame. Capture runs also freeze the parked player
+hierarchy after applying the requested camera transform. Use `PERF_STARS=0` for
+an exact cross-launch gate because the star layout seed is generated per run.

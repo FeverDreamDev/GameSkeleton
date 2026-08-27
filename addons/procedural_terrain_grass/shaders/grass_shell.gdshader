@@ -41,9 +41,22 @@ uniform vec4 u_fog_params = vec4(0.0, 1.0, 1.0, 0.0);
 uniform vec3 u_fog_color = vec3(0.0);
 
 varying vec3 base_world_position;
+// Deliberately left interpolated. The value is per instance, so flat would be
+// the honest qualifier and measurably cheaper -- but interpolating a constant is
+// not bit-exact, and this feeds the blade height test. Flattening it moved a few
+// dozen blade-edge fragments across their discard threshold. The geometry keeps
+// the float it has always seen.
 varying float shell_level;
 varying vec2 fine_mask_bytes;
 varying float broad_color_noise;
+// Both are pure functions of the shell level, constant across the whole shell,
+// and were being recomputed for every surviving fragment -- including a pow().
+// Flat is safe here because nothing downstream branches on them: they only scale
+// the final colour, where a last-bit difference cannot survive 8-bit output.
+// Kept as two terms rather than one product so the fragment still applies them
+// in the order it always did; float multiplication is not associative.
+varying flat vec3 shell_base_tint;
+varying flat float shell_height_fade;
 
 vec2 hash22(vec2 p) {
 	p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
@@ -107,6 +120,8 @@ void vertex() {
 	// Forward+ this multiply is by exactly 1.0 and changes nothing. See
 	// TerrainGenerator.shell_data_is_byte_encoded for the Compatibility case.
 	shell_level = INSTANCE_CUSTOM.x * u_shell_decode_scale;
+	shell_base_tint = mix(u_base_color, u_tip_color, shell_level);
+	shell_height_fade = mix(0.72, 1.0, pow(shell_level, 0.72));
 	fine_mask_bytes = COLOR.gb;
 	base_world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	vec2 system_xz = base_world_position.xz - u_system_origin_xz;
@@ -131,15 +146,17 @@ void fragment() {
 	vec2 base_xz = base_world_position.xz - u_system_origin_xz;
 	vec2 provisional_cell = floor(base_xz * u_density);
 	vec2 provisional_random = hash22(provisional_cell);
-	vec2 provisional_center = stalk_center_for(provisional_cell, provisional_random);
 	vec2 wind_offset = wind_for(provisional_random, bend);
 	vec2 push_offset = vec2(0.0);
 	float flatten_factor = 1.0;
 
 	// Both controls are uniform across the draw, so inactive slots never enter
-	// the expensive distance and bend path.
+	// the expensive distance and bend path. The provisional stalk centre is only
+	// an input to that path, so it is resolved here rather than for every
+	// fragment of a draw that has no interactors at all.
 	if (u_interaction_enabled) {
-		vec2 stalk_world = provisional_center + u_system_origin_xz;
+		vec2 stalk_world =
+			stalk_center_for(provisional_cell, provisional_random) + u_system_origin_xz;
 		for (int i = 0; i < MAX_INTERACTORS; i++) {
 			if (i >= u_interactor_count) {
 				break;
@@ -186,6 +203,16 @@ void fragment() {
 		cell_random = hash22(source_cell);
 		wind_offset = wind_for(cell_random, bend);
 	}
+	// The height test needs nothing but this cell's own random draw, so it runs
+	// before the stalk centre, the second offset clamp and the warped sample
+	// position are resolved. A shell above its blade's height is thrown away
+	// either way; doing it here means it is thrown away before that work, and the
+	// upper shells discard here most often.
+	float random_height = mix(0.72, 1.08, cell_random.x) * flatten_factor;
+	if (h > random_height) {
+		discard;
+	}
+
 	vec2 stalk_center = stalk_center_for(source_cell, cell_random);
 	combined_offset = wind_offset + push_offset;
 	combined_length_squared = dot(combined_offset, combined_offset);
@@ -193,11 +220,6 @@ void fragment() {
 		combined_offset *= maximum_offset / sqrt(combined_length_squared);
 	}
 	vec2 sample_position = base_xz - combined_offset;
-
-	float random_height = mix(0.72, 1.08, cell_random.x) * flatten_factor;
-	if (h > random_height) {
-		discard;
-	}
 	float shape_height = clamp(h / max(random_height, 0.001), 0.0, 1.0);
 	vec2 stalk_delta = (sample_position - stalk_center) * u_density;
 	float orientation = cell_random.y * TAU;
@@ -214,6 +236,11 @@ void fragment() {
 	// the most expensive block in the shader and the prepass runs it once per
 	// shell. shape_height is zero on the ground shell, where log2 gives -inf and
 	// exp2 brings it back to exactly the 0.0 that pow returns.
+	//
+	// A 2048-sample two-channel lookup texture was measured here as a replacement
+	// and came back at +0.003 ms, i.e. nothing: the fetch costs about what the
+	// three transcendentals cost, because a texture unit has lower throughput
+	// than the special-function unit even though this shader leaves it idle.
 	float taper_log = log2(shape_height);
 	float width_taper = exp2(0.42 * taper_log);
 	float length_taper = exp2(0.75 * taper_log);
@@ -236,14 +263,17 @@ void fragment() {
 	// borders, so the footprint comes from there and is carried into ellipse space
 	// by hand: d(dot(e, e)) = 2 * |e| * d|e|, and the narrower axis bounds d|e|.
 	float footprint = length(fwidth(base_xz)) * u_density;
-	float ellipse_footprint = footprint / max(min(blade_width, blade_length), 0.001);
+	// No zero guard: both axes are mix() results between positive endpoints scaled
+	// by positive variation, so the narrower one bottoms out around 0.0158 and can
+	// never reach the 0.001 the guard was watching for.
+	float ellipse_footprint = footprint / min(blade_width, blade_length);
 	float edge_width = max(2.0 * sqrt(ellipse_distance) * ellipse_footprint * 1.25, 0.025);
 	float edge_coverage = 1.0 - smoothstep(1.0 - edge_width, 1.0 + edge_width, ellipse_distance);
 	if (edge_coverage < 0.42) {
 		discard;
 	}
 
-	vec3 color = mix(u_base_color, u_tip_color, h);
+	vec3 color = shell_base_tint;
 	if (u_color_noise_enabled) {
 		vec3 broad_tint = mix(u_color_noise_low_tint, u_color_noise_high_tint, broad_color_noise);
 		float detail_tint = mix(
@@ -254,7 +284,7 @@ void fragment() {
 		vec3 combined_tint = broad_tint * detail_tint;
 		color *= mix(vec3(1.0), combined_tint, clamp(u_color_noise_strength, 0.0, 1.0));
 	}
-	color *= mix(0.72, 1.0, pow(h, 0.72));
+	color *= shell_height_fade;
 	color *= mix(0.88, 1.0, edge_coverage);
 	// Grass is unmanaged and forward-lit with no light() override, so fog is applied
 	// by attenuating ALBEDO (which scales both the diffuse and the ambient term) and

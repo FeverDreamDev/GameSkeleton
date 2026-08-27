@@ -534,3 +534,310 @@ Including the lattice fix, against the pre-GPU-pass baseline:
 | Native | 5.498 ms (181.9 FPS) | **4.789 ms (208.8 FPS)** | **−12.9%, +26.9 FPS** |
 | QUALITY (0.85) | 4.550 ms (219.8 FPS) | 4.018 ms (248.9 FPS) | −11.7% |
 | BALANCED (0.75) | 3.844 ms (260.1 FPS) | 3.367 ms (297.0 FPS) | −12.4% |
+
+---
+
+## Final pass: private carrier-layer raster culling
+
+This pass removes authored raster lights from hardware RT's private material-ID
+carrier layer. Managed renderer instances are placed on layer 20 alone at the
+RenderingServer, while authored lights have layer 20 removed from their
+renderer cull masks. Their authored `layers` and `light_cull_mask` properties
+remain untouched and continue to drive the shared RT receiver/light lists.
+
+**The output is bit-exact, and the performance effect is zero.** An independent
+interleaved re-measurement (A/B/A/B/A/B, 1200 frames each, the optimization
+stashed and restored between consecutive runs) puts the change at
+**+0.010 ms frame time and −0.004 ms scene GPU — both inside a ~0.03 ms run
+spread**:
+
+| | With change | Without change |
+|---|---|---|
+| Median frame | 4.334 / 4.365 / 4.360 ms | 4.326 / 4.351 / 4.350 ms |
+| Scene-pass GPU | 3.444 / 3.452 / 3.443 ms | 3.425 / 3.448 / 3.455 ms |
+
+An earlier write-up of this pass reported a **−0.273 ms (−6.5%)** scene-pass
+win. That figure does not reproduce, and it was internally inconsistent on its
+own terms: it reported the scene pass falling 0.273 ms while frame time *rose*
+0.038 ms. The frame is GPU-bound and the scene pass is ~80% of it, so both
+cannot be true.
+
+The cause is a sampling error worth recording, because the trap is easy to walk
+back into. **`post_pass_gpu_ms` is a single-frame snapshot taken at report time,
+not a distribution** — `viewport_get_measured_render_time_gpu()` returns the last
+frame's value, so a median-of-three over that statistic is a median of three
+individual frames, not of 3600. It cannot resolve a 0.27 ms effect. Frame-time
+median over 1200 frames is the reliable statistic; where the two disagree, the
+distribution wins.
+
+**Why there was nothing to win.** The wasted evaluations are the sun and moon —
+directional lights, which Forward+ does not cluster-cull, so they are the only
+lights that touch every managed pixel. Their `light()` body is empty under RT,
+shadows are already suppressed, and the terrain underneath is largely occluded by
+grass and rejected by the depth prepass, so the managed pixel count actually
+paying for them is far smaller than terrain's nominal coverage. Local omni and
+spot lights are already cluster-culled, so this does not grow into a win as a
+level gains lights either.
+
+The change was kept regardless: it is verified harmless, and it makes the layer
+semantics honest — managed geometry takes all of its lighting from the RT
+dispatch, so it never belonged on authored light layers. The test coverage added
+alongside it is the more durable outcome of this pass.
+
+### Benchmark protocol
+
+```text
+Godot version:            4.7.2.stable.official (ed1daf0bf)
+GPU:                      NVIDIA GeForce RTX 4060
+Renderer:                 Forward+ / Vulkan at 2560x1440
+RT backend:               hardware
+Camera:                   yaw -142 deg, pitch -9 deg
+Scene:                    game/levels/terrain_test.tscn
+Clock:                    running (PERF_CLOCK=1)
+Native shadow maps:       forced off in both halves
+Measured frames:          1200 after 300 warm-up frames
+Runs:                     median of 3, baseline and final interleaved
+```
+
+All feature toggles were explicitly enabled. `PERF_PROFILE=1` and
+`PERF_VSYNC=0` were used for every performance run.
+
+### Carrier-cost gate
+
+The measurement-only `PERF_CARRIER=0` toggle hides
+`__RTMaterialIDCarrier`. It deliberately breaks managed-pixel lighting and is
+not a supported quality mode.
+
+| Configuration | Median | p95 | p99 |
+|---|---:|---:|---:|
+| A — RT on, carrier on | 5.025 ms | 6.047 ms | 6.470 ms |
+| B — RT on, carrier off | 4.912 ms | 6.050 ms | 6.468 ms |
+| C — RT off | 3.587 ms | 4.333 ms | 4.722 ms |
+
+The raw A−B gate was **0.113 ms**. That sits in the plan's optional/simple
+implementation band, and the renderer-only mask change was sufficiently small
+and reversible to proceed.
+
+The toggle is not an exact carrier-raster isolator: removing the ID carrier also
+makes managed-pixel RT dispatch/resolve early-out. A−B and B−C therefore cannot
+be treated as independent, additive carrier and engine measurements. The most
+defensible accounting is:
+
+| Quantity | Time | Interpretation |
+|---|---:|---|
+| Gross RT integration, A−C | 1.438 ms | Measured frame-interval difference |
+| Post stack sample | ~0.578 ms | SMAA edges/weights/resolve plus root present |
+| Active RT dispatch sample | ~0.339 ms | Hardware compositor timestamp |
+| Arithmetic remainder | ~0.521 ms | Raster plus engine plumbing; not separately isolated |
+| Carrier-enabled gate, A−B | 0.113 ms | Mixed carrier/dispatch/resolve effect; non-additive |
+
+### Native before/after
+
+| Metric | Baseline | Final | Change |
+|---|---:|---:|---:|
+| Median frame interval | 4.995 ms (200.2 FPS) | 5.033 ms (198.7 FPS) | +0.038 ms (noise) |
+| p95 | 6.203 ms | 6.050 ms | −0.153 ms |
+| p99 | 6.723 ms | 6.350 ms | −0.373 ms |
+| Scene-pass GPU snapshot | 4.201 ms | 3.928 ms | −0.273 ms — **does not reproduce; single-frame sample** |
+| Sum of reported GPU passes | 4.787 ms | 4.514 ms | same artifact |
+| `RTSceneManager._process` last | 171 µs | 182 µs | +11 µs (noise), below 250 µs target |
+| Receiver-list rebuilds | 41 | 39 | No per-frame rebuild regression |
+
+The two scene-pass rows are retained only to document the sampling error; see the
+interleaved re-measurement at the top of this section for the real figure. **This
+pass did not meet its 0.25 ms target.** The optimization is output-identical and
+costs nothing, but it does not measurably improve frame time on this machine, and
+the residual RT cost is engine-forced — the `needs_normal_roughness` prepass
+promotion, the separate-specular MRT, and the specular merge, none of which are
+reachable from this codebase because the RT shader genuinely consumes both
+targets.
+
+Later CPU spot-check after the change, for the record: `_process` 130 µs,
+`light_influence_updates` 0 with a moving sun, 40 receiver-list rebuilds across
+1322 polled frames — all consistent with the CPU pass and no regression from the
+per-frame `light_set_cull_mask` re-assertion.
+
+### QUALITY and BALANCED presets
+
+| Preset | Internal target | Baseline median | Final median | p95, before → after | p99, before → after |
+|---|---:|---:|---:|---:|---:|
+| QUALITY (0.85) | 2176×1224 | 4.180 ms | 4.161 ms | 5.055 → 5.075 ms | 5.402 → 5.350 ms |
+| BALANCED (0.75) | 1920×1080 | 3.486 ms | 3.471 ms | 4.429 → 4.381 ms | 4.761 → 4.796 ms |
+
+Both presets selected the expected internal target and reported the FSR EASU
+pass. Their 0.019 and 0.015 ms median changes are within noise; neither preset
+regressed materially and no quality setting was reduced.
+
+### Pixel-exact output gate
+
+Cross-launch captures disable the procedural stars and grass and freeze the
+parked player after applying its camera transform. Those controls are necessary
+because the star seed is generated per process and the grass mask has a known
+~1/255 cross-launch floor. Every baseline self-control and every final-vs-
+baseline comparison was exact across all 3,686,400 pixels:
+
+| View | Baseline self-control | Final vs baseline | Maximum channel delta |
+|---|---:|---:|---:|
+| Default (yaw −142°, pitch −9°) | 0 pixels | 0 pixels | 0 |
+| Horizon (yaw −142°, pitch 0°) | 0 pixels | 0 pixels | 0 |
+| Top-down (yaw −142°, pitch −88°) | 0 pixels | 0 pixels | 0 |
+| Reflector-facing (yaw 18°, pitch −4°) | 0 pixels | 0 pixels | 0 |
+
+### Runtime contracts and smoke coverage
+
+- Hardware startup and camera switches now reject an active camera whose
+  `cull_mask` omits reserved layer 20, reporting the camera path and layer.
+- Newly discovered and already-managed authored lights have the private bit
+  cleared at the RenderingServer, and polling reasserts the override after live
+  mask edits. Stop/removal restores the current authored mask.
+- A moving local `OmniLight3D` remains an RT candidate, updates receiver lists
+  when moved out and back into range, and retains its authored cull mask in both
+  hardware and software paths.
+- `receiver_registry_smoke.gd` passed on software and hardware;
+  `terrain_player_smoke.gd`, `day_night_smoke.gd`, and `phase2_smoke.gd` also
+  passed. A full editor import/parse run completed without script errors.
+
+---
+
+## Grass pass 2: fog-band culling and shell-constant hoisting
+
+Four changes, all effectively output-identical. **Combined: −0.025 ms native
+(4.352 → 4.327 ms), −0.030 ms QUALITY, −0.020 ms BALANCED.** Small, but positive
+and consistent in every configuration and in every interleaved pair.
+
+### Fog-band grass culling — correct, and worth ~nothing here
+
+Distance fog reaches exactly 1.0 at its end, where the shell shader scales
+`ALBEDO` to zero and emits flat fog radiance — the same colour as the fogged
+terrain behind it. Grass entirely beyond that distance cannot change a pixel.
+
+The numbers lined up for it: `fog_end` is `terrain_load_distance ×
+fog_end_fraction` = 64 m, while `lod_far_to_hidden` is 86 m, so a 22 m band of
+grass was being drawn purely to be fogged out. The LOD metric is already the
+distance to the chunk's **AABB** (nearest point, via
+`_distance_squared_to_chunk_aabb_local`), so capping the hide band at `fog_end`
+removes only chunks whose entire footprint is past it.
+
+Implemented as a cap rather than an overwrite: authored `lod_far_to_hidden` still
+applies when it is tighter, and when fog is disabled it is the only rule. The
+authored hysteresis gap is preserved on the re-show distance so a chunk on the
+boundary cannot flicker. Chunks cache their thresholds squared, so
+`TerrainChunk.refresh_lod_thresholds()` and `TerrainManager.refresh_lod_thresholds()`
+were added to let a live fog change propagate to already-streamed chunks — fog is
+resolved by the renderer well after terrain starts streaming.
+
+**It culls 4 chunks and 16 shell instances (24 → 20 drawing, 288 → 272) and
+changes frame time by nothing measurable.** The reason is the geometry of the
+streaming radius: chunks load at 64 m, so only the outermost corners have their
+*nearest* point past the fog end. Those four are drawn at the FAR variant (4
+shells), sit at the horizon where they cover few pixels, and are largely occluded
+by nearer terrain already. An earlier estimate that this band was ~45% of grass
+ground area was wrong — it assumed grass filled the disc out to 86 m in every
+direction, which streaming never populates.
+
+Kept because it is free and correct, and because the gain scales with streaming
+radius and fog reach, both of which are level configuration.
+
+### Shell-constant colour hoisted to the vertex stage
+
+`mix(u_base_color, u_tip_color, h)` and `mix(0.72, 1.0, pow(h, 0.72))` are pure
+functions of the shell level, which is per instance — so both were constant
+across an entire shell and were being recomputed for every surviving fragment,
+including a `pow()`. Both now ride as `varying flat` terms.
+
+They are two separate varyings rather than one product on purpose: the fragment
+still applies them in the order it always did, because float multiplication is
+not associative and folding them would move the result.
+
+**`shell_level` itself is deliberately still interpolated**, and that is the
+interesting part. Flattening it is the honest qualifier — the value is per
+instance — and it measured slightly faster. But interpolating a constant is not
+bit-exact, and `shell_level` feeds the blade height test: flattening it moved a
+few dozen blade-edge fragments across their discard threshold, which showed up as
+**56 extra differing pixels at up to 26/255**. Flat is safe for the two colour
+terms because nothing branches on them and a last-bit difference cannot survive
+8-bit output; it is not safe for geometry. The final build differs from the
+reference by **11 pixels at 1/255**, against a launch-to-launch noise floor of
+**235,963 pixels at 3/255** for the *same* build.
+
+### Two reorderings and a dead guard
+
+- The blade height test now runs as soon as its cell's random draw is resolved,
+  before the stalk centre, the second offset clamp and the warped sample position
+  — all of which were being computed for fragments about to be thrown away, and
+  the upper shells discard here most often.
+- The provisional stalk centre moved inside the interaction branch, which is its
+  only consumer.
+- Dropped `max(min(blade_width, blade_length), 0.001)`. Both axes are `mix()`
+  results between positive endpoints scaled by positive variation, so the
+  narrower bottoms out near 0.0158 and the guard could never fire.
+
+### A dead end worth recording
+
+`x^0.75 == sqrt(x) · sqrt(sqrt(x))` looks like a way to avoid a transcendental
+for the length taper. It is not: the shared-logarithm form already in the shader
+costs **3** SFU ops for *both* tapers (`log2` once, `exp2` twice), while routing
+0.75 through square roots needs 2 for that taper plus `log2`+`exp2` for the 0.42
+one — **4**. The pair is already near-optimal, and the only remaining way to
+attack it is a lookup texture, with the precision risk that `pow(x, 0.42)` has
+unbounded derivative as x approaches zero, exactly at the blade base where blades
+are widest.
+
+### Verification
+
+- Pixel gate: 11 pixels at 1/255 against a 235,963-pixel / 3-per-255 same-build
+  noise floor
+- Presets engage at 2176×1224 and 1920×1080 and both improved
+- `phase2_smoke` (covers the LOD hysteresis this touches), `terrain_player_smoke`,
+  `receiver_registry_smoke`, `ground_layer_smoke`, `day_night_smoke`,
+  `app_flow_smoke` — all pass
+
+One process note: the first version of this shader used `flat varying float` and
+**failed to compile** — Godot's qualifier order is `varying flat`. The material
+silently fell back and the capture came back 76–99% different. The pixel gate
+caught it immediately; a frame-time-only check would have reported a large,
+meaningless "win".
+
+### The three remaining candidates, each measured and each reverted
+
+These were the only items left with a measured target after the output-identical
+work. All three were implemented, measured against an interleaved baseline, and
+backed out. Recording them so nobody spends the same day twice.
+
+| Candidate | Predicted | Measured | Outcome |
+|---|---:|---:|---|
+| Non-trigonometric cell hash | −0.261 ms | **+0.080 ms** | Reverted, slower |
+| Blade tapers via 2048×2 lookup texture | −0.500 ms | **+0.003 ms** | Reverted, no gain |
+| Cheaper AA-band norm (`length` → `max`) | −0.347 ms | −0.035 ms | Rejected on quality |
+
+**The predictions were all wrong in the same way**, and it is worth naming why.
+Each came from a diagnostic that *stubbed out* a piece of the shader and measured
+the difference. That measures the cost of the whole construct, not the cost of
+the part a real optimization would remove. Stubbing `hash22` to
+`fract(p * 0.0001)` removes two sines *and* two dot products *and* replaces them
+with almost nothing; the honest replacement still has to produce a well
+distributed pair of numbers, and every non-trig hash worth using costs about a
+dozen ALU ops. Two `sin` calls are two special-function instructions the RTX 4060
+issues cheaply. **A stub measures an upper bound that no real change can reach.**
+
+The lookup texture fails for the neighbouring reason: it trades three
+special-function ops for one texture fetch, and a texture unit has *lower*
+throughput than the special-function unit — the fetch being otherwise free
+(this shader samples nothing) only cancels that out rather than winning. It also
+brought a 16 KB texture, a precision cliff where `pow(x, 0.42)` has unbounded
+derivative as x approaches zero (exactly the blade base, where blades are
+widest), and a float-filtering portability question on Compatibility and Web.
+None of that is worth 0.003 ms.
+
+The AA-band norm is the only one that *did* produce a gain, and it was declined
+rather than failed: `length(fwidth(base_xz))` and `max(fwidth(base_xz))` differ
+by up to 41% when the two derivatives are similar, so the band narrows and blade
+silhouettes alias harder. That is the same failure mode as the cell lattice this
+document already describes, on the same geometry, for 0.8%.
+
+**What this closes.** Grass fragment cost is now dominated by work that is either
+load-bearing (the AA band) or already near-optimal (the shared-logarithm tapers,
+the sine hash). There is no further output-identical headroom in this shader that
+measurement has been able to find. Anything beyond this point is a deliberate
+quality decision — fewer shells, a coarser blade model, or a temporal technique —
+not an optimization.
