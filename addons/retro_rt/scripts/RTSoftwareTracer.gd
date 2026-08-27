@@ -70,6 +70,17 @@ var _environment_texture: Texture2D
 var _geometry_height := 0
 var _instance_height := 0
 var _shading_height := 0
+## Reused staging buffer for [method _upload_atlas]. Sized to the atlas being
+## uploaded and shared across all three kinds, which are never in flight at once.
+var _atlas_scratch := PackedFloat32Array()
+## Floats actually written by the previous upload, so a shorter table can clear
+## only the tail it leaves behind.
+var _atlas_scratch_used := 0
+## Retained [Image] per atlas kind, refilled in place via [method Image.set_data].
+var _atlas_images: Dictionary = {}
+## Reused texel staging for the shading atlas, which rebuilds every frame the sun
+## moves. An [Array] is a reference type, so this one is shared, not copied.
+var _shading_texels: Array[Vector4] = []
 var _texture_atlas_bytes := 0
 var _environment_texture_bytes := 0
 var _textures_dirty := false
@@ -451,6 +462,11 @@ func shutdown() -> void:
 	_geometry_height = 0
 	_instance_height = 0
 	_shading_height = 0
+	# Retained staging follows the atlas heights it was sized against.
+	_atlas_images.clear()
+	_atlas_scratch.resize(0)
+	_atlas_scratch_used = 0
+	_shading_texels.clear()
 	_texture_atlas_bytes = 0
 	_environment_texture_bytes = 0
 	_textures_dirty = false
@@ -897,7 +913,10 @@ func _build_and_upload_shading_atlas(snapshot: Dictionary) -> String:
 	var required_texels := list_base + list_texel_count
 	if required_texels > MAX_ATLAS_TEXELS:
 		return _atlas_capacity_error(&"shading", required_texels)
-	var texels: Array[Vector4] = []
+	# Reused across frames. Every slot below required_texels is written before it
+	# is read, so no clear is needed; an Array is a reference type, so this is the
+	# same storage each time rather than a fresh one per frame.
+	var texels := _shading_texels
 	texels.resize(required_texels)
 	var environment_snapshot: Dictionary = snapshot.get("environment", {})
 	var miss: Color = environment_snapshot.get("fallback_linear", Color.BLACK)
@@ -1018,16 +1037,36 @@ func _upload_atlas(kind: StringName, texels: Array[Vector4]) -> String:
 	if height > MAX_ATLAS_HEIGHT:
 		return "%s atlas requires %d rows; the Compatibility/Web limit is %d (%d x %d RGBAF)." % [
 			String(kind).capitalize(), required_height, MAX_ATLAS_HEIGHT, ATLAS_WIDTH, MAX_ATLAS_HEIGHT]
-	var floats := PackedFloat32Array()
-	floats.resize(ATLAS_WIDTH * height * 4)
+	# Written through the member rather than a local: a packed array is
+	# copy-on-write, so a second reference would clone the whole buffer on the
+	# first store and undo the reuse this is here for. The shading atlas is
+	# rebuilt every frame a light moves, which under a day/night sun is every
+	# frame, so the allocation churn here was the largest in the project.
+	var required_floats := ATLAS_WIDTH * height * 4
+	if _atlas_scratch.size() != required_floats:
+		_atlas_scratch.resize(required_floats)
+		_atlas_scratch_used = required_floats
+	var used := texels.size() * 4
 	for i in texels.size():
 		var value := texels[i]
 		var offset := i * 4
-		floats[offset] = value.x
-		floats[offset + 1] = value.y
-		floats[offset + 2] = value.z
-		floats[offset + 3] = value.w
-	var image := Image.create_from_data(ATLAS_WIDTH, height, false, Image.FORMAT_RGBAF, floats.to_byte_array())
+		_atlas_scratch[offset] = value.x
+		_atlas_scratch[offset + 1] = value.y
+		_atlas_scratch[offset + 2] = value.z
+		_atlas_scratch[offset + 3] = value.w
+	# A shorter table than last time would otherwise leave the previous upload's
+	# values sitting past the end of this one.
+	for i in range(used, mini(_atlas_scratch_used, required_floats)):
+		_atlas_scratch[i] = 0.0
+	_atlas_scratch_used = used
+
+	var image: Image = _atlas_images.get(kind)
+	var data := _atlas_scratch.to_byte_array()
+	if image == null or image.get_width() != ATLAS_WIDTH or image.get_height() != height:
+		image = Image.create_from_data(ATLAS_WIDTH, height, false, Image.FORMAT_RGBAF, data)
+		_atlas_images[kind] = image
+	else:
+		image.set_data(ATLAS_WIDTH, height, false, Image.FORMAT_RGBAF, data)
 	if image == null or image.is_empty():
 		return "Godot could not create the %s RGBAF atlas image." % kind
 

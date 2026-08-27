@@ -92,6 +92,9 @@ var _cached_uniform_ground := RID()
 var _last_profiled_timestamp_frame := -1
 var _profiling_active := false
 var _profile_mutex := Mutex.new()
+## Render size the constant dispatch facts were last published for. Render-thread
+## only; see the republish gate in the dispatch path.
+var _published_facts_size := Vector2i(-1, -1)
 var _profile := {
 	"blas_builds": 0,
 	"tlas_builds": 0,
@@ -197,15 +200,21 @@ func _render_callback(effect_callback_type_value: int, render_data: RenderData) 
 	rd.raytracing_list_trace_rays(ray_list, 0, hit_sbt, full_size.x, full_size.y, 1)
 	rd.raytracing_list_end()
 
-	_set_profile_facts({
-		"ray_tracing_full_resolution": full_size,
-		"ray_tracing_resolution": full_size,
-		"ray_tracing_dispatched_pixels": full_size.x * full_size.y,
-		"ray_tracing_width": full_size.x,
-		"ray_tracing_height": full_size.y,
-		"ray_tracing_dispatch_pixels": full_size.x * full_size.y,
-		"ray_tracing_resolution_method": &"native",
-	})
+	# These facts are constant for a given render size, but this runs on the
+	# render thread every frame -- so publishing them unconditionally allocated a
+	# dictionary and took the profile mutex on every frame, profiling off or on.
+	# Republish only when the size actually moves; the values stay populated.
+	if full_size != _published_facts_size:
+		_published_facts_size = full_size
+		_set_profile_facts({
+			"ray_tracing_full_resolution": full_size,
+			"ray_tracing_resolution": full_size,
+			"ray_tracing_dispatched_pixels": full_size.x * full_size.y,
+			"ray_tracing_width": full_size.x,
+			"ray_tracing_height": full_size.y,
+			"ray_tracing_dispatch_pixels": full_size.x * full_size.y,
+			"ray_tracing_resolution_method": &"native",
+		})
 
 	if profiling_enabled:
 		rd.capture_timestamp(PROFILE_DISPATCH_END)

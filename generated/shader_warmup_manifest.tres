@@ -1,18 +1,18 @@
-[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4]
+[gd_resource type="Resource" script_class="ShaderWarmupManifest" format=4 uid="uid://bfwekcsijdqp8"]
 
-[ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="1_8rwql"]
-[ext_resource type="Shader" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="2_sm4wu"]
-[ext_resource type="Shader" path="res://addons/procedural_terrain_grass/shaders/terrain.gdshader" id="3_fg7vo"]
-[ext_resource type="Shader" path="res://addons/day_night_cycle/shaders/day_night_sky_bake.gdshader" id="4_fg7vo"]
-[ext_resource type="Shader" path="res://addons/retro_rt/post_processing/shaders/fsr_easu.gdshader" id="4_hmvwk"]
-[ext_resource type="Shader" path="res://addons/day_night_cycle/shaders/day_night_sky.gdshader" id="4_sct6b"]
-[ext_resource type="Shader" path="res://addons/retro_rt/post_processing/shaders/retro_present.gdshader" id="5_sct6b"]
-[ext_resource type="Shader" path="res://addons/retro_rt/post_processing/shaders/smaa_edge.gdshader" id="6_rlwkw"]
-[ext_resource type="Shader" path="res://addons/retro_rt/post_processing/shaders/smaa_neighborhood.gdshader" id="7_itc6l"]
-[ext_resource type="Shader" path="res://addons/retro_rt/post_processing/shaders/smaa_weights.gdshader" id="8_hq4cd"]
-[ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhongSoftware.gdshader" id="9_knj3i"]
-[ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhongSoftwareValidation.gdshader" id="10_4swyu"]
-[ext_resource type="Script" path="res://addons/shader_warmup/shader_warmup_manifest.gd" id="11_ux7tk"]
+[ext_resource type="Shader" uid="uid://bfhmjth5ltdrv" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="1_8rwql"]
+[ext_resource type="Shader" uid="uid://kueanl5fngu5" path="res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader" id="2_sm4wu"]
+[ext_resource type="Shader" uid="uid://b8aw1vycdmf36" path="res://addons/procedural_terrain_grass/shaders/terrain.gdshader" id="3_fg7vo"]
+[ext_resource type="Shader" uid="uid://btwyab1wn3lat" path="res://addons/day_night_cycle/shaders/day_night_sky_bake.gdshader" id="4_fg7vo"]
+[ext_resource type="Shader" uid="uid://gw3alysmim4a" path="res://addons/retro_rt/post_processing/shaders/fsr_easu.gdshader" id="4_hmvwk"]
+[ext_resource type="Shader" uid="uid://vifywj662n75" path="res://addons/day_night_cycle/shaders/day_night_sky.gdshader" id="4_sct6b"]
+[ext_resource type="Shader" uid="uid://d1mvi48gh3pmu" path="res://addons/retro_rt/post_processing/shaders/retro_present.gdshader" id="5_sct6b"]
+[ext_resource type="Shader" uid="uid://cvyogr2v2n1ig" path="res://addons/retro_rt/post_processing/shaders/smaa_edge.gdshader" id="6_rlwkw"]
+[ext_resource type="Shader" uid="uid://31pirw558gvd" path="res://addons/retro_rt/post_processing/shaders/smaa_neighborhood.gdshader" id="7_itc6l"]
+[ext_resource type="Shader" uid="uid://bdf8uaasd5v3j" path="res://addons/retro_rt/post_processing/shaders/smaa_weights.gdshader" id="8_hq4cd"]
+[ext_resource type="Shader" uid="uid://dsc2nb1i203j0" path="res://addons/retro_rt/shaders/BlinnPhongSoftware.gdshader" id="9_knj3i"]
+[ext_resource type="Shader" uid="uid://dn65lq2u22dcn" path="res://addons/retro_rt/shaders/BlinnPhongSoftwareValidation.gdshader" id="10_4swyu"]
+[ext_resource type="Script" uid="uid://cirkj6idwgnr6" path="res://addons/shader_warmup/shader_warmup_manifest.gd" id="11_ux7tk"]
 
 [sub_resource type="Environment" id="Environment_fg7vo"]
 background_mode = 1
@@ -239,10 +239,10 @@ resource_name = "Terrain Blinn-Phong"
 render_priority = 0
 shader = ExtResource("1_8rwql")
 shader_parameter/ambient_light = Color(0.08, 0.08, 0.08, 1)
-shader_parameter/diffuse_color = Color(0.115, 0.2, 0.075, 1)
+shader_parameter/diffuse_color = Color(1, 1, 1, 1)
 shader_parameter/emission_color = Color(0, 0, 0, 1)
 shader_parameter/specular_color = Color(0.35, 0.35, 0.35, 1)
-shader_parameter/vertex_color_enabled = false
+shader_parameter/vertex_color_enabled = true
 shader_parameter/triplanar_enabled = false
 shader_parameter/triplanar_world_space = false
 shader_parameter/triplanar_scale = Vector3(1, 1, 1)
@@ -706,5 +706,5 @@ sources = PackedStringArray("res://addons/day_night_cycle/examples/DayNightExamp
 pair_material_indices = PackedInt32Array(0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 8, 14, 14, 15)
 pair_vertex_formats = PackedInt64Array(4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4127, 4119, 4111, 4127, 4127, 4119)
 pair_flags = PackedInt32Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0)
-generated_at = "2026-08-26 15:37:05"
-fingerprint = "a1189a70dc500fb554af29c6e67f7a541ce2db7c703c4925f8f4698e4a0329cc"
+generated_at = "2026-08-26 15:57:17"
+fingerprint = "35f9406a9c47abe352dfbb50354825adadc20dfc3441ffebb44a3af8961150a5"

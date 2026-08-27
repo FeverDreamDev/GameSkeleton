@@ -100,6 +100,10 @@ var day_length_seconds: float = 1200.0
 @export_range(0.05, 12.0, 0.01) var moon_angular_radius_degrees: float = 3.2
 
 @export_group("Stars")
+## Draws the star field at all. Clearing this holds [code]u_star_intensity[/code]
+## at zero, which is the same gate the daylight hours use, so the nine-cell field
+## is never evaluated. Mirrors [member clouds_enabled].
+@export var stars_enabled: bool = true
 ## Cells per cube face. Higher is more, smaller stars.
 @export_range(4.0, 400.0, 1.0) var star_density: float = 150.0
 ## Fraction of cells that actually hold a star.
@@ -193,6 +197,9 @@ var _phase: int = Phase.DAY
 var _sun_occlusion: float = 0.0
 var _star_seed: float = 0.0
 var _twinkle_time: float = 0.0
+## Holds [member _twinkle_time] still so a night capture is reproducible frame to
+## frame. Test-only; the cycle never sets this itself.
+var _twinkle_frozen: bool = false
 ## Distance the cloud layer has scrolled on the wind, in world metres. Shared
 ## with every shader that samples the layer, so they all see the same sky.
 var _cloud_offset := Vector2.ZERO
@@ -252,7 +259,8 @@ func _process(delta: float) -> void:
 	elif time_running and delta > 0.0:
 		_advance(delta)
 
-	_twinkle_time = fmod(_twinkle_time + delta, TAU * 1024.0)
+	if not _twinkle_frozen:
+		_twinkle_time = fmod(_twinkle_time + delta, TAU * 1024.0)
 	# One tile of the cloud texture covers cloud_world_size metres, so wrapping
 	# the scroll at that distance is exact and the offset never grows large
 	# enough to lose precision in a shader.
@@ -422,7 +430,8 @@ func _push_sky(
 		&"u_moon_intensity", clampf(star_intensity, 0.0, 1.0))
 	material.set_shader_parameter(
 		&"u_moon_glow_intensity", 0.10 * clampf(star_intensity, 0.0, 1.0))
-	material.set_shader_parameter(&"u_star_intensity", star_intensity)
+	material.set_shader_parameter(
+		&"u_star_intensity", star_intensity if stars_enabled else 0.0)
 	material.set_shader_parameter(&"u_star_density", star_density)
 	material.set_shader_parameter(&"u_star_coverage", star_coverage)
 	material.set_shader_parameter(&"u_star_size", star_size)

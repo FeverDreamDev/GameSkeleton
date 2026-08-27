@@ -17,9 +17,17 @@ extends SceneTree
 ##   PERF_GRASS_QUALITY=n
 ##                   grass tier: 0 off, 1 low, 2 medium, 3 high
 ##   PERF_SKY=0      hide the day/night sky dome
+##   PERF_CLOUDS=0   keep the dome but drop the cloud layer
+##   PERF_STARS=0    keep the dome but drop the star field
 ##   PERF_SMAA=0     disable the three SMAA passes
 ##   PERF_GRADE=0    disable the RetroGrade present pass
 ##   PERF_RT=0       stop ray tracing entirely
+##   PERF_GROUND=0   keep RT but disable the analytic reflection-ground trace
+##   PERF_BACKEND=software
+##                   force the Compatibility tracer instead of hardware RT
+##   PERF_CLOCK=1    let the day/night clock run; OFF BY DEFAULT, and required
+##                   for any measurement involving a moving sun
+##   PERF_TIME=f     time of day, default 10.5
 ##   PERF_WARMUP=n   warmup frames, default 300
 ##   PERF_FRAMES=n   measured frames, default 1200
 ##   PERF_LABEL=str  printed with the result so a sweep is readable
@@ -73,6 +81,11 @@ func _run() -> void:
 	_shell.rt_start_timeout_seconds = 30.0
 	if OS.get_environment("PERF_PROFILE") == "1":
 		_shell.get_node("RTSceneManager").profiling_enabled = true
+	# The Compatibility tracer is a shipping path, and it has an entirely
+	# different cost profile from the hardware one, so it needs to be measurable
+	# on a machine that would otherwise always select hardware.
+	if OS.get_environment("PERF_BACKEND") == "software":
+		_shell.get_node("RTSceneManager").rt_backend = RTSceneManager.RTBackend.SOFTWARE
 	root.add_child(_shell)
 
 	if not await _wait_for(
@@ -108,6 +121,11 @@ func _run() -> void:
 	if not OS.get_environment("PERF_SHOT").is_empty():
 		day_night.wind_speed = 0.0
 		day_night.set(&"_cloud_offset", Vector2.ZERO)
+		# Twinkle advances from raw delta whether or not the clock runs, so two
+		# runs of the same build land on different phases and every star differs.
+		# Freezing it is what makes a night capture comparable at all.
+		day_night.set(&"_twinkle_frozen", true)
+		day_night.set(&"_twinkle_time", 0.0)
 		var grass_material := terrain.get_grass_material() as ShaderMaterial
 		if grass_material != null:
 			grass_material.set_shader_parameter(&"u_wind_enabled", false)
@@ -225,12 +243,24 @@ func _apply_toggles(terrain, day_night) -> void:
 		var dome := day_night.find_child("SkyDome", true, false) as MeshInstance3D
 		if dome != null:
 			dome.visible = false
+	# Clouds and stars are the two expensive terms inside the sky shader, and
+	# PERF_SKY only answers what the whole dome costs. Both gates are the ones
+	# the cycle already uses, so nothing else about the sky shifts.
+	if not _env_flag("PERF_CLOUDS"):
+		day_night.clouds_enabled = false
+	if not _env_flag("PERF_STARS"):
+		day_night.stars_enabled = false
 	if not _env_flag("PERF_SMAA"):
 		_shell.rt_manager.post_anti_aliasing_enabled = false
 	if not _env_flag("PERF_GRADE"):
 		_shell.rt_manager.retro_post_enabled = false
 	if not _env_flag("PERF_RT"):
 		_shell.rt_manager.stop_rt()
+	# Zero march steps is the shader's own "layer disabled" encoding, so this
+	# isolates the analytic ground trace without disturbing reflections
+	# themselves -- a reflection ray that misses then resolves to the environment.
+	if not _env_flag("PERF_GROUND"):
+		_shell.rt_manager.ground_march_steps = 0
 
 
 func _percentile(sorted: PackedFloat64Array, fraction: float) -> float:
@@ -251,7 +281,9 @@ func _report(terrain) -> void:
 		label = "default"
 
 	var toggles: PackedStringArray = []
-	for name in ["PERF_GRASS", "PERF_SKY", "PERF_SMAA", "PERF_GRADE", "PERF_RT"]:
+	for name in [
+			"PERF_GRASS", "PERF_SKY", "PERF_CLOUDS", "PERF_STARS", "PERF_GROUND",
+			"PERF_SMAA", "PERF_GRADE", "PERF_RT"]:
 		if not _env_flag(name):
 			toggles.append(name.trim_prefix("PERF_").to_lower() + "=off")
 	if toggles.is_empty():
@@ -290,6 +322,14 @@ func _report(terrain) -> void:
 			int(profile.get("snapshot_updates", -1)), int(profile.get("poll_frames", -1)),
 			int(profile.get("receiver_light_list_rebuilds", -1)),
 			int(profile.get("receiver_light_revision", -1))])
+		# A rotating sun lands in the shading class, which is what keeps rebuilds
+		# far below the frame count. Influence updates are the ones that must
+		# rebuild; skipped is the count that used to be paid for nothing.
+		print("  light updates: shading %d, influence %d; rebuilds skipped %d, receivers recomputed %d" % [
+			int(profile.get("light_shading_updates", -1)),
+			int(profile.get("light_influence_updates", -1)),
+			int(profile.get("receiver_rebuilds_skipped", -1)),
+			int(profile.get("receiver_light_receivers_recomputed", -1))])
 		print("  instances %d (receiver-only %d), dispatch gpu %.3f ms" % [
 			int(profile.get("managed_instances", -1)),
 			int(profile.get("receiver_only_instances", -1)),

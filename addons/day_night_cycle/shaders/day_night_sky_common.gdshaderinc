@@ -230,10 +230,21 @@ vec3 star_field(vec3 direction) {
 			// cost of the only loop this shader runs per pixel.
 			vec3 traits = fract(random * vec3(97.3, 61.7, 43.1) + random.zxy);
 			vec2 star_position = neighbour + vec2(random.x, random.y);
-			float distance_to_star = length(local - star_position);
+			vec2 to_star = local - star_position;
 
 			float magnitude = mix(0.18, 1.0, traits.x * traits.x);
 			float radius = u_star_size * mix(0.55, 1.15, traits.y);
+			// The core smoothstep below is exactly zero once the distance reaches
+			// the radius, so cells that far out contribute nothing. Rejecting them
+			// on the squared distance skips the root, the twinkle sine and the
+			// tint mix without touching any pixel a star actually covers. Compare
+			// squared -- feeding squared values to the smoothstep itself would
+			// bend the falloff and reshape every star.
+			float distance_squared = dot(to_star, to_star);
+			if (distance_squared >= radius * radius) {
+				continue;
+			}
+			float distance_to_star = sqrt(distance_squared);
 			// A solid core inside a soft skirt. A true point would alias into a
 			// crawling speck under SMAA; a few pixels of skirt is what makes the
 			// field hold still while the view turns.
@@ -285,9 +296,14 @@ vec3 dnc_sky_color(vec3 direction, vec3 camera_position) {
 
 	if (u_star_intensity > 0.0) {
 		float horizon_mask = smoothstep(0.0, max(u_star_horizon_fade, 0.001), height);
-		// Stars go in before the discs and the glow terms have already been
-		// added, so a bright sky washes them out without a second blend.
-		sky += star_field(direction) * (u_star_intensity * horizon_mask);
+		// The mask is zero across the whole lower hemisphere, and the dome is a
+		// box centred on the camera, so without this gate every fragment below
+		// the horizon ran the nine-cell field only to be multiplied out by zero.
+		if (horizon_mask > 0.0) {
+			// Stars go in before the discs and the glow terms have already been
+			// added, so a bright sky washes them out without a second blend.
+			sky += star_field(direction) * (u_star_intensity * horizon_mask);
+		}
 	}
 
 	// The soft edge is a fixed fraction of the radius, so shrinking the sun
@@ -331,28 +347,39 @@ vec3 dnc_sky_color(vec3 direction, vec3 camera_position) {
 	if (direction.y > 0.005 && u_cloud_params.y > 0.0) {
 		float travel = (u_cloud_params.x - camera_position.y) / direction.y;
 		if (travel > 0.0) {
-			vec2 hit = camera_position.xz + direction.xz * travel;
-			// A flat layer stretches without bound towards the skyline, so the
-			// noise has to be filtered by how far away it is or it breaks into
-			// straight aliased streaks long before the distance fade reaches it.
-			float edge_scale = 1.0 + travel * u_cloud_params.y * 0.35;
-			float density = dnc_cloud_density(
-				u_cloud_params, u_cloud_motion, hit, edge_scale);
-			// One extra tap towards the sun. Where the layer thickens in that
-			// direction the near face is turned away from the light, which is all
-			// the shading a flat layer needs to stop reading as a decal.
-			vec2 sun_step = u_cloud_sun_direction.xz * (0.03 / max(u_cloud_params.y, 0.00001));
-			float towards_sun = dnc_cloud_density(
-				u_cloud_params, u_cloud_motion, hit + sun_step, edge_scale);
-			float slope = clamp((towards_sun - density) * 1.6 + 0.45, 0.0, 1.0);
-			vec3 cloud_color = mix(
-				u_cloud_lit_color, u_cloud_shade_color, u_cloud_shade * slope);
 			// The layer is flat, so distance grows without bound towards the
 			// skyline. Fading it out there is what keeps it from collapsing into a
-			// hard band across the horizon.
-			density *= 1.0 - smoothstep(
+			// hard band across the horizon. The factor depends on nothing but the
+			// travel distance, so resolving it here -- rather than after both
+			// density taps as it used to be -- lets the whole band beyond the fade
+			// distance skip eight octaves of noise it could only multiply away.
+			float distance_fade = 1.0 - smoothstep(
 				u_cloud_fade_distance * 0.3, u_cloud_fade_distance, travel);
-			sky = mix(sky, cloud_color, density);
+			if (distance_fade > 0.0) {
+				vec2 hit = camera_position.xz + direction.xz * travel;
+				// A flat layer stretches without bound towards the skyline, so the
+				// noise has to be filtered by how far away it is or it breaks into
+				// straight aliased streaks long before the distance fade reaches it.
+				float edge_scale = 1.0 + travel * u_cloud_params.y * 0.35;
+				float density = dnc_cloud_density(
+					u_cloud_params, u_cloud_motion, hit, edge_scale);
+				// Clear sky is the common case: the coverage threshold has already
+				// zeroed the density, and a zero-weight mix cannot tint anything, so
+				// the sun tap and the shading below would be discarded in full.
+				if (density > 0.0) {
+					// One extra tap towards the sun. Where the layer thickens in that
+					// direction the near face is turned away from the light, which is all
+					// the shading a flat layer needs to stop reading as a decal.
+					vec2 sun_step = u_cloud_sun_direction.xz * (0.03 / max(u_cloud_params.y, 0.00001));
+					float towards_sun = dnc_cloud_density(
+						u_cloud_params, u_cloud_motion, hit + sun_step, edge_scale);
+					float slope = clamp((towards_sun - density) * 1.6 + 0.45, 0.0, 1.0);
+					vec3 cloud_color = mix(
+						u_cloud_lit_color, u_cloud_shade_color, u_cloud_shade * slope);
+					density *= distance_fade;
+					sky = mix(sky, cloud_color, density);
+				}
+			}
 		}
 	}
 	return sky;

@@ -103,10 +103,19 @@ at the authored resolution, because the RT stack sizes every pass from it:
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
 ```
 
-`PERF_GRASS=0`, `PERF_SKY=0`, `PERF_CLOUDS=0`, `PERF_SMAA=0`, `PERF_GRADE=0` and
-`PERF_RT=0` switch a subsystem off so its share of the frame can be read off the
-difference. `PERF_PROFILE=1` adds the RT manager's main-thread cost and its
-snapshot counters.
+`PERF_GRASS=0`, `PERF_SKY=0`, `PERF_CLOUDS=0`, `PERF_STARS=0`, `PERF_SMAA=0`,
+`PERF_GRADE=0`, `PERF_GROUND=0` and `PERF_RT=0` switch a subsystem off so its
+share of the frame can be read off the difference. `PERF_CLOUDS` and
+`PERF_STARS` keep the dome and drop one term inside the sky shader;
+`PERF_GROUND` keeps ray tracing and drops only the analytic reflection-ground
+trace. `PERF_BACKEND=software` forces the Compatibility tracer on a machine that
+would otherwise select hardware RT. `PERF_PROFILE=1` adds the RT manager's
+main-thread cost and its snapshot counters.
+
+**`PERF_CLOCK=1` is off by default, and every measurement involving a moving sun
+needs it.** With the clock frozen the sun never moves, so anything that only
+costs something while lights change measures as exactly zero — while the shipping
+default is a running clock. A frozen-clock run is a control, not a baseline.
 
 `PERF_SHOT=<path>` writes the viewpoint to a PNG, and `PERF_REF=<path>` compares
 against an earlier one and reports how many pixels differ, plus an amplified

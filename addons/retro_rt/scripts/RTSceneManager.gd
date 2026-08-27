@@ -41,6 +41,18 @@ enum RTQualityPreset {
 	PERFORMANCE,
 }
 
+## The live lights match the published snapshot.
+const LIGHT_CHANGE_NONE := 0
+## Light data the shader reads changed, but nothing the receiver/light culler
+## reads did. The light buffer is re-uploaded; candidate lists are left alone.
+const LIGHT_CHANGE_SHADING := 1
+## A light changed in a way that can move it in or out of a receiver's candidate
+## list, so the lists have to be rebuilt. Implies [constant LIGHT_CHANGE_SHADING].
+const LIGHT_CHANGE_INFLUENCE := 2
+
+## Frames the per-surface topology sweep takes to cover every receiver once.
+const _TOPOLOGY_VALIDATION_FRAMES := 12
+
 
 class SnapshotBridge:
 	extends RefCounted
@@ -356,6 +368,12 @@ var _receiver_light_indices := PackedInt32Array()
 var _receiver_light_candidates: Array[PackedInt32Array] = []
 var _instances: Array[Dictionary] = []
 var _render_instances: Array[Dictionary] = []
+## Bumped wherever [member _render_instances] is replaced or cleared. The registry
+## is copy-on-write at every mutation site, so a published clone stays valid until
+## this moves -- which is what lets [method _commit_current_snapshot] reuse one.
+var _render_instances_revision := 0
+var _published_instances: Array[Dictionary] = []
+var _published_instances_revision := -1
 var _mesh_records: Array[Dictionary] = []
 var _mesh_sources: Array[Mesh] = []
 var _material_records: Array[Dictionary] = []
@@ -388,6 +406,10 @@ var _texture_atlas_bytes := 0
 var _texture_atlas_uploads := 0
 var _texture_content_dirty := false
 var _lights: Array[Light3D] = []
+## Scene paths for [member _lights], parallel and index-matched. Diagnostics only;
+## resolved in [method _discover_lights] so the per-frame snapshot never walks the
+## tree for a string it almost never prints.
+var _light_paths: PackedStringArray = PackedStringArray()
 var _light_shadow_states: Dictionary = {}
 var _light_topology_dirty := false
 var _topology_dirty := false
@@ -412,6 +434,12 @@ var _receiver_list_rebuilds := 0
 var _receiver_candidates_recomputed := 0
 var _receiver_light_total := 0
 var _receiver_light_maximum := 0
+var _light_shading_updates := 0
+var _light_influence_updates := 0
+var _receiver_rebuilds_skipped := 0
+## Round-robin position for the per-surface topology sweep. See
+## [method _should_validate_topology_this_frame].
+var _topology_validation_cursor := 0
 var _profile_poll_frames := 0
 var _profile_snapshot_updates := 0
 var _profile_last_update_usec := 0
@@ -879,6 +907,7 @@ func _teardown_editor_preview() -> void:
 	_restore_editor_scene_materials()
 	_instances.clear()
 	_render_instances.clear()
+	_render_instances_revision += 1
 	_mesh_records.clear()
 	_mesh_sources.clear()
 	_material_records.clear()
@@ -2072,6 +2101,7 @@ func _collect_scene() -> bool:
 	_disconnect_environment_signals()
 	_instances.clear()
 	_render_instances.clear()
+	_render_instances_revision += 1
 	_mesh_records.clear()
 	_mesh_sources.clear()
 	_material_records.clear()
@@ -2108,6 +2138,9 @@ func _collect_scene() -> bool:
 	_receiver_candidates_recomputed = 0
 	_receiver_light_total = 0
 	_receiver_light_maximum = 0
+	_light_shading_updates = 0
+	_light_influence_updates = 0
+	_receiver_rebuilds_skipped = 0
 	_receiver_only_instance_count = 0
 	_traversable_instance_count = 0
 	_placeholder_geometry_active = false
@@ -2309,6 +2342,7 @@ func _register_receiver_only_node(mesh_node: MeshInstance3D) -> void:
 	# Keep prior render-thread snapshots immutable while this registry appends or
 	# reuses a primary receiver slot and its surface bindings.
 	_render_instances = _render_instances.duplicate(true)
+	_render_instances_revision += 1
 	_instance_material_indices = _instance_material_indices.duplicate()
 	var surface_material_indices := PackedInt32Array()
 	var active_material_ids := PackedInt64Array()
@@ -2435,6 +2469,7 @@ func _unregister_receiver_only_instance(instance_index: int) -> void:
 	item["receiver_tombstone"] = true
 	_instances[instance_index] = item
 	_render_instances = _render_instances.duplicate(true)
+	_render_instances_revision += 1
 	var render_record := _render_instances[instance_index].duplicate(true)
 	render_record["receiver_tombstone"] = true
 	_render_instances[instance_index] = render_record
@@ -2713,6 +2748,13 @@ func _make_material_record(material: ShaderMaterial) -> Dictionary:
 		"ambient": ambient_rt,
 		"emission": emission_rt,
 		"specular": specular_rt,
+		# The authored sRGB values are retained purely so the per-frame change
+		# check can compare what the material actually holds, without paying for
+		# the twelve pow() calls the linear conversion above costs.
+		"diffuse_srgb": diffuse_value as Color,
+		"ambient_srgb": ambient_value as Color,
+		"emission_srgb": emission_value as Color,
+		"specular_srgb": specular_value as Color,
 		"shininess": float(shininess_value),
 		"direct_intensity": float(direct_intensity_value),
 		"reflection_shadows_enabled": bool(reflection_shadows_value),
@@ -2731,30 +2773,157 @@ func _make_material_record(material: ShaderMaterial) -> Dictionary:
 	}
 
 
+## Classifies a managed material against its published record, per frame, for
+## every managed material.
+##
+## Returns -2 when an atlased texture was swapped, -1 when the material no longer
+## presents the RT BlinnPhong interface, 0 when a tracked value changed and 1 when
+## nothing did. Contract unchanged from when this delegated to
+## [method _make_material_record].
+##
+## Nothing is allocated on the unchanged path. This used to build a whole record
+## -- a twenty-key dictionary and four sRGB conversions -- purely to discover
+## that every field still matched, then throw it away. The values are read and
+## compared in place instead, bailing on the first difference; the caller still
+## rebuilds through [method _make_material_record] when this reports 0.
 func _compare_material_record(material: ShaderMaterial, record: Dictionary) -> int:
-	var current := _make_material_record(material)
-	if current.is_empty():
+	# Same gate _make_material_record opens with, and the cheapest check here.
+	if material.shader != BLINN_PHONG_SHADER:
 		return -1
-	if int(current["albedo_texture_id"]) != int(record["albedo_texture_id"]):
+	# Texture identity next: a swap here is unrecoverable (the atlases are
+	# static), so it outranks every other difference.
+	var albedo_value = material.get_shader_parameter("albedo_texture")
+	var normal_value = material.get_shader_parameter("normal_texture")
+	if albedo_value != null and not albedo_value is Texture2D:
+		return -1
+	if normal_value != null and not normal_value is Texture2D:
+		return -1
+	var albedo_texture_id := (albedo_value as Texture2D).get_instance_id() if albedo_value is Texture2D else 0
+	var normal_texture_id := (normal_value as Texture2D).get_instance_id() if normal_value is Texture2D else 0
+	if albedo_texture_id != int(record["albedo_texture_id"]):
 		return -2
-	if int(current["normal_texture_id"]) != int(record["normal_texture_id"]):
+	if normal_texture_id != int(record["normal_texture_id"]):
 		return -2
-	var unchanged := (
-		(current["diffuse"] as Color) == (record["diffuse"] as Color)
-		and (current["ambient"] as Color) == (record["ambient"] as Color)
-		and (current["emission"] as Color) == (record["emission"] as Color)
-		and (current["specular"] as Color) == (record["specular"] as Color)
-		and float(current["shininess"]) == float(record["shininess"])
-		and float(current["direct_intensity"]) == float(record["direct_intensity"])
-		and bool(current["reflection_shadows_enabled"]) == bool(record["reflection_shadows_enabled"])
-		and bool(current["vertex_color_enabled"]) == bool(record["vertex_color_enabled"])
-		and bool(current["triplanar_enabled"]) == bool(record["triplanar_enabled"])
-		and bool(current["triplanar_world_space"]) == bool(record["triplanar_world_space"])
-		and (current["triplanar_scale"] as Vector3) == (record["triplanar_scale"] as Vector3)
-		and (current["triplanar_offset"] as Vector3) == (record["triplanar_offset"] as Vector3)
-		and float(current["triplanar_sharpness"]) == float(record["triplanar_sharpness"])
-	)
-	return 1 if unchanged else 0
+
+	# Scalars and flags before colours: they discriminate just as well and cost
+	# nothing to compare.
+	var shininess_value = material.get_shader_parameter("shininess")
+	if shininess_value == null:
+		shininess_value = 40.0
+	elif not _is_numeric(shininess_value):
+		return -1
+	if float(shininess_value) != float(record["shininess"]):
+		return 0
+
+	var direct_intensity_value = material.get_shader_parameter("direct_specular_intensity")
+	if direct_intensity_value == null:
+		direct_intensity_value = 1.0
+	elif not _is_numeric(direct_intensity_value):
+		return -1
+	if float(direct_intensity_value) != float(record["direct_intensity"]):
+		return 0
+
+	var reflection_shadows_value = material.get_shader_parameter("reflection_shadows_enabled")
+	if reflection_shadows_value == null:
+		reflection_shadows_value = false
+	elif not reflection_shadows_value is bool:
+		return -1
+	if bool(reflection_shadows_value) != bool(record["reflection_shadows_enabled"]):
+		return 0
+
+	var vertex_color_value = material.get_shader_parameter("vertex_color_enabled")
+	if vertex_color_value == null:
+		vertex_color_value = false
+	elif not vertex_color_value is bool:
+		return -1
+	if bool(vertex_color_value) != bool(record["vertex_color_enabled"]):
+		return 0
+
+	var triplanar_value = material.get_shader_parameter("triplanar_enabled")
+	if triplanar_value == null:
+		triplanar_value = false
+	elif not triplanar_value is bool:
+		return -1
+	if bool(triplanar_value) != bool(record["triplanar_enabled"]):
+		return 0
+
+	var triplanar_world_value = material.get_shader_parameter("triplanar_world_space")
+	if triplanar_world_value == null:
+		triplanar_world_value = false
+	elif not triplanar_world_value is bool:
+		return -1
+	if bool(triplanar_world_value) != bool(record["triplanar_world_space"]):
+		return 0
+
+	var triplanar_scale_value = material.get_shader_parameter("triplanar_scale")
+	if triplanar_scale_value == null:
+		triplanar_scale_value = Vector3.ONE
+	elif not triplanar_scale_value is Vector3:
+		return -1
+	if (triplanar_scale_value as Vector3) != (record["triplanar_scale"] as Vector3):
+		return 0
+
+	var triplanar_offset_value = material.get_shader_parameter("triplanar_offset")
+	if triplanar_offset_value == null:
+		triplanar_offset_value = Vector3.ZERO
+	elif not triplanar_offset_value is Vector3:
+		return -1
+	if (triplanar_offset_value as Vector3) != (record["triplanar_offset"] as Vector3):
+		return 0
+
+	var triplanar_sharpness_value = material.get_shader_parameter("triplanar_sharpness")
+	if triplanar_sharpness_value == null:
+		triplanar_sharpness_value = 1.0
+	elif not _is_numeric(triplanar_sharpness_value):
+		return -1
+	if clampf(float(triplanar_sharpness_value), 0.0, 150.0) != float(record["triplanar_sharpness"]):
+		return 0
+
+	# Colours last, compared as authored. The record carries the sRGB values
+	# alongside the linear ones precisely so this stays a plain equality.
+	var diffuse_value = material.get_shader_parameter("diffuse_color")
+	if diffuse_value == null:
+		diffuse_value = Color(0.25, 0.5, 0.2, 1.0)
+	elif not diffuse_value is Color:
+		return -1
+	if (diffuse_value as Color) != (record["diffuse_srgb"] as Color):
+		return 0
+
+	var ambient_value = material.get_shader_parameter("ambient_light")
+	if ambient_value == null:
+		ambient_value = Color(0.1, 0.1, 0.1, 1.0)
+	elif not ambient_value is Color:
+		return -1
+	if (ambient_value as Color) != (record["ambient_srgb"] as Color):
+		return 0
+
+	var emission_value = material.get_shader_parameter("emission_color")
+	if emission_value == null:
+		emission_value = Color(0.0, 0.0, 0.0, 1.0)
+	elif not emission_value is Color:
+		return -1
+	if (emission_value as Color) != (record["emission_srgb"] as Color):
+		return 0
+
+	var specular_value = material.get_shader_parameter("specular_color")
+	if specular_value == null:
+		specular_value = Color.WHITE
+	elif not specular_value is Color:
+		return -1
+	if (specular_value as Color) != (record["specular_srgb"] as Color):
+		return 0
+
+	# Mirror enable and strength are not tracked fields -- the raster pass encodes
+	# them, so changing one never dirties the GPU material table -- but
+	# _make_material_record rejects a material whose types have drifted, and a
+	# script can assign any Variant to a uniform. Checked, not compared.
+	var mirror_value = material.get_shader_parameter("mirror_enabled")
+	if mirror_value != null and not mirror_value is bool:
+		return -1
+	var reflection_strength_value = material.get_shader_parameter("reflection_strength")
+	if reflection_strength_value != null and not _is_numeric(reflection_strength_value):
+		return -1
+	return 1
 
 
 func _is_numeric(value: Variant) -> bool:
@@ -3012,11 +3181,19 @@ func _discover_lights(apply_differential_overrides: bool = true) -> void:
 				_suppress_native_light_shadow(light)
 				_light_shadow_states[light_id] = light.shadow_enabled
 	_lights = discovered
+	# Resolved once here rather than per light per frame in _make_light_snapshot.
+	# get_path() walks to the root and builds a String, and the result is only
+	# ever read by a diagnostic. Reparenting a light fires the tree signals that
+	# set _light_topology_dirty, which brings us back through here.
+	_light_paths.clear()
+	for light in _lights:
+		_light_paths.append(String(light.get_path()))
 
 
 func _make_light_snapshot() -> Dictionary:
 	var records: Array[Dictionary] = []
-	for light in _lights:
+	for light_index in _lights.size():
+		var light := _lights[light_index]
 		if not is_instance_valid(light) or not light.is_visible_in_tree() or light.light_energy <= 0.0:
 			continue
 		var type := -1
@@ -3051,7 +3228,7 @@ func _make_light_snapshot() -> Dictionary:
 		var radiance := light.light_color.srgb_to_linear() * (light.light_energy * PI * sign)
 		records.append({
 			"name": light.name,
-			"path": String(light.get_path()),
+			"path": _light_paths[light_index] if light_index < _light_paths.size() else String(light.get_path()),
 			"type": type,
 			"position": position,
 			"direction": direction,
@@ -3069,23 +3246,41 @@ func _make_light_snapshot() -> Dictionary:
 	return {"records": records}
 
 
-func _light_snapshot_matches_current() -> bool:
+## Classifies how far the live lights have drifted from the published snapshot.
+## Returns [constant LIGHT_CHANGE_NONE], [constant LIGHT_CHANGE_SHADING] or
+## [constant LIGHT_CHANGE_INFLUENCE].
+##
+## The distinction is what keeps a rotating sun off the receiver candidate lists.
+## Shading fields (colour, attenuation, shadow flag, and a directional light's
+## direction) are uploaded to the GPU but are never read by the receiver/light
+## culler, so they cannot change which lights a receiver sees. Influence fields
+## are exactly those [method _light_cannot_affect_receiver] and the cull-mask
+## test in [method _build_receiver_light_lists] consult.
+func _light_snapshot_change() -> int:
 	var records: Array = _snapshot_light["records"]
 	var record_index := 0
+	var change := LIGHT_CHANGE_NONE
 	for light in _lights:
 		if not is_instance_valid(light):
-			return false
+			return LIGHT_CHANGE_INFLUENCE
 		if not light.is_visible_in_tree() or light.light_energy <= 0.0:
 			continue
-		if record_index >= records.size() or not _light_record_matches(light, records[record_index]):
-			return false
+		# A record dropping out or appearing shifts every later light index, and
+		# candidate lists store indices, so membership drift is always influence.
+		if record_index >= records.size():
+			return LIGHT_CHANGE_INFLUENCE
+		var record_change := _light_record_change(light, records[record_index])
+		if record_change == LIGHT_CHANGE_INFLUENCE:
+			return LIGHT_CHANGE_INFLUENCE
+		change = maxi(change, record_change)
 		record_index += 1
 	if record_index != records.size():
-		return false
-	return true
+		return LIGHT_CHANGE_INFLUENCE
+	return change
 
 
-func _light_record_matches(light: Light3D, record: Dictionary) -> bool:
+## Per-light half of [method _light_snapshot_change], using the same classification.
+func _light_record_change(light: Light3D, record: Dictionary) -> int:
 	var type := -1
 	var position := light.global_position
 	var direction := Vector3.ZERO
@@ -3113,25 +3308,61 @@ func _light_record_matches(light: Light3D, record: Dictionary) -> bool:
 		light_range = (light as AreaLight3D).area_range
 		attenuation = (light as AreaLight3D).area_attenuation
 	if type < 0:
-		return false
+		return LIGHT_CHANGE_INFLUENCE
+	var cull_mask := light.light_cull_mask & RENDER_LAYER_MASK
+	# Influence: the type gate and the cull-mask test apply to every light.
+	if type != int(record["type"]) or cull_mask != int(record["cull_mask"]):
+		return LIGHT_CHANGE_INFLUENCE
+	# Influence, local lights only. A directional light returns early from
+	# _light_cannot_affect_receiver before its position, range or direction are
+	# ever read, so none of them can move it in or out of a candidate list.
+	if type != 0:
+		if position != (record["position"] as Vector3) or light_range != float(record["range"]):
+			return LIGHT_CHANGE_INFLUENCE
+		# Spot and area lights are culled against their axis; the cone half-angle
+		# only narrows a spot.
+		if type != 1 and direction != (record["direction"] as Vector3):
+			return LIGHT_CHANGE_INFLUENCE
+		if type == 2 and cone_cosine != float(record["cone_cosine"]):
+			return LIGHT_CHANGE_INFLUENCE
 	var sign := -1.0 if light.light_negative else 1.0
 	var radiance := light.light_color.srgb_to_linear() * (light.light_energy * PI * sign)
-	return (
-		type == int(record["type"])
-		and position == (record["position"] as Vector3)
-		and direction == (record["direction"] as Vector3)
-		and radiance == (record["color"] as Color)
-		and light_range == float(record["range"])
-		and attenuation == float(record["attenuation"])
-		and cone_cosine == float(record["cone_cosine"])
-		and cone_attenuation == float(record["cone_attenuation"])
-		and (light.shadow_enabled and not light.light_negative) == bool(record["rt_shadow"])
-		and (light.light_cull_mask & RENDER_LAYER_MASK) == int(record["cull_mask"])
-	)
+	# Shading only: uploaded to the light buffer, never read by the culler.
+	if (
+			radiance != (record["color"] as Color)
+			or attenuation != float(record["attenuation"])
+			or cone_attenuation != float(record["cone_attenuation"])
+			or (light.shadow_enabled and not light.light_negative) != bool(record["rt_shadow"])
+			or direction != (record["direction"] as Vector3)
+			or position != (record["position"] as Vector3)
+			or light_range != float(record["range"])
+			or cone_cosine != float(record["cone_cosine"])
+	):
+		return LIGHT_CHANGE_SHADING
+	return LIGHT_CHANGE_NONE
 
 
-func _instance_rt_mask(mesh_node: MeshInstance3D) -> int:
-	if _is_receiver_only_geometry(mesh_node) or not mesh_node.is_visible_in_tree():
+## Whether instance [param index] falls in this frame's topology-validation slice.
+##
+## The sweep advances one slice per published frame and wraps, so every receiver
+## is fully validated at least once every [constant _TOPOLOGY_VALIDATION_FRAMES]
+## frames. Registration validates a receiver in full before it ever reaches here,
+## so a freshly streamed chunk is never unchecked.
+func _should_validate_topology_this_frame(index: int, instance_count: int) -> bool:
+	if instance_count <= 0:
+		return true
+	var slice_size := ceili(float(instance_count) / float(_TOPOLOGY_VALIDATION_FRAMES))
+	if slice_size >= instance_count:
+		return true
+	var start := _topology_validation_cursor * slice_size
+	return index >= start and index < start + slice_size
+
+
+## [param receiver_only] is the flag already recorded on the instance. Passing it
+## avoids a group lookup per receiver per frame for membership that is fixed when
+## the chunk is built.
+func _instance_rt_mask(mesh_node: MeshInstance3D, receiver_only: bool) -> int:
+	if receiver_only or not mesh_node.is_visible_in_tree():
 		return 0
 	match mesh_node.cast_shadow:
 		GeometryInstance3D.SHADOW_CASTING_SETTING_OFF:
@@ -3463,19 +3694,27 @@ func _publish_snapshot() -> void:
 			_fail("Runtime mesh removal requires an RT topology rebuild, which is not active yet.")
 			return
 		var managed_mesh := mesh_node.mesh
-		if managed_mesh == null or managed_mesh.get_instance_id() != int(item["mesh_id"]) or managed_mesh.get_surface_count() != int(item["surface_count"]):
+		var surface_count := managed_mesh.get_surface_count() if managed_mesh != null else 0
+		if managed_mesh == null or managed_mesh.get_instance_id() != int(item["mesh_id"]) or surface_count != int(item["surface_count"]):
 			_fail("Runtime mesh replacement or surface-topology changes require an RT topology rebuild: %s" % mesh_node.get_path())
 			return
-		var material_ids: PackedInt64Array = item["material_ids"]
-		for surface in managed_mesh.get_surface_count():
-			var active_material := mesh_node.get_active_material(surface)
-			if active_material == null or active_material.get_instance_id() != material_ids[surface]:
-				_fail("Runtime material replacement requires an RT topology rebuild: %s surface %d" % [mesh_node.get_path(), surface])
-				return
+		# Resolving a surface's active material walks the override -> surface ->
+		# mesh chain inside the engine, and this only ever catches an authoring
+		# error that hard-fails the manager anyway. Sweeping a slice per frame
+		# covers every receiver within _TOPOLOGY_VALIDATION_FRAMES while keeping
+		# the mesh-identity check above -- two integer compares -- on every frame.
+		if _should_validate_topology_this_frame(i, instance_count):
+			var material_ids: PackedInt64Array = item["material_ids"]
+			for surface in surface_count:
+				var active_material := mesh_node.get_active_material(surface)
+				if active_material == null or active_material.get_instance_id() != material_ids[surface]:
+					_fail("Runtime material replacement requires an RT topology rebuild: %s surface %d" % [mesh_node.get_path(), surface])
+					return
+		var receiver_only := bool(item.get("receiver_only", false))
 		var current_transform := mesh_node.global_transform
-		var current_mask := _instance_rt_mask(mesh_node)
+		var current_mask := _instance_rt_mask(mesh_node, receiver_only)
 		var current_layers := mesh_node.layers
-		if not bool(item.get("receiver_only", false)):
+		if not receiver_only:
 			var previous_transform_missing := i >= _snapshot_transforms.size()
 			var previous_mask_missing := i >= _snapshot_instance_masks.size()
 			if (
@@ -3515,6 +3754,10 @@ func _publish_snapshot() -> void:
 			next_instance_layers = _snapshot_instance_layers.duplicate()
 			next_instance_layers[i] = current_layers
 
+	# Advance only after the whole instance pass, so one frame validates one
+	# contiguous slice.
+	_topology_validation_cursor = (_topology_validation_cursor + 1) % _TOPOLOGY_VALIDATION_FRAMES
+
 	var materials_changed := false
 	var next_materials: Array[Dictionary] = _material_records
 	for i in _material_sources.size():
@@ -3541,7 +3784,17 @@ func _publish_snapshot() -> void:
 	if materials_changed and not _validate_surface_mappings(next_materials):
 		return
 
-	var lights_changed := not _light_snapshot_matches_current()
+	var light_change := _light_snapshot_change()
+	var lights_changed := light_change != LIGHT_CHANGE_NONE
+	# Only an influence-class change can alter which lights a receiver sees. The
+	# day/night sun rotates every frame and lands in the shading class, which is
+	# what keeps the O(receivers x lights) rebuild below off the per-frame path.
+	var lights_influence_changed := light_change == LIGHT_CHANGE_INFLUENCE
+	if lights_changed:
+		if lights_influence_changed:
+			_light_influence_updates += 1
+		else:
+			_light_shading_updates += 1
 	var next_light := _snapshot_light
 	if lights_changed:
 		next_light = _make_light_snapshot()
@@ -3559,8 +3812,10 @@ func _publish_snapshot() -> void:
 	var rebuild_receiver_lists := (
 		transforms_changed
 		or layers_changed
-		or lights_changed
+		or lights_influence_changed
 		or _receiver_light_starts.size() != instance_count)
+	if lights_changed and not rebuild_receiver_lists:
+		_receiver_rebuilds_skipped += 1
 	var next_receiver_starts := _receiver_light_starts
 	var next_receiver_counts := _receiver_light_counts
 	var next_receiver_indices := _receiver_light_indices
@@ -3571,7 +3826,7 @@ func _publish_snapshot() -> void:
 			next_instance_layers,
 			next_light,
 			dirty_receivers,
-			lights_changed or _receiver_light_candidates.size() != instance_count)
+			lights_influence_changed or _receiver_light_candidates.size() != instance_count)
 		var receiver_error := String(receiver_result.get("error", ""))
 		if not receiver_error.is_empty():
 			_fail(receiver_error)
@@ -3672,8 +3927,16 @@ func _commit_current_snapshot() -> void:
 	# mutated again. Render-instance dictionaries are cloned because the
 	# receiver-only registry can append/tombstone slots while the render thread
 	# still retains the prior snapshot.
-	var published_instances := _render_instances.duplicate(true)
-	published_instances.make_read_only()
+	# The registry clones itself before every mutation (see the copy-on-write in
+	# the receiver registration and unregistration paths), and no record already
+	# in it is ever edited in place, so a clone stays valid for as long as the
+	# revision holds. Rebuilding it per frame re-materialised one dictionary per
+	# receiver for data that changes only when a chunk streams in or out.
+	if _published_instances_revision != _render_instances_revision:
+		_published_instances = _render_instances.duplicate(true)
+		_published_instances.make_read_only()
+		_published_instances_revision = _render_instances_revision
+	var published_instances := _published_instances
 	var next_snapshot := {
 		"revision": _snapshot_revision,
 		"topology_revision": _topology_revision,
@@ -3846,6 +4109,9 @@ func get_profile_snapshot() -> Dictionary:
 		"receiver_light_revision": _receiver_light_revision,
 		"receiver_light_list_rebuilds": _receiver_list_rebuilds,
 		"receiver_light_receivers_recomputed": _receiver_candidates_recomputed,
+		"light_shading_updates": _light_shading_updates,
+		"light_influence_updates": _light_influence_updates,
+		"receiver_rebuilds_skipped": _receiver_rebuilds_skipped,
 		"receiver_light_candidates_total": _receiver_light_total,
 		"receiver_light_candidates_average": (
 			float(_receiver_light_total) / float(_instances.size()) if not _instances.is_empty() else 0.0),
