@@ -2,6 +2,19 @@ shader_type spatial;
 render_mode cull_back, depth_draw_opaque;
 
 const int MAX_INTERACTORS = 8;
+// Half-extent of a blade's square cross-section, in cell units, before the
+// per-cell variation below. One value, not two: the cross-section is a true
+// square, so both axes share it and a single variation scales them together --
+// varying them independently would stretch the square back into a rectangle.
+//
+// Constant up the whole shell stack, because the column has no taper. That is
+// what replaced the two height-dependent mix() curves and the pair of
+// transcendental tapers that fed them.
+//
+// 0.23 is the geometric mean of the 0.15 x 0.36 rectangle this replaced, so the
+// blade covers the same area and the shape changes without the fragment count
+// moving with it. Raising it adds volume and costs surviving fragments.
+const float BLADE_HALF_EXTENT = 0.23;
 
 uniform vec4 grass_interactors[MAX_INTERACTORS];
 uniform int u_interactor_count = 0;
@@ -220,7 +233,6 @@ void fragment() {
 		combined_offset *= maximum_offset / sqrt(combined_length_squared);
 	}
 	vec2 sample_position = base_xz - combined_offset;
-	float shape_height = clamp(h / max(random_height, 0.001), 0.0, 1.0);
 	vec2 stalk_delta = (sample_position - stalk_center) * u_density;
 	float orientation = cell_random.y * TAU;
 	float cosine_angle = cos(orientation);
@@ -230,26 +242,27 @@ void fragment() {
 		stalk_delta.x * sine_angle + stalk_delta.y * cosine_angle
 	);
 	float width_variation = mix(0.88, 1.12, cell_random.x);
-	// Both tapers are the same base raised to different exponents, and pow is
-	// exp2(y * log2(x)) -- so the logarithm is shared rather than taken twice.
-	// Three transcendentals instead of four, for the same two numbers: this is
-	// the most expensive block in the shader and the prepass runs it once per
-	// shell. shape_height is zero on the ground shell, where log2 gives -inf and
-	// exp2 brings it back to exactly the 0.0 that pow returns.
+	// A blade is a square column, not a tapered ellipse: constant cross-section
+	// all the way up, so nothing here depends on how far up the shell sits. That
+	// removes the two height tapers -- a shared log2 and two exp2 -- along with
+	// the shape_height they were the only consumers of.
+	float blade_half = BLADE_HALF_EXTENT * width_variation;
+	// Chebyshev rather than Euclidean: the square's edge is where the larger
+	// normalised axis reaches one. Unlike the ellipse's squared distance this is
+	// already linear in position, which is what lets the softening band below drop
+	// both the square root and the chain-rule factor that went with it.
 	//
-	// A 2048-sample two-channel lookup texture was measured here as a replacement
-	// and came back at +0.003 ms, i.e. nothing: the fetch costs about what the
-	// three transcendentals cost, because a texture unit has lower throughput
-	// than the special-function unit even though this shader leaves it idle.
-	float taper_log = log2(shape_height);
-	float width_taper = exp2(0.42 * taper_log);
-	float length_taper = exp2(0.75 * taper_log);
-	float blade_width = mix(0.46, 0.018, width_taper) * width_variation;
-	float blade_length = mix(0.60, 0.18, length_taper) * mix(0.9, 1.1, cell_random.y);
-	vec2 ellipse = blade_space / vec2(blade_width, blade_length);
-	float ellipse_distance = dot(ellipse, ellipse);
-	// The softening band wants to be one pixel wide measured in this ellipse's own
-	// space. It cannot be read from fwidth(ellipse_distance): every term feeding
+	// One divisor for both axes, so the blade is square rather than merely
+	// rectangular -- which also means the band below needs no min() to find the
+	// narrower side, because there isn't one.
+	vec2 blade_unit = abs(blade_space) / blade_half;
+	float blade_distance = max(blade_unit.x, blade_unit.y);
+	// The softening band is one pixel wide measured in the blade's own space, and
+	// it is what keeps a sub-pixel blade fading out instead of flickering between
+	// covering its pixel and vanishing. A square needs this exactly as much as the
+	// ellipse did: the band is about minification, not about curvature.
+	//
+	// It cannot be read from fwidth(blade_distance): every term feeding
 	// that value -- the cell hash, the stalk centre, the orientation, both axes --
 	// is constant inside a cell and jumps at its border. A quad straddling a
 	// border therefore samples the jump rather than a gradient and returns
@@ -259,16 +272,15 @@ void fragment() {
 	// draws itself across the field as a bright grid that crawls when the camera
 	// moves.
 	//
-	// base_xz is the fragment's world position, which is continuous across those
-	// borders, so the footprint comes from there and is carried into ellipse space
-	// by hand: d(dot(e, e)) = 2 * |e| * d|e|, and the narrower axis bounds d|e|.
+	// base_xz is the fragment's world position and is continuous across those
+	// borders, so the footprint comes from there. Chebyshev distance is linear in
+	// position, so it carries across directly -- no square root and no chain-rule
+	// factor, which the ellipse's squared distance both required.
 	float footprint = length(fwidth(base_xz)) * u_density;
-	// No zero guard: both axes are mix() results between positive endpoints scaled
-	// by positive variation, so the narrower one bottoms out around 0.0158 and can
-	// never reach the 0.001 the guard was watching for.
-	float ellipse_footprint = footprint / min(blade_width, blade_length);
-	float edge_width = max(2.0 * sqrt(ellipse_distance) * ellipse_footprint * 1.25, 0.025);
-	float edge_coverage = 1.0 - smoothstep(1.0 - edge_width, 1.0 + edge_width, ellipse_distance);
+	// No zero guard: the extent is a positive constant scaled by a positive
+	// variation, so it cannot approach zero.
+	float edge_width = max(footprint / blade_half * 1.25, 0.025);
+	float edge_coverage = 1.0 - smoothstep(1.0 - edge_width, 1.0 + edge_width, blade_distance);
 	if (edge_coverage < 0.42) {
 		discard;
 	}

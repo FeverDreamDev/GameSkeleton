@@ -97,6 +97,7 @@ environment = SubResource("Environment_level")
 [node name="DayNightCycle3D" type="Node3D" parent="." unique_id=1786206511 groups=["saveable"]]
 process_priority = 90000
 script = ExtResource("9_day_night")
+day_length_seconds = 120.0
 ambient_materials = Array[ShaderMaterial]([ExtResource("6_terrain_material"), ExtResource("5_caster_material"), ExtResource("7_reflector_material")])
 palette = SubResource("Resource_fvf8j")
 

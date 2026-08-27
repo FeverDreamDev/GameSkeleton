@@ -975,3 +975,131 @@ practical ceiling at 4.32 ms / 231 FPS**, within 4% of this machine's 240 Hz
 refresh, and further gains require a deliberate quality decision — fewer shells, a
 coarser blade model, or a temporal technique the visual contract currently
 forbids — rather than an optimization.
+
+---
+
+## Square blade columns — the largest single win in this document
+
+Grass blades are now square columns of constant cross-section instead of
+height-tapered ellipses. **Native 4.408 → 3.785 ms, 226.9 → 264.2 FPS: −14.1% and
++37.3 FPS**, larger than every other change in this document combined.
+
+| Configuration | Ellipse | Square | Change |
+|---|---:|---:|---:|
+| Native | 4.408 ms (226.9 FPS) | **3.785 ms (264.2 FPS)** | **−14.1%** |
+| QUALITY (0.85) | 3.604 ms | 3.227 ms (309.9 FPS) | −10.5% |
+| BALANCED (0.75) | 3.003 ms | 2.729 ms (366.4 FPS) | −9.1% |
+
+Three interleaved pairs, ranges not overlapping (square 3.776–3.788, ellipse
+4.368–4.408).
+
+### What was removed
+
+The two height tapers and everything downstream of them:
+
+```glsl
+float taper_log = log2(shape_height);          // gone
+float width_taper = exp2(0.42 * taper_log);    // gone
+float length_taper = exp2(0.75 * taper_log);   // gone
+```
+
+A column has the same cross-section at every shell, so the extents become
+constants scaled by the existing per-cell variation, and `shape_height` — whose
+only consumers were the tapers — goes with them along with its divide and clamp.
+
+The coverage test changes from Euclidean to Chebyshev,
+`max(|x|/w, |y|/l)` instead of `dot(e, e)`. That is not just a different shape:
+Chebyshev distance is **linear in position**, where the ellipse's was quadratic.
+The softening band therefore drops both the `sqrt(ellipse_distance)` and the
+`2 *` chain-rule factor that the quadratic form required. Net: three
+special-function ops and a square root removed from every fragment that reaches
+the silhouette test, in the block the depth prepass runs once per shell.
+
+### What was NOT removed, and why
+
+**The anti-aliasing band stays.** The premise that a square does not need it does
+not hold, and this is worth recording because it is an easy and expensive
+assumption to make. That band is not edge anti-aliasing — it is **minification
+coverage**. A sub-pixel blade without it flips between fully covering its pixel
+and vanishing depending on where the pixel centre lands, and that flip is the
+crawl. Squares are sub-pixel at exactly the same distances as ellipses. If
+anything a straight edge at an arbitrary rotation aliases *more* coherently than a
+curve, producing one long staircase instead of several short ones. The band is
+untouched, and removing it would reintroduce the lattice-shimmer failure this
+document describes twice already.
+
+### Why the win is larger than the instruction count suggests
+
+Removing four ops per fragment should be worth roughly 0.2–0.4 ms by comparison
+with the sine measurements above. It measured 0.623 ms, and the extra comes from
+**coverage redistribution rather than from arithmetic.**
+
+The old tapered blade was widest at its base (0.46 × 0.60 half-extents) and nearly
+a point at its tip (0.018 × 0.18). The column is uniform at 0.15 × 0.36, so
+compared to before it covers roughly four times *less* at the ground shell and
+about twenty times *more* at the canopy shell — 1.29× more on average, but
+distributed almost inversely.
+
+That interacts with the canopy-first shell order established earlier in this
+document. A canopy that covers more occludes more, so the depth prepass rejects a
+larger share of the shells underneath before they are ever shaded. The change
+pays twice: less arithmetic per fragment, and fewer fragments reaching the
+expensive lower shells.
+
+**This means the result is partly a coverage change and not purely an
+optimization** — worth stating plainly, because the two are not interchangeable
+and the same instruction saving on a coverage-matched blade would measure smaller.
+
+### Visual outcome
+
+Blades read as chunky rectangular columns rather than tapered leaves: denser, more
+voluminous, distinctly blockier. Ground coverage remains solid with no holes, and
+the horizon silhouette is clean. Whether that suits the art direction is a
+judgement, not a measurement — it was adopted deliberately as a look, and the
+constants `BLADE_HALF_WIDTH` / `BLADE_HALF_LENGTH` are the dial if the volume
+wants tuning. Raising them adds volume and costs surviving fragments; lowering
+them does the reverse.
+
+No pixel gate applies here: unlike every other change in this document, this one
+is *intended* to change the image.
+
+### Verification
+
+- `phase2_smoke`, `terrain_player_smoke`, `receiver_registry_smoke`,
+  `ground_layer_smoke`, `day_night_smoke`, `app_flow_smoke` — all pass
+- Both scaling presets still engage at the correct internal sizes and both improved
+- Captured at the default gameplay view and looking down; ground coverage and
+  horizon silhouette checked by eye
+
+### Where the frame stands
+
+**4.408 → 3.785 ms native.** Across the whole optimization effort the frame has
+gone from 5.498 ms (181.9 FPS) to 3.785 ms (264.2 FPS) — **−31%, +82 FPS** — and
+BALANCED now runs at 366 FPS. The remaining per-fragment cost is the two cell
+hashes, the wind warp, and the minification band, all of which have been measured
+and none of which have a cheaper honest replacement.
+
+### Follow-up: true squares rather than rectangles
+
+The first version used a 0.15 x 0.36 rectangular cross-section. It is now a true
+square at 0.23 -- the geometric mean of that rectangle, so the blade covers the
+same area and the shape changes without dragging the fragment count with it.
+
+Making it genuinely square needed one design decision beyond swapping the
+constants: **both axes share a single per-cell variation.** Scaling width and
+length independently, as the rectangle did, would stretch every blade back into a
+rectangle and defeat the point.
+
+It also simplifies the shader twice over. One divisor replaces a `vec2` divide,
+and the softening band no longer needs `min(width, length)` to find the narrower
+side, because there isn't one.
+
+| | Rectangle | True square |
+|---|---:|---:|
+| Native median | 3.734 ms (267.9 FPS) | **3.663 ms (273.1 FPS)** |
+
+A further **-0.071 ms**, from the dropped `min()` and a marginally smaller area.
+Blades read as uniform cubic posts rather than slabs; ground coverage stays solid
+and the horizon silhouette stays clean.
+
+`BLADE_HALF_EXTENT` is now the single dial for blade volume.
