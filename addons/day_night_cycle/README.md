@@ -102,6 +102,54 @@ kept inside one unit because the hash adds it before a `fract()`.
 lattice cell per tile, so making it much larger than the sky is wide turns that
 single cell into a visible facet.
 
+### The layer at night
+
+The moon `DirectionalLight3D` is deliberately far brighter than a real one — see
+**The palette** — because it is the only thing lighting the ground once the sun
+is down. The sky must not inherit that figure. Taking it whole lit the deck to
+nearly full moon colour against an almost black sky, which read as daylight
+clouds on a night background and left no room for the stars.
+
+`cloud_moonlight`, default `0.30`, is the share of the moon's energy the cloud
+layer takes instead. It lands the layer just above where the presentation grade
+crushes to black, so the clouds stay a faint drift the stars show around. The
+cliff there is steep: the grade's contrast is applied around a 0.5 pivot, which
+puts everything under roughly `0.27` sRGB at exactly zero, so `0.25` is an
+invisible layer and `0.35` is a clearly present one. Daylight is untouched — the
+term only applies once the moon is the brighter of the two bodies.
+
+## The star field
+
+Stars are cells on a cube projection of the view ray, which makes them a pure
+function of direction: the field cannot parallax, shear or drift as the camera
+moves, and the layout is re-rolled once per day from `world_seed`.
+
+**A star is never drawn narrower than the pixel that samples it.** At any sane
+resolution the authored size is well under a pixel, and drawing one honestly
+means whether it lights up at all depends on where the pixel centre happened to
+fall inside it. Most stars are missed outright, the survivors change as the view
+turns, and the sky looks nearly empty — which is not twinkle, it is the field
+being resampled. So the shader takes the angular width of a pixel from the
+screen-space derivative of the view ray, widens any star below it, and divides
+its light by the area it gained. The flux is unchanged, every star resolves, and
+a 0.02° yaw — about a third of a pixel — moves six times fewer pixels than it
+did before.
+
+That footprint comes from the view ray rather than from `fwidth()` of the star
+field's own cube-face coordinates, for exactly the reason the grass shader takes
+its footprint from the world position: face coordinates jump at every cube face
+boundary, and a derivative sampled across the jump comes back enormous, which
+would print a bright cross over the sky. The bake shader has no view to
+differentiate and states the panorama's texel angle instead, which is far
+coarser than a star — so the mirror averages the field away rather than
+sparkling.
+
+`star_size` is a floor rather than a fine control: authoring it below a pixel
+does not buy sharper stars, it buys fainter ones. `star_density` and
+`star_coverage` together set how many are on screen; the defaults put roughly a
+thousand in a 75° view, and the coverage is kept low over a fine grid on purpose
+because a dense field over a coarse one visibly puts one star in every box.
+
 ## Why there is no Sky resource
 
 `RTSceneManager` bakes a `BG_SKY` background into a reflection panorama on every
@@ -246,8 +294,11 @@ after the level is installed.
 | `cloud_altitude` | `260.0` | the plane every shadow is resolved against |
 | `cloud_world_size` | `420.0` | metres per noise tile; see **The cloud layer** |
 | `cloud_softness` | `0.34` | hard-edged banks at 0, haze at 1 |
-| `cloud_shadow_strength` | `0.8` | how much of the sun a covered patch blocks |
+| `cloud_moonlight` | `0.30` | share of the moon's energy the layer takes; see **The layer at night** |
 | `cloud_ambient_lift` | `0.65` | how much overcast raises the fill |
+| `star_density` | `60.0` | cells per cube face |
+| `star_coverage` | `0.10` | fraction of cells holding a star; with the density, about a thousand on screen |
+| `star_size` | `0.12` | wants to land a couple of pixels across; see **The star field** |
 | `reflection_panorama_enabled` | `true` | sky in mirrors; costs a bake per `reflection_sun_step_degrees` |
 | `preview_in_editor` | `true` | sky and lights in the editor viewport |
 | `palette` | | a `DayNightPalette`; a null one is replaced by a full default set |

@@ -104,13 +104,26 @@ var day_length_seconds: float = 1200.0
 ## at zero, which is the same gate the daylight hours use, so the nine-cell field
 ## is never evaluated. Mirrors [member clouds_enabled].
 @export var stars_enabled: bool = true
-## Cells per cube face. Higher is more, smaller stars.
-@export_range(4.0, 400.0, 1.0) var star_density: float = 150.0
+## Cells per cube face. One cell is about a degree of sky at the default.
+##
+## This and [member star_coverage] together set how many stars a screen holds:
+## the two defaults put roughly a thousand in a 75 degree view. The pair is what
+## to retune, not either alone -- raising the density without dropping the
+## coverage packs the field until it reads as noise rather than as stars.
+@export_range(4.0, 400.0, 1.0) var star_density: float = 60.0
 ## Fraction of cells that actually hold a star.
-@export_range(0.0, 1.0, 0.01) var star_coverage: float = 0.42
-## Angular size of one star within its cell. Large enough to survive SMAA
-## rather than crawling as a subpixel speck.
-@export_range(0.005, 0.5, 0.001) var star_size: float = 0.055
+##
+## Deliberately low, over a grid finer than the spacing it produces: that
+## scatters the field the way a real sky does, where a high coverage over a
+## coarse grid visibly puts one star in every box.
+@export_range(0.0, 1.0, 0.01) var star_coverage: float = 0.10
+## Angular size of one star within its cell.
+##
+## Wants to land at a couple of pixels across at the resolution being played.
+## Below one the sky shader has to spread the star over the pixel it lands in
+## and dim it to match, so stars that are authored too small do not read as
+## sharper -- they read as fainter.
+@export_range(0.005, 0.5, 0.001) var star_size: float = 0.12
 @export_range(0.0, 1.0, 0.01) var star_twinkle_amount: float = 0.35
 
 @export_group("Procedural")
@@ -135,6 +148,16 @@ var day_length_seconds: float = 1200.0
 @export_range(0.0, 1.0, 0.01) var cloud_softness: float = 0.34
 ## How dark the underside of a cloud gets, towards the horizon colour.
 @export_range(0.0, 1.0, 0.01) var cloud_shade: float = 0.45
+## Fraction of the moon's light energy the cloud layer takes once the moon is
+## the brightest thing in the sky.
+##
+## The moon [DirectionalLight3D] is deliberately far brighter than a real one --
+## see [member DayNightPalette.moon_peak_energy] -- because it is the only thing
+## lighting the ground at night. Letting the sky inherit that figure lit the
+## layer to nearly full moon colour against an almost black sky, which read as
+## daylight clouds on a night background. The layer takes its own, much smaller
+## share instead, so it stays a faint pale drift that the stars show around.
+@export_range(0.0, 1.0, 0.01) var cloud_moonlight: float = 0.30
 ## Distance at which the layer fades into the horizon haze, in metres. Without
 ## it the flat layer would compress into a hard line at the skyline.
 @export_range(100.0, 40000.0, 10.0) var cloud_fade_distance: float = 5200.0
@@ -470,7 +493,10 @@ func _push_cloud_layer(
 	if _moon.light_energy > _sun.light_energy:
 		lit = palette.moon_light_color
 		direction = -to_sun
-		energy = _moon.light_energy
+		# Not the moon's own energy: that figure is set by what the ground needs
+		# to stay readable, not by how bright the sky is, and taking it whole is
+		# what left the layer glowing against a black sky.
+		energy = _moon.light_energy * clampf(cloud_moonlight, 0.0, 1.0)
 	# Blending towards the shade colour by energy is what keeps a night sky from
 	# holding blazing white clouds against a black background.
 	lit = horizon.lerp(lit, clampf(energy, 0.0, 1.0))

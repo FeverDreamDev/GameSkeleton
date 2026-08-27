@@ -208,7 +208,13 @@ void star_cell_space(vec3 direction, out vec2 face_uv, out float face_id) {
 }
 
 
-vec3 star_field(vec3 direction) {
+// [param pixel_angle] is the angular width of one pixel, in radians, which the
+// caller takes from the screen-space derivative of the view ray. Stars are
+// smaller than that at every sane resolution, and drawing them at their true
+// size is what made the field look almost empty and made the survivors change
+// as the view turned: whether a star lit up at all depended on where the pixel
+// centre happened to fall inside it. Pass 0.0 to draw them at their true size.
+vec3 star_field(vec3 direction, float pixel_angle) {
 	vec2 face_uv;
 	float face_id;
 	star_cell_space(direction, face_uv, face_id);
@@ -216,6 +222,21 @@ vec3 star_field(vec3 direction) {
 	vec2 grid = face_uv * u_star_density;
 	vec2 cell = floor(grid);
 	vec2 local = fract(grid);
+
+	// One pixel, measured in the cell units every radius below is in.
+	//
+	// The factor is the stretch of the cube projection: a face coordinate is a
+	// tangent, so it grows as sec^2 of the angle off the face axis, and that is
+	// exactly 1 + dot(face_uv, face_uv). Taking the angle from the caller rather
+	// than from fwidth(face_uv) is the same reason the grass shader takes its
+	// footprint from the world position: face coordinates jump at every cube
+	// face boundary, and a derivative sampled across the jump comes back
+	// enormous, which would print a bright cross over the sky.
+	//
+	// Capped well inside one cell so the 3x3 neighbourhood below still holds
+	// every star that can reach this fragment.
+	float footprint = min(
+		pixel_angle * (1.0 + dot(face_uv, face_uv)) * u_star_density, 0.4);
 
 	vec3 accumulated = vec3(0.0);
 	for (int y = -1; y <= 1; y++) {
@@ -234,6 +255,18 @@ vec3 star_field(vec3 direction) {
 
 			float magnitude = mix(0.18, 1.0, traits.x * traits.x);
 			float radius = u_star_size * mix(0.55, 1.15, traits.y);
+			// Never narrower than the pixel that samples it, and dimmed by the
+			// area it gained so the light it carries is unchanged. That trade is
+			// the whole fix for a field that read as a handful of specks
+			// swimming against the view: a sub-pixel star is not resolvable, so
+			// spreading it over the pixel it lands in is the only way to draw it
+			// at all, and conserving its flux is what stops the sky turning to
+			// snow once every one of them starts resolving.
+			float draw_radius = max(radius, footprint);
+			// The profile is the same shape at any size, so its integral scales
+			// with the square of the radius and this ratio is exact rather than
+			// a fudge.
+			float energy = (radius * radius) / (draw_radius * draw_radius);
 			// The core smoothstep below is exactly zero once the distance reaches
 			// the radius, so cells that far out contribute nothing. Rejecting them
 			// on the squared distance skips the root, the twinkle sine and the
@@ -241,19 +274,19 @@ vec3 star_field(vec3 direction) {
 			// squared -- feeding squared values to the smoothstep itself would
 			// bend the falloff and reshape every star.
 			float distance_squared = dot(to_star, to_star);
-			if (distance_squared >= radius * radius) {
+			if (distance_squared >= draw_radius * draw_radius) {
 				continue;
 			}
 			float distance_to_star = sqrt(distance_squared);
 			// A solid core inside a soft skirt. A true point would alias into a
 			// crawling speck under SMAA; a few pixels of skirt is what makes the
 			// field hold still while the view turns.
-			float core = smoothstep(radius, radius * 0.2, distance_to_star);
+			float core = smoothstep(draw_radius, draw_radius * 0.2, distance_to_star);
 
 			float twinkle = 1.0 - u_star_twinkle_amount * 0.5 * (1.0 - sin(
 				u_star_twinkle_time * mix(0.6, 2.1, traits.z) + traits.x * 6.2831853));
 			vec3 tint = mix(vec3(1.0, 0.88, 0.74), vec3(0.76, 0.86, 1.0), traits.z);
-			accumulated += tint * (core * magnitude * twinkle);
+			accumulated += tint * (core * energy * magnitude * twinkle);
 		}
 	}
 	return accumulated;
@@ -274,7 +307,7 @@ void body_basis(vec3 forward, out vec3 right, out vec3 up) {
 // The whole picture, as a pure function of a view ray and where it starts.
 // Both wrappers call exactly this, so the dome and the baked panorama can never
 // show different weather.
-vec3 dnc_sky_color(vec3 direction, vec3 camera_position) {
+vec3 dnc_sky_color(vec3 direction, vec3 camera_position, float pixel_angle) {
 	float height = direction.y;
 
 	// Vertical gradient, with the lower half kept dark so the dome reads as a
@@ -302,7 +335,8 @@ vec3 dnc_sky_color(vec3 direction, vec3 camera_position) {
 		if (horizon_mask > 0.0) {
 			// Stars go in before the discs and the glow terms have already been
 			// added, so a bright sky washes them out without a second blend.
-			sky += star_field(direction) * (u_star_intensity * horizon_mask);
+			sky += star_field(direction, pixel_angle)
+				* (u_star_intensity * horizon_mask);
 		}
 	}
 

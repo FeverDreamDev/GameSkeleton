@@ -32,6 +32,11 @@ void vertex() {
 
 void fragment() {
 	vec3 camera_position = INV_VIEW_MATRIX[3].xyz;
-	ALBEDO = dnc_sky_color(
-		normalize(v_world_position - camera_position), camera_position);
+	vec3 direction = normalize(v_world_position - camera_position);
+	// Angular width of one pixel, which the star field needs so it never draws a
+	// star narrower than the pixel sampling it. Taken from the view ray itself
+	// because that is continuous everywhere on the dome; the star field's own
+	// cube-face coordinates are not, and a derivative across a face boundary
+	// would print a cross over the sky.
+	ALBEDO = dnc_sky_color(direction, camera_position, length(fwidth(direction)));
 }
