@@ -2,7 +2,18 @@ extends SceneTree
 
 ## Focused integration probe for streamed receiver-only topology. It asserts
 ## that terrain chunks can unload/reload without a full RT topology sync or a
-## software BLAS/TLAS rebuild, and that tombstoned slots are reused.
+## BLAS/TLAS rebuild, and that tombstoned slots are reused.
+##
+## The receiver registry exists only under hardware RT -- the raster fallback
+## keeps no scene representation to register anything into -- so this test needs
+## a real ray-tracing adapter and skips itself with a clear message on a machine
+## that has none. The Panini sub-modes are pipeline-independent but ride on the
+## same live scene, so they skip with it.
+##
+##   godot --path . --rendering-method forward_plus --resolution 2560x1440 \
+##     --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
+##   ... -- --panini
+##   ... -- --panini-performance
 
 var _failures := PackedStringArray()
 
@@ -17,6 +28,11 @@ func _check(condition: bool, message: String) -> void:
 
 
 func _run() -> void:
+	if not RTSceneManager.hardware_rt_supported():
+		print("receiver_registry_smoke: SKIP (no hardware ray tracing on this machine)")
+		print("  %s" % RTSceneManager.hardware_rt_unavailable_reason())
+		quit(0)
+		return
 	var level_scene := load("res://game/levels/terrain_test.tscn") as PackedScene
 	var player_scene := load("res://player/player.tscn") as PackedScene
 	_check(level_scene != null, "terrain level loads")
@@ -69,11 +85,7 @@ func _run() -> void:
 	var manager := RTSceneManager.new()
 	manager.name = "RTSceneManager"
 	manager.auto_start = false
-	manager.preview_in_editor = false
-	var hardware_requested := OS.get_cmdline_user_args().has("--hardware")
-	manager.rt_backend = (
-		RTSceneManager.RTBackend.HARDWARE
-		if hardware_requested else RTSceneManager.RTBackend.SOFTWARE)
+	manager.ray_tracing_enabled = true
 	var panini_performance_requested := (
 		OS.get_cmdline_user_args().has("--panini-performance"))
 	var panini_requested := (
@@ -88,15 +100,14 @@ func _run() -> void:
 	world.add_child(manager)
 	await process_frame
 	var started: bool = await manager.start_rt()
-	var expected_backend: StringName = &"hardware" if hardware_requested else &"software"
-	_check(started, "%s RT starts" % expected_backend)
+	_check(started, "hardware RT starts")
 	if not started:
 		_finish()
 		return
 	await process_frame
 
 	# Exercise a true grow, then tombstone reuse, before the terrain stream. This
-	# covers hardware SSBO/GPU-slot growth as well as software clone registration.
+	# covers hardware SSBO/GPU-slot growth.
 	#
 	# Let generation settle first. The slot assertions below are exact counts over
 	# a fifteen-frame window, so a terrain chunk publishing inside that window
@@ -172,8 +183,8 @@ func _run() -> void:
 		await process_frame
 
 	var after := manager.get_profile_snapshot()
-	_check(manager.get_active_rt_backend() == expected_backend,
-		"%s backend remains active without rt_failed" % expected_backend)
+	_check(manager.get_active_rt_backend() == &"hardware",
+		"the hardware backend remains active without rt_failed")
 	_check(int(after.get("receiver_only_unregistrations", 0)) > before_unregistrations,
 		"old receiver chunks unregister incrementally")
 	_check(int(after.get("receiver_only_registrations", 0)) > before_registrations,
@@ -183,9 +194,9 @@ func _run() -> void:
 	_check(int(after.get("tlas_revision", -2)) == before_tlas_revision,
 		"receiver streaming does not dirty TLAS topology")
 	_check(int(after.get("blas_builds", -2)) == before_blas_builds,
-		"receiver streaming does not rebuild software BLAS")
+		"receiver streaming does not rebuild the BLAS")
 	_check(int(after.get("tlas_builds", -2)) == before_tlas_builds,
-		"receiver streaming does not rebuild software TLAS")
+		"receiver streaming does not rebuild the TLAS")
 	var after_active := int(after.get("active_managed_instances", 1 << 30))
 	_check(
 		int(after.get("stable_instance_slots", 1 << 30))
@@ -193,10 +204,10 @@ func _run() -> void:
 		"tombstoned receiver slots are reused")
 	print("receiver_registry_smoke profile: %s" % after)
 
-	# The post camera preserves the authored camera mask exactly. Hardware requires
-	# its reserved carrier bit; software has no carrier and must not inherit that
-	# contract. Call the validator directly so the negative case does not install
-	# an expected failure overlay or emit an expected push_error in routine CI.
+	# The post camera preserves the authored camera mask exactly, and hardware RT
+	# requires its reserved carrier bit in it. Call the validator directly so the
+	# negative case does not install an expected failure overlay or emit an
+	# expected push_error in routine CI.
 	var camera := root.get_camera_3d()
 	_check(camera != null, "the managed viewport keeps an active camera")
 	if camera != null:
@@ -205,13 +216,9 @@ func _run() -> void:
 			"the authored camera includes the hardware carrier layer")
 		camera.cull_mask = camera_mask & ~RTSceneManager.RT_CARRIER_LAYER_MASK
 		var camera_failure := String(manager.call("_runtime_scene_contract_failure"))
-		if hardware_requested:
-			_check(
-				camera_failure.contains("cull_mask must include render layer 20"),
-				"hardware RT rejects a camera that omits the carrier layer")
-		else:
-			_check(camera_failure.is_empty(),
-				"software RT does not require the hardware carrier layer")
+		_check(
+			camera_failure.contains("cull_mask must include render layer 20"),
+			"hardware RT rejects a camera that omits the carrier layer")
 		camera.cull_mask = camera_mask
 	_check(bool(after.get("post_internal_camera_visual_state_matches", false)),
 		"the internal post camera satisfies the authored/capture camera contract")
@@ -225,13 +232,13 @@ func _run() -> void:
 		var post_output_size: Vector2i = after.get("post_output_size", Vector2i.ZERO)
 		_check(int(after.get("post_panini_perimeter_samples", 0))
 			== 2 * post_output_size.x + 2 * post_output_size.y,
-			"Panini scans every output border texel center plus logical corners")
+			"Panini bounds cover every output border texel center plus logical corners")
 		_check(float(after.get("post_panini_capture_horizontal_fov", 0.0))
 			> float(after.get("post_panini_display_horizontal_fov", 180.0)),
 			"Panini reports the conservative horizontal capture overscan")
 		_check(after.get("post_panini_sample_mode", &"invalid")
-			== &"adaptive_1_or_4",
-			"Panini reports its one-or-four-tap adaptive sampling contract")
+			== &"catmull_rom_or_box",
+			"Panini reports its Catmull-Rom or box adaptive sampling contract")
 		_check(after.get("post_present_source", &"invalid") == &"panini",
 			"presentation reads the projected native-output target")
 		_check(after.get("post_panini_viewport_size", Vector2i.ZERO)

@@ -54,6 +54,10 @@ var _master_recovery_requested: bool = false
 # Graphics settings are session-scoped by design. Native RT still exercises the shared present
 # path; reduced presets opt into FSR through RTSceneManager.
 var _rt_quality: int = RTSceneManager.RTQualityPreset.NATIVE
+# Whole-pipeline switch: on is hardware RT shadows and mirrors, off is the raster
+# fallback (native shadow maps plus SSR). Defaults on and is forced off on an
+# adapter that cannot ray trace, where the dialog offers no choice either.
+var _rt_enabled: bool = RTSceneManager.hardware_rt_supported()
 var _smaa_enabled: bool = true
 var _smaa_quality: int = RTSceneManager.SMAAQuality.HIGH
 var _retro_post_enabled: bool = true
@@ -120,7 +124,7 @@ func _wire_systems() -> bool:
 	flow_system.save_requested.connect(_on_flow_save_requested)
 	flow_system.load_progress_changed.connect(_on_level_load_progress)
 	# Player view preferences are independent of RT availability and must still apply on the
-	# Compatibility fallback or in a shell with no RTSceneManager at all.
+	# raster fallback or in a shell with no RTSceneManager at all.
 	_apply_player_fov()
 
 	if rt_manager != null:
@@ -197,7 +201,9 @@ func _warm_rt_backend() -> void:
 		return
 
 	_boot_screen.set_status("Preparing ray tracing")
-	_boot_screen.set_detail("AUTO: hardware first, software fallback")
+	_boot_screen.set_detail(
+		"Hardware ray tracing" if RTSceneManager.hardware_rt_supported()
+		else "Raster fallback: shadow maps and SSR")
 	_boot_screen.set_progress(0.78)
 
 	var fixture_scene := ResourceLoader.load(rt_warmup_fixture_path) as PackedScene
@@ -300,6 +306,7 @@ func _open_graphics_options() -> void:
 	_graphics_dialog = GraphicsOptionsDialogScript.new()
 	_graphics_dialog.rendering_method = StringName(RenderingServer.get_current_rendering_method())
 	_graphics_dialog.active_backend = rt_manager.get_active_rt_backend() if rt_manager != null else &"none"
+	_graphics_dialog.rt_enabled = _rt_enabled
 	_graphics_dialog.quality_preset = _rt_quality
 	_graphics_dialog.anti_aliasing_enabled = _smaa_enabled
 	_graphics_dialog.smaa_quality = _smaa_quality
@@ -307,6 +314,7 @@ func _open_graphics_options() -> void:
 	_graphics_dialog.grass_quality = _grass_quality
 	_graphics_dialog.fps_counter_enabled = _fps_counter_enabled
 	_graphics_dialog.horizontal_fov = _horizontal_fov
+	_graphics_dialog.rt_toggled.connect(_on_graphics_rt_toggled)
 	_graphics_dialog.quality_selected.connect(_on_graphics_quality_selected)
 	_graphics_dialog.anti_aliasing_toggled.connect(_on_graphics_anti_aliasing_toggled)
 	_graphics_dialog.smaa_quality_selected.connect(_on_graphics_smaa_quality_selected)
@@ -827,6 +835,10 @@ func _start_rt_bounded(timeout_seconds: float) -> Dictionary:
 func _apply_graphics_preferences() -> void:
 	if rt_manager == null:
 		return
+	# Assigned rather than pushed through set_ray_tracing_enabled(): this runs
+	# before each world's RT start, where the manager is stopped and simply reads
+	# the value. Changing it on a running manager goes through the setter below.
+	rt_manager.ray_tracing_enabled = _rt_enabled
 	rt_manager.set_rt_quality(_rt_quality)
 	rt_manager.post_anti_aliasing_enabled = _smaa_enabled
 	rt_manager.post_smaa_quality = _smaa_quality as RTSceneManager.SMAAQuality
@@ -836,6 +848,19 @@ func _apply_graphics_preferences() -> void:
 func _on_graphics_quality_selected(preset: int) -> void:
 	_rt_quality = preset
 	_apply_graphics_preferences()
+
+
+## The RT toggle genuinely reinstalls the pipeline, so unlike every other entry
+## in the dialog this one is asynchronous. The dialog stays open across the
+## restart and is told the backend that actually came up, which is how a failed
+## hardware start still reads honestly instead of showing what was asked for.
+func _on_graphics_rt_toggled(enabled: bool) -> void:
+	_rt_enabled = enabled
+	if rt_manager == null:
+		return
+	await rt_manager.set_ray_tracing_enabled(enabled)
+	if _graphics_dialog != null and is_instance_valid(_graphics_dialog):
+		_graphics_dialog.set_active_backend(rt_manager.get_active_rt_backend())
 
 
 func _on_graphics_anti_aliasing_toggled(enabled: bool) -> void:
@@ -930,15 +955,20 @@ func _on_rt_failed(reason: String) -> void:
 func _rt_backend_display() -> String:
 	if rt_manager == null:
 		return "No RT"
-	var backend := rt_manager.get_active_rt_backend()
-	return String(backend).replace("_", " ").capitalize()
+	match rt_manager.get_active_rt_backend():
+		&"hardware":
+			return "Hardware RT"
+		&"raster":
+			return "Raster fallback"
+		_:
+			return "No RT"
 
 
 func _renderer_summary() -> String:
 	var method := String(RenderingServer.get_current_rendering_method()).replace("_", " ").capitalize()
 	if rt_manager != null and rt_manager.get_active_rt_backend() != &"none":
-		return "%s - %s RT" % [method, _rt_backend_display()]
-	return "%s - AUTO RT" % method
+		return "%s - %s" % [method, _rt_backend_display()]
+	return "%s - not started" % method
 
 #endregion
 

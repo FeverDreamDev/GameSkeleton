@@ -28,9 +28,18 @@ evidence are recorded in
 
 ## Rendering contract
 
-- Forward+ and Vulkan are preferred. Godot may fall back to D3D12 and then OpenGL
-  Compatibility; Retro RT `AUTO` chooses hardware only on supported Forward+/Vulkan and
-  otherwise uses its software path.
+- **Forward+ only.** `project.godot` pins `renderer/rendering_method` so an export cannot
+  silently produce Compatibility. Retro RT installs hardware RT when the adapter is Vulkan
+  with ray-tracing-pipeline and buffer-device-address support, and otherwise installs a
+  raster fallback: Godot's own shadow maps plus `Environment` screen-space reflections,
+  through the same post stack. The player can also choose the fallback deliberately with
+  the **RT shadows & mirrors** toggle in Graphics.
+- The fallback keeps no scene representation at all — no acceleration structure, no atlases,
+  no light table — so managed materials render through `BlinnPhong.gdshader`'s standalone
+  Blinn-Phong branch, lights keep their native shadow maps, and `Environment.ssr_enabled`
+  supplies reflections. Levels author SSR off and let `RTSceneManager` own the switch, which
+  is what lets one scene serve both pipelines. See `RT_PIPELINE.md`, "Backend selection and
+  the raster fallback".
 - Hardware RT reserves render layer 20 for managed geometry and the material-ID carrier.
   Every active gameplay camera must include that bit in `cull_mask`; the manager reports a
   contract failure with the camera path if it does not. Authored mesh/light masks still own
@@ -50,8 +59,12 @@ evidence are recorded in
   "Analytic ground layer".
 - Distance fog is owned by `RTSceneManager`, not the Environment (engine fog stays banned).
   The level derives its reach from `terrain_load_distance`, so the fade always covers the
-  chunk streaming boundary, and the same `rt_fog_factor` runs in the hardware, software and
-  shell-grass paths. Terrain vertex colours are authored in scene-linear and target the
+  chunk streaming boundary, and the same `rt_fog_factor` runs in the hardware compositor,
+  `BlinnPhong.gdshader`'s raster branch and the shell-grass shader — three byte-identical
+  copies, which `ground_layer_smoke.gd` compares, because three slightly different ramps
+  would show as a seam between a prop, the terrain under it and the grass around it. Under
+  the fallback the manager pushes the fog to managed materials itself, since no compositor
+  is there to apply it. Terrain vertex colours are authored in scene-linear and target the
   grass canopy so the ground stays invisible under grass.
 - The default is Native (100%) plus High SMAA. Reduced RT quality presets enable the FSR1
   EASU/RCAS path. The FPS camera then applies a native-resolution classic Panini projection
@@ -59,9 +72,13 @@ evidence are recorded in
   above presentation. The full order is `3D + RT -> environment -> SMAA -> optional EASU ->
   Panini -> CAS/RCAS -> RetroGrade -> HUD/UI`. Only the FPS camera opts in, so cutscene and
   utility cameras bypass it. Shifted camera offsets also bypass the symmetric Panini mapping.
-- **Graphics** in the main and pause menus carries a live 120–140 degree horizontal FOV
-  slider (130 by default). It is exact horizontal coverage at every aspect ratio. The dialog
-  also carries RT render quality, SMAA, retro grading, grass detail and an FPS counter.
+- **Graphics** in the main and pause menus leads with **RT shadows & mirrors**, a single
+  checkbox over the whole pipeline: on is hardware RT, off is the raster fallback, and it
+  reinstalls the renderer live rather than waiting for a restart. On a machine without
+  hardware RT it is disabled and the hint says which requirement is missing, rather than
+  offering a switch that cannot do anything. The dialog also carries a live 120–140 degree
+  horizontal FOV slider (130 by default, exact horizontal coverage at every aspect ratio),
+  render quality, SMAA, retro grading, grass detail and an FPS counter.
   Sprint adds up to 10 degrees without exceeding 140. FOV is session-only, omitted from save
   payloads, and returns to 130 when the application restarts. Grass is the one worth
   reaching for first: it is stacked shell layers,
@@ -96,19 +113,24 @@ The generator writes the exact runtime terrain/grass vertex-format proxies and
 
 ## Smoke tests
 
+Headless Forward+ has no `RenderingDevice`, so every headless run below exercises the
+raster fallback. That is deliberate: it keeps the suite runnable without a ray-tracing
+GPU, and the fallback is a shipping path that deserves the coverage.
+
 ```powershell
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/terrain_player_smoke.gd
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/player_camera_smoke.gd
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/panini_projection_smoke.gd
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/procedural_terrain_grass/tests/phase1_smoke.gd
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_flow_smoke.gd
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_recovery_smoke.gd
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/ground_layer_smoke.gd
-# Optional hardware variant; exercises carrier-layer camera and local-light contracts.
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --hardware
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://game/tests/terrain_player_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://game/tests/player_camera_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/panini_projection_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/raster_fallback_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/ground_layer_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://addons/procedural_terrain_grass/tests/phase1_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://game/tests/app_flow_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method forward_plus --script res://game/tests/app_recovery_smoke.gd
+# Needs a real ray-tracing adapter: the receiver registry only exists under hardware RT.
+# Skips with a clear message when the machine has none.
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
 ```
 
 ## Frame-time probe
@@ -126,9 +148,10 @@ at the authored resolution, because the RT stack sizes every pass from it:
 subsystem off so its share of the frame can be read off the difference. `PERF_CLOUDS` and
 `PERF_STARS` keep the dome and drop one term inside the sky shader;
 `PERF_GROUND` keeps ray tracing and drops only the analytic reflection-ground
-trace. `PERF_BACKEND=software` forces the Compatibility tracer on a machine that
-would otherwise select hardware RT. `PERF_PROFILE=1` adds the RT manager's
-main-thread cost and its snapshot counters.
+trace. `PERF_RASTER=1` forces the raster fallback on a machine that would
+otherwise select hardware RT, so the two pipelines can be measured against each
+other on one machine. `PERF_PROFILE=1` adds the RT manager's main-thread cost
+and its snapshot counters.
 
 `PERF_FOV=120|130|140` selects the FPS camera's horizontal display FOV and
 `PERF_RT_QUALITY=0|1|2|3` selects Native, Quality, Balanced, or Performance.
@@ -162,18 +185,21 @@ an exact cross-launch gate because the star layout seed is generated per run.
 `game/tests/panini_capture.tscn` boots the real application, enters the terrain
 level, and verifies all three FOV endpoints, all four quality presets, SMAA
 off/Low/Medium/High, Native CAS, reduced-preset RCAS, and grade and posterization
-toggles. It also checks Compatibility/software selection, capture overscan and
-steady-state allocation contracts, leaves an unwarped status marker above the
-scene, writes `res://.godot/panini_capture.png`, and prints a `PANINI_CAPTURE`
-JSON record.
+toggles. It also checks capture overscan and steady-state allocation contracts,
+leaves an unwarped status marker above the scene, writes
+`res://.godot/panini_capture.png`, and prints a `PANINI_CAPTURE` JSON record.
+
+The present path is pipeline-independent, so `--force-raster` runs the same sweep
+against the raster fallback on a machine that would otherwise select hardware RT.
 
 ```powershell
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --scene res://game/tests/panini_capture.tscn -- --force-software
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --scene res://game/tests/panini_capture.tscn
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --scene res://game/tests/panini_capture.tscn -- --force-raster
 ```
 
 A passing run displays `PANINI CHECK: PASS` and exits zero; the JSON record must
-report `renderer: "gl_compatibility"`, `rt_backend: "software"`,
-`source_stage: "fsr_easu"`, and zero invalid samples.
+report `renderer: "forward_plus"`, `source_stage: "fsr_easu"`, and zero invalid
+samples.
 
 ## Exporting
 

@@ -47,8 +47,8 @@ func _run() -> void:
 		_check_shell_instances(snapshot)
 		_check_lod_swapping(settings, snapshot)
 	else:
-		print("phase2_smoke: MultiMesh storage is stubbed on this renderer; "
-			+ "instance and LOD checks need --rendering-method forward_plus or gl_compatibility.")
+		print("phase2_smoke: MultiMesh storage is stubbed headless; "
+			+ "instance and LOD checks need a windowed --rendering-method forward_plus run.")
 
 	for node in _owned:
 		if is_instance_valid(node):
@@ -164,11 +164,10 @@ func _check_shell_instances(snapshot: Dictionary) -> void:
 		multimesh.buffer = buffer
 		for index in layers.size():
 			var custom := multimesh.get_instance_custom_data(index)
-			# Whatever the backend's storage precision, INSTANCE_CUSTOM.x times
-			# u_shell_decode_scale has to land back on the fraction the
-			# duplicated-shell vertex colour carried. On Compatibility that costs
-			# one float32 rounding, which is why this is a tolerance rather than
-			# an equality; on Forward+ the multiply is by 1.0 and it is exact.
+			# INSTANCE_CUSTOM.x times u_shell_decode_scale has to land back on
+			# the fraction the duplicated-shell vertex colour carried. On
+			# Forward+ the multiply is by 1.0 and exact; the tolerance is kept
+			# because the encoding pair is a contract, not a constant.
 			var decoded := custom.r * TerrainGenerator.shell_decode_scale()
 			var expected := TerrainGenerator.shell_fraction_quantized(layers[index])
 			_check(absf(decoded - expected) <= 1e-6,

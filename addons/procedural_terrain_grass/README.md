@@ -108,7 +108,10 @@ variation.
 
 **Terrain Mesh Group** and **Terrain Receiver Only Group** optionally add each
 generated ground mesh to integration groups before it enters the scene tree.
-They are empty by default and do not couple this add-on to a renderer. The host
+They are empty by default and do not couple this add-on to a renderer. Retro RT
+uses them only under hardware RT; its raster fallback keeps no scene
+representation, so the groups are inert there and the ground-layer publish below
+is skipped. The host
 project uses them to opt terrain into Retro RT as primary receiver geometry
 while leaving the deforming shell grass unmanaged.
 

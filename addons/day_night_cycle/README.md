@@ -177,6 +177,11 @@ So the sky is baked **separately**, off a `Sky` that lives in a private 4x4
 radiance only: `fallback_linear` stays the flat horizon, so fog and the visible
 background remain exact and free, and only the mirror pays.
 
+This is a hardware-RT path: it exists because a traced reflection ray can miss.
+Under Retro RT's raster fallback there are no reflection rays — mirrors are
+screen-space — so the bake is simply unused, and the panorama handoff is a
+no-op rather than an error.
+
 `day_night_sky_bake.gdshader` is a `shader_type sky` twin of the dome that
 `#include`s the same body, so the panorama is the same picture the dome draws.
 Neither shader type can be expressed as the other — `sky_bake_panorama()` only
@@ -201,11 +206,13 @@ coherent colour instead of a hole.
 
 ## Grass, terrain, and anything else unmanaged
 
-Retro RT suppresses the native shadow map of every light it discovers, so
-unmanaged forward geometry receives no engine shadow at all, and managed surfaces
-are lit by the renderer rather than by their own material. Nothing here needs to
-reach either of them any more: the cloud layer casts no shadow, so it is drawn by
-the sky and read by nothing else.
+Under hardware RT, Retro RT suppresses the native shadow map of every light it
+discovers, so unmanaged forward geometry receives no engine shadow at all, and
+managed surfaces are lit by the renderer rather than by their own material.
+(Under its raster fallback none of that happens: shadow maps are the shadows, so
+unmanaged geometry is shadowed like anything else.) Either way nothing here needs
+to reach them: the cloud layer casts no shadow, so it is drawn by the sky and
+read by nothing else.
 
 `cloud_ambient_lift` exists because an overcast day is not a sunny one with the
 sun switched off: the cloud deck becomes the light source. Without it, full
@@ -368,7 +375,7 @@ not a traced edge.
 ## Tests
 
 ```powershell
-& "<godot>" --headless --path . --rendering-method gl_compatibility --script res://addons/day_night_cycle/tests/day_night_smoke.gd
+& "<godot>" --headless --path . --rendering-method forward_plus --script res://addons/day_night_cycle/tests/day_night_smoke.gd
 ```
 
 Covers the clock and its rollover, the sun/moon arc, the light handover at the

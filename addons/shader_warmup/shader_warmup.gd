@@ -301,19 +301,12 @@ static func _describe_pair(format: int, flags: int) -> String:
 
 #region Renderer
 
-## True when the renderer builds real pipeline state objects -- Forward+ and Mobile, on Vulkan,
-## Direct3D 12 or Metal. False on Compatibility, where OpenGL has no PSO concept at all: render
-## state is set with loose glEnable calls per draw rather than baked into a compiled object.
-##
-## Asked of the rendering server rather than read from the project setting, because the setting
-## does not reflect a driver fallback at runtime.
-##
-## Only the narrowest tier of work is gated on this. Material warmup is load-bearing on
-## Compatibility -- it is the only mechanism GL has -- and so is vertex-format warmup, because
-## GLES3 does skinning behind its own shader variant. What this gates is the pipeline-only
-## permutations that would be wasted effort there.
+## True when the renderer builds real pipeline state objects, which Forward+ on Vulkan,
+## Direct3D 12 or Metal always does -- so this is always true here. It is kept as a named
+## predicate rather than inlined because it is what the pipeline-only warmup permutations are
+## gated on, and that gate is worth being able to read at its call sites.
 static func uses_pipeline_objects() -> bool:
-	return RenderingServer.get_current_rendering_method() != "gl_compatibility"
+	return true
 
 #endregion
 

@@ -129,7 +129,7 @@ float decode_roughness(float raw_roughness) {
 
 // Canonical Retro RT distance fog. Keep this function byte-identical in every
 // copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
-// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
+// addons/retro_rt/shaders/BlinnPhong.gdshader,
 // addons/procedural_terrain_grass/shaders/grass_shell.gdshader.
 // Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Distance fog".
 // params: x=begin, y=end (> begin), z=curve, w=enabled. distance is radial.
@@ -141,8 +141,9 @@ float rt_fog_factor(vec4 params, float view_distance) {
 }
 
 // Canonical Retro RT analytic ground layer. Keep every function below
-// byte-identical in each copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
-// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc.
+// byte-identical in each copy. It has one copy again now that the software
+// backend is gone -- an RDShaderFile cannot include a .gdshaderinc, so any
+// .gdshader that needs this block would be a second one.
 // Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Analytic ground layer".
 //
 // Streamed terrain is receiver-only and shell grass is unmanaged, so neither

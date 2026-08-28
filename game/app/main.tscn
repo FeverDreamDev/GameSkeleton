@@ -32,8 +32,8 @@ process_priority = 100000
 script = ExtResource("5_rt")
 world_environment_path = NodePath("")
 auto_start = false
-preview_in_editor = false
 post_panini_enabled = true
+post_cas_enabled = true
 
 [node name="WorldRoot" type="Node3D" parent="." unique_id=1250619597]
 process_mode = 1

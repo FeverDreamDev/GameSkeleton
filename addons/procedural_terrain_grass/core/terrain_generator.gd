@@ -101,21 +101,15 @@ static func shell_fraction_quantized(fraction: float) -> float:
 ## Whether shell instance data has to travel as the raw 0-255 byte rather than
 ## as the finished fraction, and the constant the shader multiplies it back by.
 ##
-## MultiMesh instance custom data is not stored at the same precision on every
-## backend. Forward+ and Mobile keep float32; Compatibility packs colours and
-## custom data into float16 -- measured on 4.7.2, where handing GLES3 the value
-## 17/255 gets 0.06665 back, an error of 1.6e-5 that grows to 2.4e-4 near the
-## canopy top. So each backend is handed the encoding that survives it:
-##
-##   Forward+/Mobile  the finished fraction, scaled by 1.0. Multiplying by
-##                    exactly one is exact, so the instanced canopy is
-##                    bit-identical to the duplicated-shell one it replaces --
-##                    verified at 0 of 3,686,400 differing pixels.
-##   Compatibility    the byte, scaled by 1/255. Every integer up to 2048 is
-##                    exact in float16, so only the shader's own multiply rounds:
-##                    about 1e-7 instead of 2.4e-4.
+## Forward+ keeps MultiMesh instance custom data at float32, so the finished
+## fraction travels as-is and the shader multiplies it by exactly one. That is
+## exact, which is what makes the instanced canopy bit-identical to the
+## duplicated-shell one it replaced -- verified at 0 of 3,686,400 differing
+## pixels. The byte encoding existed for the Compatibility renderer, which packed
+## custom data into float16; the pair is kept as a named contract so the
+## shader-side scale can never drift from the encoding.
 static func shell_data_is_byte_encoded() -> bool:
-	return RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	return false
 
 
 ## Value for the shader's u_shell_decode_scale, paired with the encoding above.

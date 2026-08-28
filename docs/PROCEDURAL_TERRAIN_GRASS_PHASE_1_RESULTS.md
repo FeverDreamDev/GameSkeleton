@@ -1,5 +1,10 @@
 # Procedural Terrain + Grass — Phase 1 Results
 
+> **Historical record.** On 2026-08-28 the project became Forward+ only. The
+> regression coverage below names the OpenGL Compatibility renderer, which is no
+> longer a supported target. The results were true when taken and are left
+> unedited.
+
 Phase 1 was validated on August 26, 2026 against committed baseline `c649516`.
 The accepted changes remove redundant shader and script work, correct invalidation
 edge cases, and preserve the authored terrain and grass quality settings. The

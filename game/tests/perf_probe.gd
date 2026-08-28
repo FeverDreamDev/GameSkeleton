@@ -43,8 +43,8 @@ extends SceneTree
 ##                   version wiring it up.
 ##   PERF_RT_QUALITY=n
 ##                   RT quality preset: 0 native, 1 quality, 2 balanced, 3 performance
-##   PERF_BACKEND=software
-##                   force the Compatibility tracer instead of hardware RT
+##   PERF_RASTER=1   force the raster fallback -- shadow maps and SSR -- instead
+##                   of hardware RT, so the two can be measured on one machine
 ##   PERF_VSYNC=1    restore vsync; OFF by default because the display cap
 ##                   otherwise floors every measurement at the refresh interval
 ##   PERF_CLOCK=1    let the day/night clock run; OFF BY DEFAULT, and required
@@ -112,11 +112,14 @@ func _run() -> void:
 	_shell.rt_start_timeout_seconds = 30.0
 	if OS.get_environment("PERF_PROFILE") == "1":
 		_shell.get_node("RTSceneManager").profiling_enabled = true
-	# The Compatibility tracer is a shipping path, and it has an entirely
-	# different cost profile from the hardware one, so it needs to be measurable
-	# on a machine that would otherwise always select hardware.
-	if OS.get_environment("PERF_BACKEND") == "software":
-		_shell.get_node("RTSceneManager").rt_backend = RTSceneManager.RTBackend.SOFTWARE
+	# The raster fallback is a shipping path with an entirely different cost
+	# profile, so it has to be measurable on a machine that would otherwise
+	# always select hardware RT.
+	# Set on the shell rather than the manager: GameApp reasserts its session
+	# choice onto the manager before every world's RT start, so anything set
+	# directly on the manager here would be overwritten.
+	if OS.get_environment("PERF_RASTER") == "1":
+		_shell.set("_rt_enabled", false)
 	root.add_child(_shell)
 
 	if not await _wait_for(

@@ -79,4 +79,5 @@ common/physics_interpolation=true
 
 [rendering]
 
+renderer/rendering_method.mobile="forward_plus"
 anti_aliasing/screen_space_roughness_limiter/enabled=false

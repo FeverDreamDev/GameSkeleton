@@ -1,7 +1,8 @@
 // Shared sRGB transfer functions. Keep this include free of uniforms so any
 // pass in the stack can call it. These are the exact piecewise curves; the
-// project deliberately never substitutes the gamma-2.2 approximation, because
-// the same numbers have to survive a Forward+/Compatibility parity comparison.
+// project deliberately never substitutes the gamma-2.2 approximation: the
+// encode and decode here have to be exact inverses of each other, and of the
+// engine's own conversion, or the round trip through the stack tints.
 
 vec3 rt_srgb_to_linear(vec3 color) {
 	bvec3 cutoff = lessThanEqual(color, vec3(0.04045));

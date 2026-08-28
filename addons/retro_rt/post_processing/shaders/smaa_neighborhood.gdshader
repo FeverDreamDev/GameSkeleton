@@ -24,8 +24,8 @@ vec4 decode_scene_texel(ivec2 pixel) {
 	vec4 sampled = texelFetch(scene_texture, pixel, 0);
 	float coverage = rt_post_scene_coverage(sampled);
 	// Transparent render targets are already premultiplied by coverage. Decode
-	// each exact texel before filtering so Compatibility never interpolates in
-	// nonlinear storage while Forward+ interpolates in scene-linear storage.
+	// each exact texel before filtering, so filtering always happens in
+	// scene-linear storage rather than in whatever the target happens to hold.
 	vec3 straight_srgb = coverage > 0.00001
 		? clamp(sampled.rgb / coverage, vec3(0.0), vec3(1.0))
 		: vec3(0.0);

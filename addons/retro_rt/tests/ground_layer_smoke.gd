@@ -16,14 +16,25 @@ const TerrainGrassBlockerScript = preload("res://addons/procedural_terrain_grass
 const RTSceneManagerScript = preload("res://addons/retro_rt/scripts/RTSceneManager.gd")
 const TerrainGeneratorScript = preload("res://addons/procedural_terrain_grass/core/terrain_generator.gd")
 
-## rt_ground_* is duplicated across the hardware and software backends for the
-## same reason rt_fog_factor is: an RDShaderFile cannot include a .gdshaderinc.
-const CANONICAL_COPIES := [
-	"res://addons/retro_rt/shaders/rt_shadow_reflect.glsl",
-	"res://addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc",
-]
+## The ground block lives only in the hardware shader now that the software
+## backend is gone, so there is nothing left to drift against -- but the
+## invariants it has to satisfy are still worth asserting, and this is the only
+## thing that reads them.
+const CANONICAL_GROUND_PATH := "res://addons/retro_rt/shaders/rt_shadow_reflect.glsl"
 const CANONICAL_START := "// Canonical Retro RT analytic ground layer."
 const CANONICAL_END := "vec3 rt_ground_shade("
+
+## rt_fog_factor still has three copies, and they are the live drift risk: an
+## RDShaderFile cannot include a .gdshaderinc, and the two .gdshader copies are
+## what fade managed surfaces and shell grass together under the raster
+## fallback. A prop, the terrain under it and the grass around it fading on
+## three slightly different ramps is exactly the seam this catches.
+const FOG_COPIES := [
+	"res://addons/retro_rt/shaders/rt_shadow_reflect.glsl",
+	"res://addons/retro_rt/shaders/BlinnPhong.gdshader",
+	"res://addons/procedural_terrain_grass/shaders/grass_shell.gdshader",
+]
+const FOG_START := "float rt_fog_factor("
 
 var _failures := PackedStringArray()
 
@@ -89,10 +100,49 @@ func _extract_canonical(path: String) -> String:
 	return block
 
 
+## Lifts a whole function body, from its signature line to the closing brace in
+## column zero. Used for rt_fog_factor, which has no comment fence around it.
+func _extract_function(path: String, signature: String) -> String:
+	var lines := _read_text(path).split("\n")
+	var collecting := false
+	var block := ""
+	for line: String in lines:
+		if not collecting and line.begins_with(signature):
+			collecting = true
+		if not collecting:
+			continue
+		block += line + "\n"
+		if line == "}":
+			break
+	return block
+
+
+func _check_fog_copies() -> void:
+	var reference := _extract_function(FOG_COPIES[0], FOG_START)
+	_check(not reference.is_empty(), "rt_fog_factor is found in %s" % FOG_COPIES[0])
+	if reference.is_empty():
+		return
+	_check(reference.contains("pow(smoothstep(params.x, params.y, view_distance), params.z)"),
+		"rt_fog_factor is the shared smoothstep ramp raised to the authored curve")
+	for index in range(1, FOG_COPIES.size()):
+		var path: String = FOG_COPIES[index]
+		_check(_extract_function(path, FOG_START) == reference,
+			"%s carries rt_fog_factor verbatim" % path)
+	# The raster fallback is the only thing that applies fog on the managed
+	# surfaces itself, so its uniforms have to exist and be the pair the manager
+	# pushes. Without them terrain fades and the props standing on it do not.
+	var blinn := _read_text("res://addons/retro_rt/shaders/BlinnPhong.gdshader")
+	_check(blinn.contains("uniform vec4 rt_fog_params")
+			and blinn.contains("uniform vec3 rt_fog_color"),
+		"BlinnPhong declares the fog uniforms RTSceneManager pushes")
+	_check(blinn.contains("rt_pipeline_active\n\t\t? 0.0\n\t\t: rt_fog_factor(rt_fog_params, length(VERTEX))"),
+		"BlinnPhong fogs by radial view distance, and only outside the RT pipeline")
+
+
 func _check_canonical_block() -> void:
-	var reference := _extract_canonical(CANONICAL_COPIES[0])
+	var reference := _extract_canonical(CANONICAL_GROUND_PATH)
 	_check(not reference.is_empty(),
-		"the canonical ground block is found in %s" % CANONICAL_COPIES[0])
+		"the canonical ground block is found in %s" % CANONICAL_GROUND_PATH)
 	if reference.is_empty():
 		return
 	_check(reference.contains("rt_ground_sample")
@@ -151,14 +201,10 @@ func _check_canonical_block() -> void:
 		"the blade hash uses no trigonometry")
 	_check(code.contains("vec3(0.1031, 0.1030, 0.0973)"),
 		"the blade hash mixes integers rather than calling trig")
-	for index in range(1, CANONICAL_COPIES.size()):
-		var path: String = CANONICAL_COPIES[index]
-		var copy := _extract_canonical(path)
-		_check(copy == reference, "%s carries the canonical ground block verbatim" % path)
 
 
-## Both backends have to declare the layer, or one of them silently keeps
-## resolving its reflection misses against the sky alone.
+## The hardware shader has to declare the layer, or it silently keeps resolving
+## its reflection misses against the sky alone.
 func _check_backend_bindings() -> void:
 	var hardware := _read_text("res://addons/retro_rt/shaders/rt_shadow_reflect.glsl")
 	_check(hardware.contains("layout(set = 0, binding = 22) uniform sampler2D ground_map;"),
@@ -167,15 +213,6 @@ func _check_backend_bindings() -> void:
 			"ground_sun_radiance", "ground_ambient", "ground_grass"]:
 		_check(hardware.contains("vec4 %s;" % field),
 			"the hardware FrameData carries %s" % field)
-	var software := _read_text("res://addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc")
-	_check(software.contains("uniform sampler2D swrt_ground_map"),
-		"the software shader declares the ground map")
-	_check(software.contains("filter_nearest"),
-		"the software ground sampler is unfiltered, matching the hardware fetch")
-	for field in ["swrt_ground_params", "swrt_ground_bounds", "swrt_ground_sun_direction",
-			"swrt_ground_sun_radiance", "swrt_ground_ambient", "swrt_ground_grass"]:
-		_check(software.contains("uniform vec4 %s" % field),
-			"the software path declares %s" % field)
 	# The frame UBO is std140 and every field is a vec4, so the float count has
 	# to keep pace with the struct or the tail reads garbage.
 	var effect := _read_text("res://addons/retro_rt/scripts/RTLightingEffect.gd")
@@ -183,20 +220,15 @@ func _check_backend_bindings() -> void:
 		"the frame UBO is sized for the six ground vec4s")
 	_check(effect.contains("_set_frame_vec4(88,"),
 		"the last ground vec4 is packed at the offset the struct puts it")
-	# The shadow ray deliberately lives outside the canonical block, one copy per
-	# backend, so nothing but this notices when only one of them grows it. Both
-	# traverse with mask 1, which is the shadow bit; the reflection bit is 2 and
-	# would let the ray through anything registered reflection-visible only.
+	# The shadow ray deliberately lives outside the canonical block, because a
+	# traceRayEXT cannot live in a block shared with a .gdshader. Its mask is 1,
+	# the shadow bit; the reflection bit is 2 and would let the ray through
+	# anything registered reflection-visible only.
 	_check(hardware.contains("rt_ground_trace(") and hardware.contains("rt_ground_shade("),
 		"the hardware path traces the ground and shades it separately")
 	_check(hardware.contains("frame.ground_sun_direction.xyz,")
 			and hardware.contains("sun_visibility = payload.instance_id == NO_REFLECTION_HIT ? 1.0 : 0.0;"),
 		"the hardware path traces a sun-visibility ray from its ground hit")
-	_check(software.contains("rt_ground_trace(") and software.contains("rt_ground_shade("),
-		"the software path traces the ground and shades it separately")
-	_check(software.contains("swrt_ground_sun_direction.xyz,")
-			and software.contains("sun_visibility = ground_obstructed ? 0.0 : 1.0;"),
-		"the software path traces a sun-visibility ray from its ground hit")
 
 
 ## The one rule the terrain palette has to obey is that the ground disappears
@@ -312,6 +344,7 @@ func _check_hardware_shader_compiles() -> void:
 
 func _run() -> void:
 	_check_canonical_block()
+	_check_fog_copies()
 	_check_backend_bindings()
 	_check_hardware_shader_compiles()
 	_check_terrain_palette()

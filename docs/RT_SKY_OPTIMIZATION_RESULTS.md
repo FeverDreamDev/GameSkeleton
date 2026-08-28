@@ -1,5 +1,12 @@
 # Retro RT and Day/Night Sky Optimization — Results
 
+> **Historical record.** On 2026-08-28 the project became Forward+ only: the
+> software ray-tracing backend and the OpenGL Compatibility path were removed and
+> replaced by a raster fallback (shadow maps plus SSR). Measurements below that
+> involve the software tracer or Compatibility describe a pipeline the project no
+> longer ships. They were true when taken and are left unedited; see
+> `addons/retro_rt/docs/RT_PIPELINE.md` for what runs now.
+
 Removes redundant per-frame CPU work from `RTSceneManager`, redundant per-pixel
 work from the day/night sky shader, and the per-frame allocation churn in the
 Compatibility tracer. Every change is either provably output-identical or was

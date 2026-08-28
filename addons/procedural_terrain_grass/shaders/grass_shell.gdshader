@@ -95,7 +95,7 @@ float smooth_value_noise(vec2 p) {
 
 // Canonical Retro RT distance fog. Keep this function byte-identical in every
 // copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
-// addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc,
+// addons/retro_rt/shaders/BlinnPhong.gdshader,
 // addons/procedural_terrain_grass/shaders/grass_shell.gdshader.
 // Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Distance fog".
 // params: x=begin, y=end (> begin), z=curve, w=enabled. distance is radial.

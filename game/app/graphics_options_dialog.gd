@@ -1,10 +1,14 @@
 class_name GraphicsOptionsDialog
 extends UIDialog
 
-## Session-only graphics controls for the skeleton. The renderer and RT backend are deliberately
-## informational: both are selected before this dialog exists, while quality and post processing
-## are safe to change at runtime through RTSceneManager.
+## Session-only graphics controls for the skeleton. The renderer row is deliberately
+## informational -- it is fixed before this dialog exists -- while ray tracing, quality and
+## post processing are all safe to change at runtime through RTSceneManager.
 
+## Whole-pipeline switch: on installs hardware RT shadows and mirrors, off installs the
+## raster fallback. Emitted only when the machine can actually ray trace; otherwise the
+## checkbox is disabled and the hint says why.
+signal rt_toggled(enabled: bool)
 signal quality_selected(preset: int)
 signal anti_aliasing_toggled(enabled: bool)
 signal smaa_quality_selected(quality: int)
@@ -19,6 +23,7 @@ const DEFAULT_HORIZONTAL_FOV := 130.0
 
 var rendering_method: StringName = &"unknown"
 var active_backend: StringName = &"none"
+var rt_enabled: bool = true
 var quality_preset: int = RTSceneManager.RTQualityPreset.NATIVE
 var anti_aliasing_enabled: bool = true
 var smaa_quality: int = RTSceneManager.SMAAQuality.HIGH
@@ -70,7 +75,18 @@ func _build_body() -> Control:
 	status_margin.add_child(status_grid)
 	_add_status_row(status_grid, "Renderer", _display_name(rendering_method))
 	_backend_value = _add_status_row(status_grid, "Ray tracing", _backend_text())
-	_add_status_row(status_grid, "Fallback", "Hardware RT -> Software RT")
+
+	var hardware_available := RTSceneManager.hardware_rt_supported()
+	var rt_toggle := CheckBox.new()
+	rt_toggle.name = "RayTracingToggle"
+	rt_toggle.text = "RT shadows & mirrors"
+	# Forced off rather than merely disabled on an adapter that cannot ray trace,
+	# so the checkbox always shows what is actually rendering.
+	rt_toggle.button_pressed = rt_enabled and hardware_available
+	rt_toggle.disabled = not hardware_available
+	rt_toggle.toggled.connect(_on_rt_toggled)
+	column.add_child(rt_toggle)
+	UISystem.bind_button(rt_toggle)
 
 	var fov_row := HBoxContainer.new()
 	fov_row.add_theme_constant_override("separation", 12)
@@ -108,7 +124,7 @@ func _build_body() -> Control:
 	column.add_child(quality_row)
 
 	var quality_label := Label.new()
-	quality_label.text = "RT render quality"
+	quality_label.text = "Render quality"
 	quality_label.custom_minimum_size.x = 132.0
 	quality_row.add_child(quality_label)
 
@@ -193,7 +209,7 @@ func _build_body() -> Control:
 
 	var hint := Label.new()
 	hint.theme_type_variation = &"HintLabel"
-	hint.text = "AUTO prefers hardware RT and falls back to software RT on this renderer.\nSettings apply for this session and reset on restart."
+	hint.text = _hint_text(hardware_available)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.custom_minimum_size.x = min_body_width
 	column.add_child(hint)
@@ -223,9 +239,23 @@ func _add_status_row(grid: GridContainer, title: String, value: String) -> Label
 func _backend_text() -> String:
 	if active_backend == &"hardware":
 		return "Hardware RT"
-	if active_backend == &"software":
-		return "Software RT"
-	return "AUTO (starts with the level)"
+	if active_backend == &"raster":
+		return "Raster (shadow maps + SSR)"
+	return "Starts with the level"
+
+
+func _hint_text(hardware_available: bool) -> String:
+	var session_note := "Settings apply for this session and reset on restart."
+	if hardware_available:
+		return (
+			"Turning ray tracing off falls back to shadow maps and screen-space reflections.\n"
+			+ session_note)
+	# The reason matters more than the fact here: "unavailable" alone reads as a
+	# bug on a machine the player believes is capable.
+	return (
+		"Ray tracing is unavailable on this machine, so the raster fallback is in use.\n"
+		+ RTSceneManager.hardware_rt_unavailable_reason() + "\n"
+		+ session_note)
 
 
 func _display_name(value: StringName) -> String:
@@ -244,6 +274,11 @@ func _on_horizontal_fov_value_changed(value: float) -> void:
 	if _fov_value != null:
 		_fov_value.text = _fov_text(horizontal_fov)
 	horizontal_fov_changed.emit(horizontal_fov)
+
+
+func _on_rt_toggled(enabled: bool) -> void:
+	rt_enabled = enabled
+	rt_toggled.emit(enabled)
 
 
 func _on_quality_item_selected(index: int) -> void:

@@ -1,7 +1,7 @@
 extends SceneTree
 
 ## End-to-end smoke coverage for the persistent app shell. Run with:
-## godot --path . --rendering-method gl_compatibility --script res://game/tests/app_flow_smoke.gd
+## godot --path . --rendering-method forward_plus --script res://game/tests/app_flow_smoke.gd
 
 const TEST_SAVE_DIRECTORY_PREFIX := "res://.godot/app_flow_smoke_saves"
 const ROUND_TRIP_FLAG := &"app_flow_smoke_round_trip"
@@ -123,12 +123,17 @@ func _run() -> void:
 		"gameplay autosave carries the world payload")
 	_check(bool(gameplay_payload.get("world_active", false)),
 		"gameplay autosave records that its streamed world must be restored")
-	_check(await _wait_for(
-		func() -> bool:
-			return int(app.rt_manager.get_profile_snapshot().get(
-				"receiver_only_instances", 0)) > 0,
-		1200), "streamed terrain registers at least one receiver-only RT instance")
+	# Receiver registration is hardware-RT-only; see _assert_rt_receiver_contract.
+	if app.rt_manager.get_active_rt_backend() == &"hardware":
+		_check(await _wait_for(
+			func() -> bool:
+				return int(app.rt_manager.get_profile_snapshot().get(
+					"receiver_only_instances", 0)) > 0,
+			1200), "streamed terrain registers at least one receiver-only RT instance")
 	_assert_rt_receiver_contract(app)
+	# Deliberately here rather than at the menu: the toggle reinstalls the
+	# pipeline, so it is only a real test once there is one running.
+	await _assert_rt_toggle_lifecycle(app)
 	await _assert_quality_lifecycle(app)
 
 	_check(await _wait_for(
@@ -323,13 +328,22 @@ func _on_cutscene_finished(id: StringName, skipped: bool) -> void:
 	_cutscenes_skipped.append(skipped)
 
 
+## The receiver registry is a hardware-RT structure. Under the raster fallback --
+## which is what a headless run gets, having no RenderingDevice -- there is no
+## scene representation to assert against, so what is checked instead is that the
+## fallback came up cleanly and reported itself honestly. The registry's own
+## coverage is receiver_registry_smoke.gd, which needs a real adapter.
 func _assert_rt_receiver_contract(app: GameApp) -> void:
 	var profile := app.rt_manager.get_profile_snapshot()
 	_check(bool(profile.get("rt_ready", false)),
 		"gameplay RT reports ready")
-	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
-		_check(profile.get("active_backend", &"none") == &"software",
-			"Compatibility gameplay selects the software RT backend")
+	var backend: StringName = profile.get("active_backend", &"none")
+	_check(backend == &"hardware" or backend == &"raster",
+		"gameplay brings up a pipeline rather than leaving the renderer unstarted")
+	if backend == &"raster":
+		_check(int(profile.get("receiver_only_instances", 0)) == 0,
+			"the raster fallback registers no receivers, because it keeps no scene")
+		return
 	var receiver_count := int(profile.get("receiver_only_instances", 0))
 	_check(receiver_count > 0, "RT profile counts streamed receiver-only terrain")
 	_check(int(profile.get("excluded_instances", 0)) >= receiver_count,
@@ -433,6 +447,64 @@ func _assert_fov_settings_lifecycle(app: GameApp) -> void:
 	slider = dialog.get("_fov_slider") as HSlider if dialog != null else null
 	_check(dialog != null and slider != null and is_equal_approx(slider.value, 137.0),
 		"reopening Graphics options retains the session horizontal FOV")
+	if dialog != null:
+		dialog.dismiss()
+	await process_frame
+
+
+## The RT toggle is the one control in the dialog that reinstalls the pipeline
+## rather than setting a property, and the one that has something to say when the
+## machine cannot do what it asks. Both halves are asserted here; which branch
+## runs depends on the adapter, and headless always takes the unavailable one.
+##
+## This runs at the main menu, where no world is installed and the manager has
+## not started, so the live restart is only exercised where there is a pipeline
+## to restart. What is always checked is that the toggle never offers, shows, or
+## reports ray tracing the machine cannot do.
+func _assert_rt_toggle_lifecycle(app: GameApp) -> void:
+	var hardware_available := RTSceneManager.hardware_rt_supported()
+	_check(bool(app.get("_rt_enabled")) == hardware_available,
+		"the RT session default matches what this machine can actually do")
+
+	app.call("_open_graphics_options")
+	await process_frame
+	var dialog := app.get("_graphics_dialog") as GraphicsOptionsDialog
+	_check(dialog != null, "Graphics options opens")
+	var toggle := dialog.find_child("RayTracingToggle", true, false) as CheckBox if dialog != null else null
+	_check(toggle != null, "Graphics options builds the RT shadows & mirrors toggle")
+	if toggle != null:
+		_check(toggle.disabled != hardware_available,
+			"the RT toggle is offered only where hardware ray tracing exists")
+		_check(toggle.button_pressed == hardware_available,
+			"the RT toggle shows the pipeline that is actually rendering")
+
+	if not hardware_available:
+		_check(app.rt_manager.get_active_rt_backend() != &"hardware",
+			"a machine without hardware ray tracing never reports the hardware backend")
+	elif toggle != null:
+		var was_running := app.rt_manager.get_active_rt_backend() != &"none"
+		toggle.button_pressed = false
+		# The restart is asynchronous, unlike every other control in the dialog.
+		for _frame in 240:
+			await process_frame
+			if not was_running or app.rt_manager.get_active_rt_backend() == &"raster":
+				break
+		_check(not bool(app.get("_rt_enabled")),
+			"turning the RT toggle off records the session choice")
+		if was_running:
+			_check(app.rt_manager.get_active_rt_backend() == &"raster",
+				"turning the RT toggle off installs the raster fallback")
+		toggle.button_pressed = true
+		for _frame in 240:
+			await process_frame
+			if not was_running or app.rt_manager.get_active_rt_backend() == &"hardware":
+				break
+		_check(bool(app.get("_rt_enabled")),
+			"turning the RT toggle back on records the session choice")
+		if was_running:
+			_check(app.rt_manager.get_active_rt_backend() == &"hardware",
+				"turning the RT toggle back on reinstalls hardware RT without a restart")
+
 	if dialog != null:
 		dialog.dismiss()
 	await process_frame

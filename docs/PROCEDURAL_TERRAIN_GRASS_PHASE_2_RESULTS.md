@@ -1,5 +1,11 @@
 # Procedural Terrain + Grass — Phase 2 Results
 
+> **Historical record.** On 2026-08-28 the project became Forward+ only. The
+> test notes below name the OpenGL Compatibility renderer, and the float16
+> instance-data encoding they describe existed for it; Forward+ keeps float32 and
+> the byte encoding is no longer used. The results were true when taken and are
+> left unedited.
+
 Phase 2 replaces the duplicated shell geometry with one base grass surface per
 chunk drawn through prebuilt `MultiMesh` shell sets, and puts a conservative
 broad phase in front of the static masker's exact physics queries. Validated on

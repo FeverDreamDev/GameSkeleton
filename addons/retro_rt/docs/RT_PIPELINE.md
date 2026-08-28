@@ -9,80 +9,97 @@ The validation commands in this document use the fixtures that are checked into
 this project: `receiver_registry_smoke.gd`, `panini_projection_smoke.gd`,
 `perf_probe.gd`, and `panini_capture.tscn`.
 
-This Godot 4.7.1 project targets visual equivalence between Forward+ and
-Compatibility through one scene, material, lighting, ray, texture, environment,
-anti-aliasing, and output contract. Forward+ hardware RT, Forward+ forced
-software RT, and desktop Compatibility software RT all feed the same fullscreen
-post stack.
+This Godot 4.7.1 project is Forward+ only. It runs one scene, material,
+lighting, ray, texture, environment, anti-aliasing, and output contract across
+two pipelines: hardware ray tracing, and the raster fallback that stands in for
+it on an adapter that cannot ray trace or when the player turns ray tracing off.
+Both feed the same fullscreen post stack.
 
-Visual equivalence is the target, not cross-API bit identity. Godot still owns
-different rasterizers, depth formats, render-target formats, shader compilers,
-and floating-point implementations. Small edge/intersection differences may
-remain, and the parity workflow below measures them instead of hiding them
-behind an exact cross-renderer hash.
+The two are deliberately not equivalent, and the contract does not pretend they
+are: ray-traced shadows and reflections are the point, and shadow maps and
+screen-space reflections are what is available without them. What the shared
+contract does hold is everything around that — the same materials, the same
+lighting model, the same fog curve, the same colour and exposure, the same
+resolution domains, and the same present chain — so the fallback reads as the
+same picture with cheaper shadows and reflections rather than as a different
+renderer. **What the fallback does not reproduce** in the next section is
+explicit about where they part.
 
-## Backend selection and editor preview
+## Backend selection and the raster fallback
 
-`RTSceneManager.rt_backend` accepts `AUTO`, `HARDWARE`, or `SOFTWARE`.
+The project is Forward+ only. There are two pipelines, and which one installs is
+not a request but a consequence:
 
-- `AUTO` selects hardware RT only for a Forward+ Vulkan run whose
-  RenderingDevice exposes buffer-device-address and ray-tracing-pipeline
-  support. All other supported runs select software RT.
-- Explicit `HARDWARE` or `SOFTWARE` selection is used by validation. An
-  unavailable forced backend fails visibly instead of silently changing paths.
-- Compatibility and non-Vulkan Forward+ use software RT, and never create a
-  compute pipeline or an acceleration-structure RID.
-- `get_active_rt_backend()` reports `hardware`, `software`, or `none`.
-
-The editor scene viewport previews real ray tracing, and it always previews it
-through `RTSoftwareTracer` regardless of `rt_backend`. The software backend's
-overrides are renderer-only `RenderingServer.instance_set_*` state that restores
-cleanly and never touches authored resources, so a scene that is only partly
-assembled degrades to ordinary raster. The hardware path would instead install a
-CompositorEffect on the edited scene's `World3D` scenario, affecting every editor
-viewport on that world, and switch managed materials into the visibility-buffer
-transport, which renders as garbage whenever the compositor is missing. The
-fidelity cost of previewing software is bounded by the measured hardware/software
-parity result.
-
-The editor preview deliberately stops there: it does **not** run the shared
-fullscreen post stack. `RTPostProcessStack.configure()` sets `disable_3d = true`
-on the root viewport and presents through a `CanvasLayer`, which in the editor
-would blank the viewport and its gizmos. Editor preview therefore means RT
-shadows and reflections against the normal editor background, with no retro
-grade, no SMAA, and no FSR. The runtime remains the authoritative image.
-
-Editor preview also never suppresses `Environment.reflected_light_source`. That
-is the one override the manager writes to an authored Resource rather than to
-the RenderingServer, and the software clones are `unshaded,
-ambient_light_disabled` anyway, so skipping it keeps scene files clean.
-
-`preview_in_editor` controls that preview. Enabling it schedules a debounced
-build; disabling it tears the preview down completely — tracer clones freed,
-surface overrides returned to their authored values, carrier uniforms cleared,
-and native light shadows restored — leaving the shader's standalone raster
-fallback as the authored default. Scene changes, script reload, manager removal,
-and editor shutdown perform the same teardown.
-
-Failures never latch in the editor. Adding a mesh with no managed material, or
-any other break in the RT scene contract, tears the preview down to plain raster,
-reports once through `push_warning`, and retries on a backoff poll; the runtime's
-permanent `_fail()` state is not entered. Mesh additions, removals, replacements,
-and mesh-resource edits trigger a debounced rebuild rather than the runtime's
-hard topology failure, because BLASes are immutable once built. Light additions,
-removals, transforms, and material property edits are absorbed incrementally with
-no rebuild.
-
-Headless editor runs (import, export) install no preview and stop processing.
+- **Hardware RT** requires Forward+ on Vulkan, a `RenderingDevice` exposing
+  buffer-device-address and ray-tracing-pipeline support, and a non-CPU adapter.
+- **The raster fallback** runs whenever any of that is missing, and whenever the
+  player turns ray tracing off.
+- `RTSceneManager.ray_tracing_enabled` requests hardware RT.
+  `set_ray_tracing_enabled()` changes it on a running manager by genuinely
+  reinstalling the pipeline — stop, then start. Assigning the property on a
+  running manager is a contract failure rather than a silent no-op.
+- `hardware_rt_supported()` and `hardware_rt_unavailable_reason()` are static, so
+  a settings menu can ask before any manager exists.
+- `get_active_rt_backend()` reports `hardware`, `raster`, or `none`.
 
 Hardware RT uses BLAS/TLAS resources, a POST_SKY compositor effect, and the
 material/instance carriers in `BlinnPhong.gdshader`. It relies on the Godot
 4.7.1 Forward+ `forward_clustered` normal/roughness and specular buffers.
 
-Software RT never creates ray-tracing pipelines. It rasterizes primary
-visibility with `BlinnPhongSoftware.gdshader` and traverses the project BVH from
-the spatial fragment shader. The same path runs under Forward+ and
-Compatibility.
+### What the raster fallback is
+
+Not a second renderer. It is the absence of the first one, plus two switches.
+
+The manager keeps **no scene representation** under the fallback: no mesh
+extraction, no texture atlases, no light table, no snapshot, no acceleration
+structure. That work exists only to feed a tracer. What it still owns is the
+post stack, the distance fog contract, and the quality presets — everything the
+image shares with hardware RT.
+
+Three things then fall out of simply not installing the hardware path:
+
+| | Hardware RT | Raster fallback |
+| --- | --- | --- |
+| `rt_pipeline_active` | set true, so materials become visibility-buffer transport | left false, so `BlinnPhong.gdshader` renders its standalone Blinn-Phong branch |
+| Native light shadows | suppressed through `RenderingServer.light_set_shadow`, because the RT pass owns shadows | left alone, so `Light3D.shadow_enabled` means what it says and shadow maps render |
+| Reflections | traced; per-material `mirror_enabled` / `reflection_strength` | `Environment.ssr_enabled`, turned on by the manager and restored on teardown. The same `mirror_enabled` surfaces publish `SPECULAR` at roughness zero, which is what SSR reads |
+
+`Environment.ssr_enabled` is therefore the one contract that differs by pipeline:
+hardware RT rejects it, the fallback requires it. Scenes author it off and let
+the manager own the switch, so one scene serves both.
+
+The fallback also has to apply distance fog itself. Under hardware RT the
+compositor fogs managed pixels; with no compositor, `BlinnPhong.gdshader` applies
+`rt_fog_factor` in its standalone branch from `rt_fog_params` / `rt_fog_color`,
+which the manager pushes to managed materials. Without that, terrain and props
+would render unfogged while shell grass — which subscribes to
+`distance_fog_changed` — still faded, and the terrain streaming boundary would
+become a visible wall. Gathering those materials is the only thing the fallback
+looks at the scene for.
+
+### What the fallback does not reproduce
+
+Screen-space reflections only reflect what is on screen, so a mirror loses
+off-screen and backfacing geometry, and reflections disocclude at screen edges.
+Shadow maps have finite resolution and their own acne and peter-panning
+tradeoffs, where ray-traced shadows have neither. The analytic ground layer is
+hardware-only and is skipped: SSR covers terrain and grass in mirrors instead.
+Everything after the 3D pass — SMAA, FSR, Panini, the retro grade, the present —
+is identical.
+
+### In the editor
+
+The manager is runtime-only; there is no editor RT preview. The editor viewport
+shows managed materials through the same standalone `BlinnPhong.gdshader` branch
+the raster fallback uses, so authoring happens against an honest preview of one
+of the two shipping configurations. Previewing hardware RT would mean installing
+a CompositorEffect on the edited scene's `World3D` scenario, affecting every
+editor viewport on that world, and switching managed materials into
+visibility-buffer transport that renders as garbage whenever the compositor is
+missing. The post stack cannot run there either:
+`RTPostProcessStack.configure()` sets `disable_3d = true` on the root viewport
+and presents through a `CanvasLayer`, which in the editor blanks the viewport and
+its gizmos.
 
 ## Central visual contract
 
@@ -165,21 +182,22 @@ float rt_fog_factor(vec4 params, float view_distance) {
 view-space Z, so fog does not shimmer as the camera turns. `smoothstep` is
 C1-continuous at both ends, so there is no kink where the fog starts.
 
-Copies live in `shaders/rt_shadow_reflect.glsl`,
-`shaders/BlinnPhongSoftwareBody.gdshaderinc`, and
-`addons/procedural_terrain_grass/shaders/grass_shell.gdshader`.
+Copies live in `shaders/rt_shadow_reflect.glsl`, `shaders/BlinnPhong.gdshader`,
+and `addons/procedural_terrain_grass/shaders/grass_shell.gdshader`.
+`ground_layer_smoke.gd` compares all three byte for byte, because three slightly
+different ramps would show up as a seam between a prop, the terrain under it and
+the grass around it.
 
 Every path composites `final = lit * (1 - f) + fog_color * f`:
 
 | Path | Application |
 | --- | --- |
 | Hardware | `scene_color = mix(ambient + emission + reflection, miss_color, f)` and `separate_specular = direct * (1 - f)`. Forward+ adds the two buffers. |
-| Software | `ALBEDO = mix(base_lighting + direct_lighting, miss_color, f)`, before the Compatibility sRGB compensation. |
-| Unmanaged | `ALBEDO *= (1 - f)`, `EMISSION = fog_color * f`, `SPECULAR *= (1 - f)`. Scaling `ALBEDO` attenuates the diffuse and ambient terms; `EMISSION` adds the fog back. |
+| Raster fallback | `ALBEDO *= (1 - f)`, `EMISSION = (ambient + emission) * (1 - f) + fog_color * f`, and the Blinn specular lobe and `SPECULAR` both scale by `(1 - f)`. Scaling `ALBEDO` attenuates every light Godot evaluates against it. Parameters arrive as `rt_fog_params` / `rt_fog_color`, pushed by the manager. |
+| Unmanaged | `ALBEDO *= (1 - f)`, `EMISSION = fog_color * f`, `SPECULAR *= (1 - f)`. The same identity as the fallback, reached through `distance_fog_changed`. |
 
 Fog is applied once, to the primary hit. Reflected radiance inherits the
-reflector's fog rather than the reflected path length; both RT backends do this
-at the same point, so they stay matched.
+reflector's fog rather than the reflected path length.
 
 ## RT quality presets and resolution domains
 
@@ -212,10 +230,10 @@ compute upscaler.
 
 Only the private scene-capture, SMAA, and SMAA-resolve SubViewports are resized;
 they share the internal render size. Each internal dimension is
-`max(2, ceil(output_dimension * scale))`. Hardware dispatch and software primary
-raster/BVH work therefore follow the same internal pixel count. Native is the
-default on every platform; there is no automatic quality controller,
-persistence, or per-platform default.
+`max(2, ceil(output_dimension * scale))`. The hardware dispatch and the
+fallback's primary raster therefore follow the same internal pixel count. Native
+is the default; there is no automatic quality controller, persistence, or
+per-platform default.
 
 Reduced presets reconstruct back to the native output size with FSR 1 EASU
 followed by RCAS. The FSR EASU SubViewport is the one target sized to the output
@@ -254,7 +272,8 @@ skips Godot's otherwise-empty raster `light()` invocation for every authored
 light over managed pixels. Both changes are `RenderingServer` overrides: the
 authored `MeshInstance3D.layers` and `Light3D.light_cull_mask` properties remain
 unchanged and are still what the shared receiver/light candidate lists publish.
-Software RT and the editor preview keep the authored renderer masks.
+The raster fallback installs neither override, so it keeps the authored renderer
+masks and the authored shadow toggles.
 
 Because the private capture camera mirrors rather than widens the gameplay
 camera mask, a hardware camera must include layer 20. Startup and runtime camera
@@ -343,20 +362,46 @@ copied unchanged to the private camera.
 The projection is fixed classic Panini with distance `D=1` and squeeze `S=0`.
 Its native-output horizontal extent makes the left and right center rays exactly
 minus/plus half the selected display FOV; the vertical center extent follows
-from output aspect. The CPU caches every output-border texel center plus the four
-logical corners whenever output size changes. Each FOV or size-domain change
-then performs exactly one nonlinear mapping scan over that cached perimeter, adds
-a half-texel margin, and chooses the smallest symmetric perspective capture that
-contains it. That conservative private-camera overscan prevents black borders,
-clamped corners, and culling holes without altering the authored camera.
+from output aspect. Each FOV or size-domain change evaluates the inverse mapping
+at one logical corner, adds a half-texel margin, and chooses the smallest
+symmetric perspective capture that contains it. That conservative private-camera
+overscan prevents black borders, clamped corners, and culling holes without
+altering the authored camera.
 
-The GLES3-safe canvas shader uses one bilinear sample where the warp does not
-minify and exactly four bilinear samples at the positive/negative derivative
-corners where it does. The diagnostic contract names this `adaptive_1_or_4`.
+One corner is sufficient because the mapping is monotonic on both axes:
+`mapped.x = tan(phi)` is odd and strictly increasing in output NDC x across the
+supported `|phi| < 90` degrees, and `mapped.y` is linear in output NDC y and
+strictly increasing in `|phi|`. Both extrema therefore land on the four logical
+corners. The CPU still caches every output-border texel center plus those four
+corners whenever output size changes, and `post_panini_perimeter_samples` still
+reports that set, but the perimeter is now only scanned on the exceptional
+invalid-contract path to retain an exact `invalid_samples` diagnostic. The
+closed form is what keeps the smoothed sprint FOV, which moves every frame, off
+a scan that cost about 2 ms per frame at 1080p and 3.2 ms at 3440x1440;
+`panini_projection_smoke.gd` pins the closed form against a full border scan.
+
+The GLES3-safe canvas shader reconstructs with a five-tap Catmull-Rom where the
+warp magnifies and uses exactly four bilinear samples at the positive/negative
+derivative corners where it minifies. The diagnostic contract names this
+`catmull_rom_or_box`. Catmull-Rom is there because the capture camera is always
+wider than the display FOV, so the image center is magnified by 2.8x
+horizontally at 130 degrees and 3.9x at 140; a single bilinear tap over that
+magnification is what made the center read as soft. The kernel is renormalized
+over its five kept taps, so it is exactly transparent at 1:1 and shifts no
+brightness on a flat field, and it fades to that single bilinear tap as the
+footprint approaches 1:1 so the two branches meet with no ring. Its negative
+lobes are clamped to the `[0,1]` range the upstream resolve already guarantees.
 It uses no compute, history, `textureGather`, dynamic allocation, or
 renderer-specific branch. The native-size Panini SubViewport is persistent,
 resized in place, rebound across quality changes, and set to `UPDATE_DISABLED`
 while bypassed.
+
+Panini magnifies the center on every preset, but only the reduced presets get a
+sharpener after it for free, because RCAS is part of FSR. `main.tscn` therefore
+enables `post_cas_enabled` so Native is not the one preset presenting an
+unsharpened magnification; measured against the acceptance capture, CAS at the
+default 0.15 sharpness recovers about 21 percent more center gradient energy.
+The reusable add-on still defaults CAS off.
 `generated/shader_warmup_manifest.tres` includes `panini_project.gdshader`; rerun
 the normal warmup generator whenever this shader or its material parameters
 change.
@@ -392,10 +437,11 @@ to fix. Supporting it would require either a separate non-MSAA visibility pass
 or one ray per coverage sample, and the RT ray count is deliberately tied to
 internal pixel dimensions rather than sample count.
 
-SMAA 1x remains a sharp, spatial, non-temporal solution that runs as the same
-canvas shader pipeline on Forward+ and desktop Compatibility. It handles
-long diagonals and corner patterns more deliberately than a single-pass FXAA
-approximation without requiring history or motion vectors.
+SMAA 1x remains a sharp, spatial, non-temporal solution that runs as an ordinary
+canvas shader pipeline, so the whole post stack is SubViewports rather than a
+second RenderingDevice pipeline. It handles long diagonals and corner patterns
+more deliberately than a single-pass FXAA approximation without requiring
+history or motion vectors.
 
 ### SMAA completes at the internal render size
 
@@ -461,14 +507,17 @@ switchable.
 ### FSR 1
 
 `fsr_common.gdshaderinc` ports EASU, RCAS and CAS from AMD's reference
-`ffx_fsr1.h` and `ffx_cas.h`. Constraints that keep Compatibility first-class:
+`ffx_fsr1.h` and `ffx_cas.h`. Constraints that keep the port inside the shared
+SubViewport post stack:
 
-- no compute shaders, no RenderingDevice-only APIs, no Vulkan-only or
-  Forward+-only functionality;
+- no compute shaders and no RenderingDevice-only APIs, so the pass stays inside
+  the SubViewport post stack rather than standing up a second pipeline;
 - no FSR2, no temporal accumulation, no motion vectors, no history — FSR 1 is
   spatial, and that is the whole reason it is usable here;
 - no `textureGather`. The reference EASU gathers three channels; this port
-  fetches the same 12 texels with `texelFetch`, which is core in GLSL ES 3.0.
+  fetches the same 12 texels with `texelFetch`. The rule originally existed for
+  the Compatibility renderer, which is gone, so a gather port is now possible —
+  it would be an optimization, not a correctness fix, and has not been measured.
   The kernel stays EASU rather than a bicubic, Lanczos or generic-sharpening
   substitute;
 - no 16-bit packed path — the full float path only;
@@ -538,19 +587,12 @@ is bypassed along with it.
 
 Scene, edge, blend and resolve SubViewports all request `use_hdr_2d = true`, and
 so do the persistent Panini target and the EASU target while it exists, but this
-is not the same physical format on every renderer. Forward+ honors the request
-and the profile reports an HDR scene capture plus HDR data targets. Godot
-Compatibility ignores HDR 2D; the supported fallback is a transparent RGBA8
-target. Transparency guarantees all four directional weight channels remain
-present, but the fallback has lower precision. The `post_*_hdr_requested`,
-`post_*_hdr`, and `post_data_viewports_rgba` profile fields distinguish requested
-state from the format the active renderer can actually supply.
-
-On Compatibility the resolve target is RGBA8, so SMAA's sub-8-bit edge blend
-is re-quantized once before the grade. That is the same precision the scene
-capture already carries on that renderer, and the final output is 8-bit sRGB
-regardless, but it is a real difference from the previous fused pass and is why
-the Native reference SHA was re-baselined.
+is honored: Forward+ gives every one of them RGBA16F, and the profile reports an
+HDR scene capture plus HDR data targets. The targets are also `transparent_bg`,
+which guarantees all four SMAA directional weight channels are present rather
+than RGB-only. The `post_*_hdr_requested`, `post_*_hdr`, and
+`post_data_viewports_rgba` profile fields remain, and still distinguish the
+requested state from what the renderer actually supplied.
 
 Intermediate SubViewports are persistent and resize only when the output size or
 quality preset changes; they are not reallocated per frame. Every SMAA
@@ -560,8 +602,9 @@ at native output size and is disabled rather than freed while bypassed. Its inpu
 is always 1:1 — resolve at Native or EASU at a reduced preset — and the final
 present source is Panini when active or that same upstream image when bypassed.
 
-Posterization happens after AA and remains intentionally crisp. There is no
-separate compute grade for hardware and no Compatibility-only grade path.
+Posterization happens after AA and remains intentionally crisp. There is one
+grade path, shared by both pipelines; there is no separate compute grade for
+hardware.
 
 ### Artist controls
 
@@ -592,27 +635,23 @@ known status marker above the scene to make that ordering visible.
 
 ## Color, exposure, and texture sampling
 
-Forward+ honors the HDR 2D scene-capture request. Its capture is sampled as
+Forward+ honors the HDR 2D scene-capture request. The capture is sampled as
 scene-linear data and can carry radiance above `1.0` until the common
-pre-SMAA/display-range boundary. Compatibility cannot honor that target:
-its scene capture is renderer-produced sRGB RGBA8, and the edge/resolve shaders
-decode the straight (un-premultiplied) captured color once back to
-scene-linear. Radiance already clipped or rounded by that Compatibility target
-cannot be reconstructed; this is an explicit platform limitation, not a claim
-of identical intermediate precision.
+pre-SMAA/display-range boundary. The `scene_input_is_linear` uniform the edge
+and resolve shaders read follows `use_hdr_2d`, and exists to decode a
+non-linear capture back to scene-linear if one is ever configured.
 
-After that input boundary, both paths reconstruct the same visible environment,
-clamp normalized linear scene color once before SMAA, and run the same SMAA and
-RetroGrade math. The resolve pass encodes to perceptual color for FSR/CAS, and
-the present shader decodes once, performs the post-grade display clamp, and
-emits one explicit scene-linear-to-sRGB transfer into the deliberately LDR root
-canvas. Environment tonemapping is neutral Linear/1.0. There is no
-shader-authored 8-bit quantization; Compatibility's RGBA8 capture/data
-targets and the final PNG are unavoidable storage boundaries, while explicit
+Both pipelines reconstruct the same visible environment, clamp normalized linear
+scene color once before SMAA, and run the same SMAA and RetroGrade math. The
+resolve pass encodes to perceptual color for FSR/CAS, and the present shader
+decodes once, performs the post-grade display clamp, and emits one explicit
+scene-linear-to-sRGB transfer into the deliberately LDR root canvas. Environment
+tonemapping is neutral Linear/1.0. There is no shader-authored 8-bit
+quantization; the final PNG is an unavoidable storage boundary, while explicit
 posterization remains an artist control.
 
 Directly visible albedo and normal maps use repeating, mipmapped, anisotropic
-sampling in both Blinn-Phong shaders. The shared viewport contract fixes 4x
+sampling. The shared viewport contract fixes 4x
 anisotropy and zero mip bias. Albedo is source-color data; normal maps remain
 linear and use the same OpenGL-style decoding. UV and triplanar equations are
 shared. Ray-hit atlases use tile-local repeat with bilinear mip-0 sampling so a
@@ -627,17 +666,14 @@ separate engine-exposed opaque coverage mask; overlapping mixed coverage is an
 explicit Forward+ limitation, while ordinary transparency against the visible
 environment remains supported.
 
-The software data/atlas representation remains bounded and deterministic:
-
-1. three nearest, non-mipmapped RGBAF data textures carry BLAS/TLAS,
-   material/light, receiver lists, and settings;
-2. separate static RGBA8 albedo and normal atlases preserve source-color versus
-   linear-normal semantics;
-3. runtime-only software material clones bind those resources and restore the
-   authored materials on teardown.
+Hardware RT packs directly visible maps into static RGBA8 albedo and normal
+atlases, which preserve source-color versus linear-normal semantics, and the
+ray-hit path samples those rather than the authored textures.
 
 Assigned map references and pixel content are static atlas inputs. Changing
 either requires a scene reload and fails explicitly if detected during a run.
+The raster fallback builds no atlases and samples the authored textures
+directly, so it is not subject to that restriction.
 
 ## Environment and reflection misses
 
@@ -650,10 +686,10 @@ Environment has selected that background mode.
 
 The scene capture is transparent and the final shared canvas shader reconstructs
 that same immutable environment snapshot behind every exact geometry texel from
-the active camera's corner rays before SMAA. This prevents native
-Forward+/Compatibility sky tonemapping from becoming a second visible-background
-path. Background radiance and reflection misses therefore share panorama
-texels, energy, rotation, seam wrapping, and pole clamping.
+the active camera's corner rays before SMAA. This prevents native Forward+ sky
+tonemapping from becoming a second visible-background path. Background radiance
+and reflection misses therefore share panorama texels, energy, rotation, seam
+wrapping, and pole clamping.
 
 - `BG_CLEAR_COLOR` and `BG_COLOR` produce a linear flat miss radiance with the
   Environment background energy applied.
@@ -664,8 +700,8 @@ texels, energy, rotation, seam wrapping, and pole clamping.
   that linear, untone-mapped result directly, with no source-color decoding.
 - `PanoramaSkyMaterial` also requires a CPU-readable source texture. After the
   public bake succeeds, the manager canonicalizes that source to the same
-  RGBAF panorama on every renderer because Godot 4.7 Compatibility can
-  reinterpret a runtime RGBAF Panorama differently from Forward+. Floating
+  RGBAF panorama, so a runtime Panorama is interpreted the same way whatever
+  format the producer handed over. Floating
   source formats are treated as linear; integer/color formats receive one sRGB
   decode; Environment and Panorama material energy multipliers are then
   applied. Profiles identify this path as `panorama_source_canonical`.
@@ -678,9 +714,11 @@ texels, energy, rotation, seam wrapping, and pole clamping.
   inverse sky basis, bake duration, rebake count, and its own environment
   revision. Values above 1.0 survive the snapshot until the common post
   boundary.
-- Hardware and software shaders use the same seam-wrapped bilinear panorama
-  sampling equation. A mirror whose reflection ray misses therefore sees the
-  visible sky/HDRI instead of a hard-coded black or unrelated clear color.
+- The reflection-miss and background paths use the same seam-wrapped bilinear
+  panorama sampling equation. A mirror whose reflection ray misses therefore
+  sees the visible sky/HDRI instead of a hard-coded black or unrelated clear
+  color. The raster fallback has no reflection rays to miss: SSR falls back to
+  the same environment through Godot's own reflection source.
 - Environment, Sky, sky-material, and relevant source-texture `changed` signals
   are debounced into one revision/rebake and atomically republish the
   environment. The next backend update receives the new flat value or panorama
@@ -745,11 +783,11 @@ has already resolved to what the sky shows there.
 `ground_grass.y` is the second disable switch: a zero detail strength publishes
 the baked canopy unchanged, which is what a scene with no grass gets.
 
-`rt_ground_shade()` and the rest of the block are duplicated byte-identically in
-`addons/retro_rt/shaders/rt_shadow_reflect.glsl` and
-`addons/retro_rt/shaders/BlinnPhongSoftwareBody.gdshaderinc`, for the same
-reason `rt_fog_factor` is: an `RDShaderFile` cannot include a `.gdshaderinc`.
-`addons/retro_rt/tests/ground_layer_smoke.gd` fails if the two copies drift.
+`rt_ground_shade()` and the rest of the block live only in
+`addons/retro_rt/shaders/rt_shadow_reflect.glsl`. The layer is hardware-only —
+the raster fallback reflects terrain and grass through SSR instead — so there is
+no second copy to drift against, but `addons/retro_rt/tests/ground_layer_smoke.gd`
+still asserts the invariants below, and it is the only thing that reads them.
 
 Three properties of the march are load-bearing rather than tuning:
 
@@ -784,9 +822,9 @@ them. When the reflector sets `reflection_shadows_enabled`, the caller traces on
 occlusion ray from the ground hit towards the sun with traversal mask `0x01`,
 bounded by the same fog-capped march distance, and passes the result to
 `rt_ground_shade()` as `sun_visibility`. That is what puts a cube's shadow onto
-the ground a mirror shows. The ray cannot live inside the canonical block: the
-two backends trace with `traceRayEXT` and `swrt_trace_scene` respectively, and
-the block has to stay byte-identical. Nothing can self-intersect here, because
+the ground a mirror shows. The ray cannot live inside the shared block: a
+`traceRayEXT` is only available to the `RDShaderFile`, which is why trace and
+shade stayed separate calls. Nothing can self-intersect here, because
 the ground is not in the acceleration structure at all. A caller that traces no
 ray passes `1.0` and gets the pre-shadow result exactly.
 
@@ -828,12 +866,11 @@ nothing, and the layer has no reflection of its own.
 - Area lights intentionally use a hard center-point approximation.
 - Ray origin bias and maximum distance, cull/receiver layers, instance masks,
   `cast_shadow`, reflected lighting, normal transforms, and texture rules are
-  shared between hardware and software.
+  all hardware-RT concepts. The raster fallback publishes no light table at all
+  and lets Godot's own clustered forward renderer light the same materials.
 
-Hardware accepts up to `max_scene_lights` (256 by default). Software consumes
-the same shared light table but limits each receiver to
-`software_max_lights_per_receiver` candidates (16 by default, maximum 32).
-Overflow is an explicit error; lights are not silently discarded.
+Hardware RT accepts up to `max_scene_lights` (256 by default). Overflow is an
+explicit error; lights are not silently discarded.
 
 Nested opaque rigid triangle MeshInstance3D geometry is supported, including
 indexed/non-indexed, multi-surface, shared-mesh, and instance-override cases.
@@ -843,40 +880,27 @@ semantics remain outside the managed material contract. Unmanaged forward
 geometry that must match managed surfaces (the streamed shell grass) subscribes
 to `distance_fog_changed` and applies the canonical `rt_fog_factor` itself.
 
-## Software acceleration structure
-
-The CPU builds one local-space 12-bin-SAH BLAS for each unique mesh and a
-world-space TLAS over rigid instances. Nodes are depth-first with escape indices
-for bounded stackless traversal. BLAS leaves contain at most four triangles and
-TLAS leaves contain one instance.
-
-The data-table width is 1024 texels with a maximum height of 4096. TLAS
-traversal is capped at 4096 nodes, each BLAS at 32768 nodes, and float-encoded
-integers remain below `2^24`. The CPU validates finite input, bounds, leaves,
-escape indices, index precision, headers, and atlas capacity before a shader
-consumes the data. Static geometry uploads once; revision changes update only
-the affected data.
-
 Each render snapshot contains immutable receiver-light starts/counts/indices
-and a receiver-light revision. Hardware and software consume the same
-conservative receiver/light candidate lists.
+and a receiver-light revision, which is what the hardware compositor consumes as
+its conservative receiver/light candidate lists.
 
 ## Remaining unavoidable differences
 
 The shared contract deliberately does not emulate implementation weaknesses.
 Forward+ retains its native depth precision and reversed-Z behavior; no depth
-quantization or artificial Z fighting is introduced. Hardware RT uses Vulkan
-intersection hardware while software RT traverses texture-backed CPU-built BVHs.
-Forward+, OpenGL Compatibility, and browser drivers may round raster edges,
-intersections, derivatives, filtered samples, and final conversions differently.
-Those differences are acceptable only when they remain below the measured
-visual tolerances; an obvious image-level difference is a bug, not an accepted
+quantization or artificial Z fighting is introduced.
+
+Between the two pipelines the differences are the intended ones, listed under
+**What the fallback does not reproduce** above: traced versus screen-space
+reflections, and traced versus mapped shadows. Everything else is shared, and an
+image-level difference outside those two is a bug rather than an accepted
 backend feature.
 
-Distance fog inherits that same class of difference: the hardware path derives
-its fog distance from a depth-reconstructed world position while the software
-path uses the interpolated one, so the two differ by float reconstruction
-error rather than by formula.
+Distance fog is the one shared term the two compute differently: the hardware
+path derives its fog distance from a depth-reconstructed world position while
+`BlinnPhong.gdshader` uses the interpolated view-space one, so the two differ by
+float reconstruction error rather than by formula. The curve itself is asserted
+byte-identical across all three copies by `ground_layer_smoke.gd`.
 
 ## Profiling
 
@@ -928,10 +952,10 @@ bytes, output and internal RT resolution, and:
   material, and pass node is reused; a revision that rebuilds the temporary
   visual-contract Resource is visible in the current/peak counter.
   The persistent byte count is the owned color targets only: four render-size
-  targets (scene, edges, weights, resolve) at 8 bytes per pixel when Forward+
-  honors RGBA16F or 4 bytes for Compatibility RGBA8, plus one persistent
-  output-size Panini target and one additional output-size EASU target while a
-  reduced preset is active. It excludes depth/render buffers and the SMAA LUTs.
+  targets (scene, edges, weights, resolve) at 8 bytes per pixel, since Forward+
+  honors the RGBA16F request, plus one persistent output-size Panini target and
+  one additional output-size EASU target while a reduced preset is active. It
+  excludes depth/render buffers and the SMAA LUTs.
   `get_post_debug_contract_snapshot()` exposes the same target as
   `panini_buffer_bytes`;
 - `post_pass_gpu_ms` names the measured `scene`, SMAA, optional `fsr_easu`,
@@ -939,19 +963,21 @@ bytes, output and internal RT resolution, and:
 - `post_scene_viewport_hdr_requested`/`post_scene_viewport_hdr`,
   `post_data_viewports_hdr_requested`/`post_data_viewports_hdr`, and
   `post_data_viewports_rgba`;
-- `post_input_transfer` (`scene_linear` for Forward+ or
-  `srgb_to_scene_linear` for Compatibility), `post_output_transfer`, the
-  post environment revision/composite state, and hardware opaque-coverage
-  recovery state.
+- `post_input_transfer` (`scene_linear` while the scene capture is HDR,
+  `srgb_to_scene_linear` otherwise), `post_output_transfer`, the post
+  environment revision/composite state, and hardware opaque-coverage recovery
+  state.
 
 `get_post_debug_stage_images()` exposes the active Panini target as `panini` for
 validation readback and returns null while the pass is bypassed. Runtime does not
 perform this readback automatically.
 
-Hardware additionally reports acceleration-structure builds, uploads, uniform
-sets, dispatch pixels, and available CPU/GPU timings. Software reports BVH and
-atlas counts/bytes/build timings. Hardware render-thread facts may lag
-main-thread changes by one rendered frame.
+Hardware RT additionally reports acceleration-structure builds, uploads, uniform
+sets, dispatch pixels, and available CPU/GPU timings; its render-thread facts may
+lag main-thread changes by one rendered frame. Under the raster fallback the
+scene, geometry and light counters are all zero, because the fallback keeps no
+scene representation; `active_backend` reads `raster` and the post fields are
+the meaningful ones.
 
 ## Repeatable frame-time benchmark
 
@@ -968,7 +994,8 @@ The relevant controls are:
 - `PERF_PANINI=0`, `PERF_SMAA=0`, and `PERF_GRADE=0` isolate post stages;
 - `PERF_FOV=120|130|140` selects exact horizontal display coverage;
 - `PERF_RT_QUALITY=0|1|2|3` selects Native through Performance;
-- `PERF_BACKEND=software` forces software RT on a hardware-capable system;
+- `PERF_RASTER=1` forces the raster fallback on a hardware-capable system, so
+  both pipelines can be measured on one machine;
 - `PERF_WARMUP` and `PERF_FRAMES` override the sampling windows;
 - `PERF_SHOT` writes a fixed capture and `PERF_REF` compares it with a previous
   image, subject to the deterministic-capture notes in the project README.
@@ -976,24 +1003,37 @@ The relevant controls are:
 ```text
 godot --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
 PERF_PROFILE=1 PERF_FOV=140 PERF_RT_QUALITY=3 godot --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
-PERF_PROFILE=1 PERF_PANINI=0 PERF_BACKEND=software godot --path . --rendering-method gl_compatibility --resolution 2560x1440 --script res://game/tests/perf_probe.gd
+PERF_PROFILE=1 PERF_RASTER=1 godot --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
 ```
 
 `post_pass_gpu_ms.panini` is the projection cost; the steady-state explicit
 allocation count must remain zero. Quality and FOV transitions resize/rebind
 persistent targets and should be measured separately from unchanged frames.
 
-## Feature and renderer-parity validation
+## Feature and pipeline validation
 
-The checked-in tests divide the contract at useful boundaries:
+The checked-in tests divide the contract at useful boundaries. Headless Forward+
+has no `RenderingDevice`, so every headless run exercises the raster fallback;
+anything that asserts hardware RT needs a real ray-tracing adapter and says so.
 
 - `addons/retro_rt/tests/panini_projection_smoke.gd` tests 120, 130, and 140
   degrees across 4:3, 16:9, 21:9, and 32:9 domains and all four render scales.
   It checks symmetry, finite capture FOVs, aspect-derived vertical extent,
   full-perimeter containment, zero invalid pre-clamp samples, invalid-input
-  rejection, and the exact one-or-four-tap derivative/GLES3 shader contract.
+  rejection, agreement between the closed-form capture bounds and an exhaustive
+  border scan, and the exact Catmull-Rom/box-derivative shader contract.
+- `addons/retro_rt/tests/raster_fallback_smoke.gd` is the fallback's own probe:
+  the backend reports `raster`, `rt_pipeline_active` stays false, native shadow
+  toggles are untouched, `Environment.ssr_enabled` is turned on and restored on
+  teardown, the fog push reaches the managed materials, and the post stack is
+  still configured. It runs anywhere, with or without a ray-tracing GPU.
+- `addons/retro_rt/tests/ground_layer_smoke.gd` guards the analytic ground
+  layer's invariants and compares the three copies of `rt_fog_factor` byte for
+  byte, which is the live drift risk now that the fallback fogs its own
+  surfaces.
 - `addons/retro_rt/tests/receiver_registry_smoke.gd` boots the terrain fixture
-  against software RT by default or hardware RT with `--hardware`. With
+  against hardware RT, and skips with a clear message on a machine that has
+  none: the receiver registry only exists under hardware RT. With
   `--panini`, it asserts native resolve-to-Panini ordering, capture overscan,
   persistent native target/buffer bytes, pass/frame counters, non-perspective
   bypass, and shifted-camera-offset bypass without mutating the authored values.
@@ -1008,18 +1048,19 @@ The checked-in tests divide the contract at useful boundaries:
   status marker above the projected scene.
 
 ```text
-godot --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/panini_projection_smoke.gd
-godot --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
-godot --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
-godot --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --hardware --panini-performance
-godot --path . --rendering-method gl_compatibility --scene res://game/tests/panini_capture.tscn -- --force-software
+godot --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/panini_projection_smoke.gd
+godot --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/raster_fallback_smoke.gd
+godot --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/ground_layer_smoke.gd
+godot --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
+godot --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
+godot --path . --rendering-method forward_plus --scene res://game/tests/panini_capture.tscn
+godot --path . --rendering-method forward_plus --scene res://game/tests/panini_capture.tscn -- --force-raster
 ```
 
 Use the same output size and FOV for graphical comparisons. The capture harness
 and `PERF_SHOT`/`PERF_REF` provide the current image evidence; these checked-in
-harnesses are the source of truth. Hardware RT, forced Forward+ software RT, and
-desktop Compatibility must all report zero invalid Panini samples, no black
-borders or culling holes, the correct upstream source stage, and native UI
-ordering. Small raster/format differences between APIs remain acceptable under
-the visual-equivalence contract described above; missing geometry, displaced
-aim, or a renderer-specific post branch is a failure.
+harnesses are the source of truth. Both pipelines must report zero invalid
+Panini samples, no black borders or culling holes, the correct upstream source
+stage, and native UI ordering. Differing shadows and reflections between them
+are the intended difference; missing geometry, displaced aim, or a
+pipeline-specific post branch is a failure.

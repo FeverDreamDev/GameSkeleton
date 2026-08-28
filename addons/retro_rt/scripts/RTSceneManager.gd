@@ -1,11 +1,12 @@
-@tool
 extends Node
 class_name RTSceneManager
 
-## Main-thread owner for the shared hardware/software RT scene representation. Any active
+## Main-thread owner of the hardware RT scene representation, and of the raster
+## fallback that stands in for it when the adapter cannot ray trace. Any active
 ## DirectionalLight3D, OmniLight3D, SpotLight3D, or AreaLight3D is published to
 ## the RT compositor. A light's native Shadow Enabled checkbox is repurposed as
-## its RT-shadow toggle while native shadow-map rendering is suppressed.
+## its RT-shadow toggle while native shadow-map rendering is suppressed; the
+## raster fallback leaves that checkbox meaning exactly what it says.
 
 signal rt_ready
 signal rt_failed(reason: String)
@@ -17,10 +18,11 @@ signal topology_sync_completed
 ## to the managed surfaces it sits on.
 signal distance_fog_changed(params: Dictionary)
 
+## The pipeline that is actually installed. This reports state; it is not a
+## request. [member ray_tracing_enabled] and adapter capability decide it.
 enum RTBackend {
-	AUTO,
 	HARDWARE,
-	SOFTWARE,
+	RASTER,
 }
 
 enum RTEnvironmentMode {
@@ -137,6 +139,8 @@ const RT_MATERIAL_ID_PARAMETER := &"rt_material_id"
 const RT_HAS_ALBEDO_PARAMETER := &"rt_has_albedo_texture"
 const RT_HAS_NORMAL_PARAMETER := &"rt_has_normal_texture"
 const RT_PIPELINE_ACTIVE_PARAMETER := &"rt_pipeline_active"
+const RT_FOG_PARAMS_PARAMETER := &"rt_fog_params"
+const RT_FOG_COLOR_PARAMETER := &"rt_fog_color"
 const RT_OVERRIDE_PROCESS_PRIORITY := 100000
 const SCENARIO_OWNER_META := &"__rt_compositor_owner"
 const MAP_ATLAS_MAX_SIZE := 4096
@@ -149,13 +153,6 @@ const SKY_RADIANCE_SIZES := [32, 64, 128, 256, 512, 1024, 2048]
 # resolve fails loudly at parse time instead.
 const BLINN_PHONG_SHADER := preload("res://addons/retro_rt/shaders/BlinnPhong.gdshader")
 const RECEIVER_BOUNDS_MARGIN := 0.0001
-const EDITOR_PREVIEW_DEBOUNCE_FRAMES := 2
-const EDITOR_PREVIEW_POLL_FRAMES := 30
-# Backoff after a reported editor-preview failure. A scene that is temporarily
-# outside the RT contract (a freshly added mesh with no managed material, for
-# example) is repaired by ordinary editing, which exposes no signal, so the
-# preview has to keep retrying without rebuilding several times a second.
-const EDITOR_PREVIEW_RETRY_FRAMES := 120
 const RT_QUALITY_SCALES := [1.0, 0.85, 0.75, 0.5]
 const RT_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
 
@@ -170,25 +167,19 @@ const RT_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
 ## name to retain the legacy scan-every-MeshInstance3D behavior.
 @export var managed_geometry_group: StringName = &"retro_rt_managed"
 ## Managed nodes in this second group receive primary RT lighting and shadows,
-## but never enter the hardware TLAS or software BVH. This is intended for
-## streamed procedural receivers whose topology changes frequently.
+## but never enter the hardware TLAS. This is intended for streamed procedural
+## receivers whose topology changes frequently.
 @export var receiver_only_geometry_group: StringName = &"retro_rt_receiver_only"
 ## Upper bound for the asynchronous hardware-ready handshake. Synchronous
 ## resource construction still completes atomically, but a render thread that
 ## never acknowledges the first snapshot cannot leave boot waiting forever.
 @export_range(1.0, 60.0, 0.5) var startup_timeout_seconds: float = 15.0
-@export var preview_in_editor: bool = true:
-	set(value):
-		preview_in_editor = value
-		if Engine.is_editor_hint() and is_inside_tree():
-			if value:
-				_schedule_editor_preview_sync()
-			else:
-				_teardown_editor_preview()
-				set_process(false)
-@export var rt_backend: RTBackend = RTBackend.AUTO
+## Requests hardware ray tracing. When this is off, or the adapter cannot ray
+## trace, the manager installs the raster fallback instead: native shadow maps
+## and screen-space reflections, through the same post stack. Use
+## [method set_ray_tracing_enabled] to change it on a running manager.
+@export var ray_tracing_enabled: bool = true
 @export_range(1, MAX_SUPPORTED_LIGHTS, 1) var max_scene_lights: int = MAX_SUPPORTED_LIGHTS
-@export_range(1, 32, 1) var software_max_lights_per_receiver: int = 16
 @export var ray_origin_bias: float = 0.001
 @export var ray_max_distance: float = 10000.0
 ## Steps the reflection ground march takes across the layer window. Zero turns
@@ -199,9 +190,9 @@ const RT_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
 @export var profiling_enabled: bool = false
 @export_group("Distance Fog")
 
-## Post-lighting distance fog applied identically by the hardware compositor, the
-## software fragment path, and any unmanaged shader that subscribes to
-## [signal distance_fog_changed]. Environment fog stays banned by
+## Post-lighting distance fog applied identically by the hardware compositor,
+## BlinnPhong.gdshader's raster branch, and any unmanaged shader that subscribes
+## to [signal distance_fog_changed]. Environment fog stays banned by
 ## [method _validate_environment]; this replaces it. The fog colour is not
 ## authorable: it is always the environment's linear background radiance, which
 ## is also what the post stack composites into uncovered pixels.
@@ -424,7 +415,6 @@ var _topology_dirty := false
 var _tree_signals_connected := false
 var _carrier_light: DirectionalLight3D
 var _rt_effect: RTLightingEffect
-var _software_tracer: RTSoftwareTracer
 var _post_stack: RTPostProcessStack
 var _compositor: Compositor
 var _previous_compositor: Compositor
@@ -436,8 +426,7 @@ var _failed := false
 var _ready_emitted := false
 var _manager_active := false
 var _active_backend := -1
-var _configured_backend := -1
-var _configured_software_max_lights := 0
+var _configured_ray_tracing_enabled := false
 var _receiver_list_rebuilds := 0
 var _receiver_candidates_recomputed := 0
 var _receiver_light_total := 0
@@ -452,11 +441,6 @@ var _profile_poll_frames := 0
 var _profile_snapshot_updates := 0
 var _profile_last_update_usec := 0
 var _profile_peak_update_usec := 0
-var _editor_preview_active := false
-var _editor_preview_error := ""
-var _editor_preview_reported_error := ""
-var _editor_preview_debounce_frames := 0
-var _editor_preview_poll_frames := 0
 var _lifecycle_busy := false
 var _lifecycle_generation := 0
 var _topology_sync_pending := false
@@ -476,26 +460,6 @@ func _ready() -> void:
 	# Run after ordinary gameplay nodes so renderer-only material/shadow overrides
 	# are the final state submitted for the frame.
 	process_priority = RT_OVERRIDE_PROCESS_PRIORITY
-	if Engine.is_editor_hint() and DisplayServer.get_name() == "headless":
-		# Import, export, and other headless editor runs have no viewport to
-		# preview into and must not pay for BVH construction.
-		set_process(false)
-		return
-	# The editor scene viewport owns its camera, preview sun/environment, and
-	# render lifecycle, so it previews through RTSoftwareTracer whatever
-	# rt_backend requests: its overrides are renderer-only RenderingServer state
-	# that restores cleanly, and a partially assembled scene therefore degrades
-	# to ordinary raster instead of rendering the hardware visibility buffer as
-	# garbage. The shared fullscreen post stack stays runtime-only; it disables
-	# 3D on the root viewport, which would blank the editor viewport and its
-	# gizmos.
-	if Engine.is_editor_hint():
-		_connect_scene_tree_signals()
-		if preview_in_editor:
-			_schedule_editor_preview_sync()
-		else:
-			set_process(false)
-		return
 	if auto_start:
 		# Defer one call so sibling terrain/player coordinators finish their own
 		# _ready() work before the first contract validation and collection pass.
@@ -507,7 +471,7 @@ func _ready() -> void:
 ## stopped, or this start is superseded (false). Callers may also invoke it
 ## fire-and-forget and observe [signal rt_ready] / [signal rt_failed].
 func start_rt() -> bool:
-	if Engine.is_editor_hint() or not is_inside_tree():
+	if not is_inside_tree():
 		return false
 	if _manager_active:
 		return _ready_emitted and not _failed
@@ -531,21 +495,35 @@ func start_rt() -> bool:
 ## Stops RT and restores every renderer, material, light, compositor and root
 ## Viewport override owned by this manager. It is safe to call repeatedly.
 func stop_rt() -> void:
-	if Engine.is_editor_hint():
-		return
 	_lifecycle_generation += 1
 	_lifecycle_busy = false
 	_stop_rt_internal(true)
+
+
+## Switches between hardware ray tracing and the raster fallback on a running
+## manager. The pipeline is genuinely reinstalled, so this tears the current one
+## down and brings the other up; awaiting it resolves the same way
+## [method start_rt] does. Returns false without touching anything when the
+## value is unchanged and the manager is already in the matching state.
+func set_ray_tracing_enabled(enabled: bool) -> bool:
+	if ray_tracing_enabled == enabled and _configured_ray_tracing_enabled == enabled:
+		return _manager_active and not _failed
+	ray_tracing_enabled = enabled
+	if not is_inside_tree():
+		return false
+	var was_active := _manager_active or _lifecycle_busy
+	stop_rt()
+	if not was_active:
+		# A manager that had not started yet simply starts in the new mode when
+		# its owner gets around to it.
+		return false
+	return await start_rt()
 
 
 ## Queues a topology-safe backend resynchronization. Procedural systems should
 ## call this after a managed node's mesh/material/group assignment changes in
 ## place; ordinary managed node additions/removals call it automatically.
 func request_topology_sync() -> void:
-	if Engine.is_editor_hint():
-		_topology_dirty = true
-		_schedule_editor_preview_sync()
-		return
 	_topology_dirty = true
 	_topology_sync_requests += 1
 	# A stopped manual-start manager simply collects the latest topology when
@@ -554,14 +532,18 @@ func request_topology_sync() -> void:
 	# stale instance table.
 	if not _manager_active and not _lifecycle_busy:
 		return
+	if _active_backend == RTBackend.RASTER:
+		# There is no acceleration structure to rebuild. _process picks the
+		# dirty flag up and re-gathers managed materials for the fog push, which
+		# is all the raster fallback knows about the scene.
+		return
 	_topology_sync_pending = true
 	_topology_sync_debounce_frames = 0
 
 
 func _start_rt_internal(generation: int) -> bool:
 	_active_backend = _select_backend()
-	_configured_backend = rt_backend
-	_configured_software_max_lights = software_max_lights_per_receiver
+	_configured_ray_tracing_enabled = ray_tracing_enabled
 	if not _validate_runtime():
 		return false
 	_post_stack = RTPostProcessStack.new()
@@ -569,11 +551,31 @@ func _start_rt_internal(generation: int) -> bool:
 	if not post_reservation_error.is_empty():
 		_fail(post_reservation_error)
 		return false
-	if _active_backend == RTBackend.HARDWARE:
-		var scenario_reservation_error := _reserve_scenario_ownership()
-		if not scenario_reservation_error.is_empty():
-			_fail(scenario_reservation_error)
+	if _active_backend == RTBackend.RASTER:
+		# The raster fallback traces nothing, so it collects nothing: no mesh
+		# extraction, no texture atlases, no BLAS, no snapshot. Every managed
+		# material keeps rt_pipeline_active false and renders through
+		# BlinnPhong.gdshader's standalone branch, every light keeps its native
+		# shadow map, and reflections come from the Environment's SSR. What the
+		# manager still owns here is the post stack, the distance fog contract
+		# and the quality presets -- everything the image shares with hardware RT.
+		_enable_native_reflections()
+		_connect_scene_tree_signals()
+		_topology_dirty = false
+		_collect_raster_materials()
+		_push_raster_fog()
+		var raster_post_error := _post_stack.configure(self, _get_post_settings())
+		if not raster_post_error.is_empty():
+			_fail(raster_post_error)
 			return false
+		_mark_rt_ready()
+		_manager_active = true
+		print("RT backend: %s" % get_active_rt_backend())
+		return true
+	var scenario_reservation_error := _reserve_scenario_ownership()
+	if not scenario_reservation_error.is_empty():
+		_fail(scenario_reservation_error)
+		return false
 	# Newly-instantiated Sky/material/texture RIDs are submitted asynchronously.
 	# Give the render server two bounded frames before the one initialization
 	# panorama bake so runtime-created HDRIs do not produce a transient black
@@ -586,35 +588,18 @@ func _start_rt_internal(generation: int) -> bool:
 		return false
 	_connect_scene_tree_signals()
 	_apply_renderer_overrides()
-	if _active_backend == RTBackend.HARDWARE:
-		_create_material_id_carrier()
-		# The carrier is created after the first override pass so it cannot be
-		# mistaken for an authored scene light. Reassert the hardware-only state.
-		_apply_renderer_overrides()
-		_install_compositor()
-		if _failed:
-			return false
-		_publish_snapshot()
-	else:
-		_publish_snapshot()
-		if _failed:
-			return false
-		_software_tracer = RTSoftwareTracer.new()
-		var software_error := _software_tracer.initialize(
-			self,
-			_current_snapshot,
-			_material_sources,
-			_instances,
-			software_max_lights_per_receiver)
-		if not software_error.is_empty():
-			_fail(software_error)
-			return false
+	_create_material_id_carrier()
+	# The carrier is created after the first override pass so it cannot be
+	# mistaken for an authored scene light. Reassert the hardware-only state.
+	_apply_renderer_overrides()
+	_install_compositor()
+	if _failed:
+		return false
+	_publish_snapshot()
 	var post_error := _post_stack.configure(self, _get_post_settings())
 	if not post_error.is_empty():
 		_fail(post_error)
 		return false
-	if _active_backend == RTBackend.SOFTWARE:
-		_mark_rt_ready()
 	_manager_active = true
 	print("RT backend: %s" % get_active_rt_backend())
 	return true
@@ -628,8 +613,7 @@ func _stop_rt_internal(clear_pending_sync: bool) -> void:
 	if _carrier_light:
 		_carrier_light.visible = false
 	_active_backend = -1
-	_configured_backend = -1
-	_configured_software_max_lights = 0
+	_configured_ray_tracing_enabled = false
 	_current_snapshot = {}
 	_snapshot_bridge.deactivate()
 	_failed = false
@@ -693,9 +677,6 @@ func _wait_for_rt_ready(generation: int) -> bool:
 
 
 func _process(_delta: float) -> void:
-	if Engine.is_editor_hint():
-		_process_editor_preview()
-		return
 	if _topology_sync_pending and not _topology_sync_in_progress:
 		if _topology_sync_debounce_frames > 0:
 			_topology_sync_debounce_frames -= 1
@@ -706,11 +687,10 @@ func _process(_delta: float) -> void:
 		return
 	if not _manager_active or _failed:
 		return
-	if rt_backend != _configured_backend:
-		_fail("Changing rt_backend at runtime requires reloading the scene.")
-		return
-	if software_max_lights_per_receiver != _configured_software_max_lights:
-		_fail("Changing software_max_lights_per_receiver at runtime requires reloading the scene.")
+	if ray_tracing_enabled != _configured_ray_tracing_enabled:
+		_fail(
+			"Change ray_tracing_enabled through set_ray_tracing_enabled(); "
+			+ "assigning it on a running manager cannot reinstall the pipeline.")
 		return
 	var scene_contract_failure := _runtime_scene_contract_failure()
 	if not scene_contract_failure.is_empty():
@@ -718,16 +698,30 @@ func _process(_delta: float) -> void:
 		return
 	if not _validate_environment_contract():
 		return
-	if _active_backend == RTBackend.HARDWARE:
-		if not _scenario_reservation_is_current():
-			_fail("The hardware RT manager no longer owns its World3D compositor scenario.")
-			return
-		var render_failure := _snapshot_bridge.take_failure()
-		if not render_failure.is_empty():
-			_fail(render_failure)
-			return
-		if _snapshot_bridge.take_ready():
-			_mark_rt_ready()
+	if _active_backend == RTBackend.RASTER:
+		# Nothing to poll: no snapshot, no acceleration structure, no renderer
+		# overrides. Managed geometry can still stream in, and a new surface
+		# needs the current fog, so a dirty topology re-gathers materials --
+		# which is cheap, and the only scene work the fallback ever does.
+		if _topology_dirty:
+			_topology_dirty = false
+			_collect_raster_materials()
+			_push_raster_fog()
+		if _post_stack:
+			_post_stack.set_pass_profiling_enabled(profiling_enabled)
+			var raster_post_error := _post_stack.process_frame()
+			if not raster_post_error.is_empty():
+				_fail(raster_post_error)
+		return
+	if not _scenario_reservation_is_current():
+		_fail("The hardware RT manager no longer owns its World3D compositor scenario.")
+		return
+	var render_failure := _snapshot_bridge.take_failure()
+	if not render_failure.is_empty():
+		_fail(render_failure)
+		return
+	if _snapshot_bridge.take_ready():
+		_mark_rt_ready()
 	# Transform and property value changes do not all expose connectable signals
 	# in Godot, so they are polled below without allocating replacement snapshot
 	# containers unless a value actually differs. Tree topology does expose
@@ -741,12 +735,6 @@ func _process(_delta: float) -> void:
 		_discover_lights(true)
 	_poll_light_shadow_overrides()
 	_publish_snapshot()
-	if _software_tracer:
-		var software_error := _software_tracer.update(_current_snapshot)
-		if not software_error.is_empty():
-			_fail(software_error)
-			return
-		_software_tracer.reassert_overrides()
 	if _post_stack:
 		# No-op unless the flag actually changed, so this is a bool compare per
 		# frame. Armed here rather than at the profile read because the server
@@ -767,260 +755,10 @@ func _exit_tree() -> void:
 	_lifecycle_generation += 1
 	_lifecycle_busy = false
 	_manager_active = false
-	if Engine.is_editor_hint():
-		_teardown_editor_preview()
-	else:
-		_stop_rt_internal(true)
+	_stop_rt_internal(true)
 	_disconnect_scene_tree_signals()
 	_disconnect_mesh_signals()
 	_detach_compositor()
-
-
-func _schedule_editor_preview_sync() -> void:
-	if not Engine.is_editor_hint() or not preview_in_editor:
-		return
-	_editor_preview_debounce_frames = EDITOR_PREVIEW_DEBOUNCE_FRAMES
-	_editor_preview_poll_frames = 0
-	set_process(true)
-
-
-func _process_editor_preview() -> void:
-	if not preview_in_editor:
-		_teardown_editor_preview()
-		set_process(false)
-		return
-	if _editor_preview_debounce_frames > 0:
-		_editor_preview_debounce_frames -= 1
-		if _editor_preview_debounce_frames == 0:
-			_build_editor_preview()
-		return
-	if _editor_preview_active:
-		_update_editor_preview()
-		return
-	_editor_preview_poll_frames += 1
-	var poll_interval := (
-		EDITOR_PREVIEW_RETRY_FRAMES
-		if not _editor_preview_error.is_empty()
-		else EDITOR_PREVIEW_POLL_FRAMES)
-	if _editor_preview_poll_frames >= poll_interval:
-		_editor_preview_poll_frames = 0
-		_build_editor_preview()
-
-
-func _build_editor_preview() -> void:
-	# Always the software backend here, whatever rt_backend requests. The
-	# hardware path would install a CompositorEffect on the edited scene's
-	# World3D scenario and switch managed materials into the visibility-buffer
-	# transport, which renders as garbage the moment the compositor is missing.
-	_teardown_editor_preview()
-	if not preview_in_editor or not is_inside_tree():
-		return
-	# Switching editor scene tabs removes and re-adds the edited scene root, so
-	# _exit_tree() drops these and _ready() does not run again. Reconnecting here
-	# is idempotent and keeps mesh/light edits driving rebuilds afterwards.
-	_connect_scene_tree_signals()
-	_editor_preview_error = ""
-	# Tool scenes are often observed while their owner tree is only partly
-	# assembled. Missing roots are transient here: polling retries without
-	# latching the runtime failure state or allocating RT resources.
-	if get_node_or_null(geometry_root_path) == null:
-		return
-	_active_backend = RTBackend.SOFTWARE
-	_configured_backend = rt_backend
-	_configured_software_max_lights = software_max_lights_per_receiver
-	var failures := _software_rt_failures()
-	if not failures.is_empty():
-		_abort_editor_preview("\n".join(failures))
-		return
-	if not _collect_scene() or _failed:
-		_abort_editor_preview("")
-		return
-	_apply_renderer_overrides()
-	_publish_snapshot()
-	if _failed:
-		_abort_editor_preview("")
-		return
-	_software_tracer = RTSoftwareTracer.new()
-	var software_error := _software_tracer.initialize(
-		self,
-		_current_snapshot,
-		_material_sources,
-		_instances,
-		software_max_lights_per_receiver)
-	if not software_error.is_empty():
-		_abort_editor_preview(software_error)
-		return
-	_editor_preview_active = true
-	_editor_preview_reported_error = ""
-	_editor_preview_poll_frames = 0
-
-
-func _update_editor_preview() -> void:
-	# Editing constantly adds, removes, and replaces meshes and materials. Each
-	# of those is a debounced rebuild trigger here rather than the runtime hard
-	# failure, because BLASes are immutable once built.
-	if (
-			_topology_dirty
-			or software_max_lights_per_receiver != _configured_software_max_lights
-	):
-		_schedule_editor_preview_sync()
-		return
-	if _light_topology_dirty:
-		_light_topology_dirty = false
-		_discover_lights(true)
-	_poll_light_shadow_overrides()
-	_publish_snapshot()
-	if _failed:
-		_restart_editor_preview()
-		return
-	if _software_tracer:
-		var software_error := _software_tracer.update(_current_snapshot)
-		if not software_error.is_empty():
-			_restart_editor_preview()
-			return
-		_software_tracer.reassert_overrides()
-
-
-func _restart_editor_preview() -> void:
-	# A live change the incremental path cannot absorb is an ordinary rebuild
-	# trigger in the editor, not a failure worth reporting. Drop back to raster
-	# and reassemble after the usual debounce.
-	_teardown_editor_preview()
-	_schedule_editor_preview_sync()
-
-
-func _abort_editor_preview(reason: String) -> void:
-	# Editor failures never latch: they tear down to plain raster and retry.
-	var reported := reason if not reason.is_empty() else _editor_preview_error
-	if reported.is_empty():
-		reported = "The RT editor preview could not be built."
-	_teardown_editor_preview()
-	_editor_preview_error = reported
-	_editor_preview_poll_frames = 0
-	if reported != _editor_preview_reported_error:
-		_editor_preview_reported_error = reported
-		push_warning(
-			"RT editor preview unavailable; the viewport is showing plain raster.\n%s"
-			% reported)
-
-
-func _teardown_editor_preview() -> void:
-	# Renderer-only overrides persist until they are cleared, so this must undo
-	# everything the preview installed and reset every container the collection
-	# pass expects to own. Scene-tree signals stay connected: they are the
-	# rebuild trigger.
-	if _software_tracer:
-		_software_tracer.shutdown()
-		_software_tracer = null
-	_disconnect_mesh_signals()
-	_disconnect_texture_signals()
-	_disconnect_environment_signals()
-	_restore_renderer_overrides()
-	_restore_editor_scene_materials()
-	_instances.clear()
-	_render_instances.clear()
-	_render_instances_revision += 1
-	_mesh_records.clear()
-	_mesh_sources.clear()
-	_material_records.clear()
-	_material_sources.clear()
-	_material_by_id.clear()
-	_instance_material_indices.clear()
-	_lights.clear()
-	_receiver_light_starts.clear()
-	_receiver_light_counts.clear()
-	_receiver_light_indices.clear()
-	_receiver_light_candidates.clear()
-	_snapshot_instance_masks = PackedInt32Array()
-	_snapshot_instance_layers = PackedInt32Array()
-	# These three are published read-only, so they are replaced rather than
-	# cleared in place.
-	var empty_transforms: Array[Transform3D] = []
-	_snapshot_transforms = empty_transforms
-	_snapshot_environment = {}
-	_current_snapshot = {}
-	_snapshot_light = {}
-	_albedo_atlas = null
-	_normal_atlas = null
-	_albedo_atlas_size = Vector2i.ONE
-	_normal_atlas_size = Vector2i.ONE
-	_albedo_region_by_texture_id.clear()
-	_normal_region_by_texture_id.clear()
-	_environment_source = null
-	_environment_source_id = 0
-	_environment_source_kind = &"default_clear"
-	_environment_dirty = true
-	_environment_debounce_frames = 0
-	_topology_dirty = false
-	_light_topology_dirty = false
-	_texture_content_dirty = false
-	_editor_preview_active = false
-	_editor_preview_debounce_frames = 0
-	_active_backend = -1
-	_failed = false
-	_manager_active = false
-
-
-func _restore_editor_scene_materials() -> void:
-	# Stateless safety net covering renderer state that can outlive this script
-	# instance, most obviously across a tool-script reload. It reads only
-	# authored node and material values, never captured state, so it can run at
-	# any time and always restores the scene's own raster appearance.
-	var root := get_node_or_null(geometry_root_path)
-	if root == null:
-		return
-	var mesh_nodes := root.find_children("*", "MeshInstance3D", true, false)
-	if root is MeshInstance3D:
-		mesh_nodes.push_front(root)
-	for node in mesh_nodes:
-		var mesh_node := node as MeshInstance3D
-		if (
-				mesh_node == null
-				or not _is_managed_geometry(mesh_node)
-				or not mesh_node.get_instance().is_valid()
-		):
-			continue
-		var instance_rid := mesh_node.get_instance()
-		var overall := mesh_node.material_override
-		RenderingServer.instance_geometry_set_material_override(
-			instance_rid, overall.get_rid() if overall else RID())
-		if mesh_node.mesh:
-			for surface in mesh_node.mesh.get_surface_count():
-				var authored := mesh_node.get_surface_override_material(surface)
-				RenderingServer.instance_set_surface_override_material(
-					instance_rid, surface, authored.get_rid() if authored else RID())
-				var material := mesh_node.get_active_material(surface) as ShaderMaterial
-				if material != null and material.shader == BLINN_PHONG_SHADER:
-					_clear_managed_material_carrier_uniforms(material)
-		RenderingServer.instance_set_layer_mask(instance_rid, mesh_node.layers)
-		RenderingServer.instance_geometry_set_shader_parameter(
-			instance_rid, &"rt_instance_id", 0)
-		RenderingServer.instance_geometry_set_shader_parameter(
-			instance_rid, RTSoftwareTracer.RT_RECEIVER_LAYERS_PARAMETER, 0)
-		RenderingServer.instance_geometry_set_shader_parameter(
-			instance_rid, RTSoftwareTracer.RT_RECEIVER_LIGHT_START_PARAMETER, 0)
-		RenderingServer.instance_geometry_set_shader_parameter(
-			instance_rid, RTSoftwareTracer.RT_RECEIVER_LIGHT_COUNT_PARAMETER, 0)
-	var light_nodes := root.find_children("*", "Light3D", true, false)
-	if root is Light3D:
-		light_nodes.push_front(root)
-	for node in light_nodes:
-		var light := node as Light3D
-		if light != null and light != _carrier_light and light.get_base().is_valid():
-			RenderingServer.light_set_shadow(light.get_base(), light.shadow_enabled)
-
-
-func _clear_managed_material_carrier_uniforms(material: ShaderMaterial) -> void:
-	if material == null or not is_instance_valid(material):
-		return
-	RenderingServer.material_set_param(
-		material.get_rid(), RT_PIPELINE_ACTIVE_PARAMETER, false)
-	RenderingServer.material_set_param(
-		material.get_rid(), RT_MATERIAL_ID_PARAMETER, 0)
-	RenderingServer.material_set_param(
-		material.get_rid(), RT_HAS_ALBEDO_PARAMETER, false)
-	RenderingServer.material_set_param(
-		material.get_rid(), RT_HAS_NORMAL_PARAMETER, false)
 
 
 func _connect_scene_tree_signals() -> void:
@@ -1053,18 +791,13 @@ func _on_tree_node_added(node: Node) -> void:
 			and _is_managed_geometry(node as MeshInstance3D)
 	):
 		var mesh_node := node as MeshInstance3D
-		if _is_receiver_only_geometry(mesh_node):
-			if Engine.is_editor_hint():
-				request_topology_sync()
-			elif _manager_active:
+		if _is_receiver_only_geometry(mesh_node) and _active_backend == RTBackend.HARDWARE:
+			if _manager_active:
 				_register_receiver_only_node.call_deferred(mesh_node)
 		else:
 			request_topology_sync()
 	elif node is Light3D and _is_under_geometry_root(node):
 		_light_topology_dirty = true
-	else:
-		return
-	_schedule_editor_preview_rebuild_if_needed()
 
 
 func _on_tree_node_removed(node: Node) -> void:
@@ -1075,29 +808,19 @@ func _on_tree_node_removed(node: Node) -> void:
 			var item := _instances[instance_index]
 			if item["node"] == node:
 				if bool(item.get("receiver_only", false)):
-					if Engine.is_editor_hint():
-						request_topology_sync()
-					else:
-						_unregister_receiver_only_instance(instance_index)
+					_unregister_receiver_only_instance(instance_index)
 				else:
 					request_topology_sync()
 				return
+		if _active_backend == RTBackend.RASTER:
+			# _instances is empty under the fallback, so a removed managed mesh
+			# reaches neither branch above. Its material may have gone with it.
+			request_topology_sync()
 	elif node is Light3D:
 		for light in _lights:
 			if light == node:
 				_light_topology_dirty = true
-				_schedule_editor_preview_rebuild_if_needed()
 				return
-
-
-func _schedule_editor_preview_rebuild_if_needed() -> void:
-	# A live preview absorbs light changes incrementally; only topology changes,
-	# or having no preview installed at all, need the debounced rebuild.
-	if not Engine.is_editor_hint():
-		return
-	if _editor_preview_active and not _topology_dirty:
-		return
-	_schedule_editor_preview_sync()
 
 
 func _on_managed_mesh_changed() -> void:
@@ -1177,20 +900,44 @@ func _suppress_native_environment_reflections(environment: Environment) -> void:
 	if environment == null:
 		return
 	# Unlike every other override the manager installs, this one writes an
-	# authored Resource property. The editor preview must not touch it: the
-	# software clones are `unshaded, ambient_light_disabled` and ignore the
-	# native reflection source anyway, and an in-memory edit here would be
-	# written out by the next scene save.
-	if Engine.is_editor_hint():
-		return
-	var environment_id := environment.get_instance_id()
-	if not _environment_reflection_states.has(environment_id):
-		_environment_reflection_states[environment_id] = {
-			"environment": environment,
-			"reflected_light_source": environment.reflected_light_source,
-		}
+	# authored Resource property, so the authored value is captured here and
+	# restored by _restore_environment_reflection_states().
+	_capture_environment_reflection_state(environment)
 	if environment.reflected_light_source != Environment.REFLECTION_SOURCE_DISABLED:
 		environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
+
+
+## The raster fallback's reflections. BlinnPhong.gdshader's standalone branch
+## already publishes `mirror_enabled` surfaces as SPECULAR at roughness zero,
+## which is exactly what Godot's screen-space reflections consume, so the only
+## thing missing is the Environment switch. It is owned here rather than
+## authored so one scene serves both pipelines, and the authored value is
+## restored on teardown alongside every other renderer override.
+func _enable_native_reflections() -> void:
+	var environment := _resolve_effective_environment().get("environment") as Environment
+	if environment == null:
+		return
+	_capture_environment_reflection_state(environment)
+	environment.ssr_enabled = true
+	# SSR only ever reflects what is already on screen. Everything it misses --
+	# the sky above a mirror, anything off-screen or backfacing -- falls through
+	# to the Environment's reflection source, so a mirror left on
+	# REFLECTION_SOURCE_DISABLED renders black instead of reflecting the sky.
+	# Hardware RT disables it deliberately, because the RT pass owns reflection
+	# misses; the fallback has to put it back.
+	if environment.reflected_light_source == Environment.REFLECTION_SOURCE_DISABLED:
+		environment.reflected_light_source = Environment.REFLECTION_SOURCE_BG
+
+
+func _capture_environment_reflection_state(environment: Environment) -> void:
+	var environment_id := environment.get_instance_id()
+	if _environment_reflection_states.has(environment_id):
+		return
+	_environment_reflection_states[environment_id] = {
+		"environment": environment,
+		"reflected_light_source": environment.reflected_light_source,
+		"ssr_enabled": environment.ssr_enabled,
+	}
 
 
 func _restore_environment_reflection_states() -> void:
@@ -1200,6 +947,7 @@ func _restore_environment_reflection_states() -> void:
 		if environment != null and is_instance_valid(environment):
 			environment.reflected_light_source = int(
 				state.get("reflected_light_source", Environment.REFLECTION_SOURCE_BG))
+			environment.ssr_enabled = bool(state.get("ssr_enabled", false))
 	_environment_reflection_states.clear()
 
 
@@ -1244,9 +992,6 @@ func _detach_compositor(restore_renderer_state: bool = true) -> void:
 	_disconnect_scene_tree_signals()
 	_disconnect_texture_signals()
 	_disconnect_environment_signals()
-	if _software_tracer:
-		_software_tracer.shutdown()
-		_software_tracer = null
 	if _post_stack:
 		_post_stack.shutdown()
 		_post_stack = null
@@ -1279,7 +1024,9 @@ func _detach_compositor(restore_renderer_state: bool = true) -> void:
 	_current_snapshot = {}
 
 
-func _hardware_rt_failures() -> PackedStringArray:
+## Every reason this machine cannot run hardware ray tracing, empty when it can.
+## Static so a settings menu can ask before any manager has started.
+static func hardware_rt_failures() -> PackedStringArray:
 	var failures := PackedStringArray()
 	if RenderingServer.get_current_rendering_driver_name() != "vulkan":
 		failures.append("Vulkan is required (actual driver: %s)." % RenderingServer.get_current_rendering_driver_name())
@@ -1298,30 +1045,37 @@ func _hardware_rt_failures() -> PackedStringArray:
 	return failures
 
 
-func _software_rt_failures() -> PackedStringArray:
-	var failures := PackedStringArray()
-	var method := RenderingServer.get_current_rendering_method()
-	if method != "forward_plus" and method != "gl_compatibility":
-		failures.append("Software RT supports Forward+ or Compatibility (actual method: %s)." % method)
-	if software_max_lights_per_receiver < 1 or software_max_lights_per_receiver > 32:
-		failures.append("software_max_lights_per_receiver must be between 1 and 32.")
-	return failures
+## True when this machine can run hardware ray tracing at all. A settings menu
+## should disable its RT toggle (and say why, from
+## [method hardware_rt_unavailable_reason]) rather than offer a switch that
+## cannot do anything.
+static func hardware_rt_supported() -> bool:
+	return hardware_rt_failures().is_empty()
+
+
+## One human-readable sentence explaining why hardware RT is unavailable, or an
+## empty string when it is available.
+static func hardware_rt_unavailable_reason() -> String:
+	var failures := hardware_rt_failures()
+	if failures.is_empty():
+		return ""
+	return " ".join(failures)
 
 
 func _select_backend() -> int:
-	match rt_backend:
-		RTBackend.HARDWARE:
-			return RTBackend.HARDWARE
-		RTBackend.SOFTWARE:
-			return RTBackend.SOFTWARE
-		_:
-			if _hardware_rt_failures().is_empty():
-				return RTBackend.HARDWARE
-			return RTBackend.SOFTWARE
+	if ray_tracing_enabled and hardware_rt_supported():
+		return RTBackend.HARDWARE
+	return RTBackend.RASTER
 
 
 func _validate_runtime() -> bool:
-	var failures := _hardware_rt_failures() if _active_backend == RTBackend.HARDWARE else _software_rt_failures()
+	# The raster fallback is what runs *because* hardware RT is unavailable, so
+	# it never validates adapter capability. It still has to satisfy the shared
+	# scene and post-stack contract.
+	var failures := (
+		hardware_rt_failures()
+		if _active_backend == RTBackend.HARDWARE
+		else PackedStringArray())
 	var scene_contract_failure := _runtime_scene_contract_failure()
 	if not scene_contract_failure.is_empty():
 		failures.append(scene_contract_failure)
@@ -1332,8 +1086,11 @@ func _validate_runtime() -> bool:
 	# after scene validation, then restores the authored values on teardown.
 	if failures.is_empty():
 		return true
-	var backend_name := "Hardware" if _active_backend == RTBackend.HARDWARE else "Software"
-	_fail("%s ray tracing is unavailable:\n%s" % [backend_name, "\n".join(failures)])
+	var backend_name := (
+		"Hardware ray tracing"
+		if _active_backend == RTBackend.HARDWARE
+		else "The raster fallback")
+	_fail("%s is unavailable:\n%s" % [backend_name, "\n".join(failures)])
 	return false
 
 
@@ -1398,19 +1155,25 @@ func _validate_environment(environment: Environment) -> bool:
 		_fail(
 			"Environment fog is replaced by RTSceneManager's distance fog "
 			+ "(fog_enabled / fog_begin / fog_end / fog_curve, or configure_distance_fog()), "
-			+ "which the hardware compositor, the software fragment path and subscribed "
-			+ "unmanaged shaders apply identically. Engine fog is overwritten on managed "
-			+ "surfaces and would double-apply on unmanaged ones. Disable it.")
+			+ "which the hardware compositor, BlinnPhong.gdshader's raster branch and "
+			+ "subscribed unmanaged shaders apply identically. Engine fog is overwritten "
+			+ "on managed surfaces and would double-apply on unmanaged ones. Disable it.")
 		return false
 	if (
 			environment.ssao_enabled
 			or environment.ssil_enabled
-			or environment.ssr_enabled
 			or environment.sdfgi_enabled
 			or environment.glow_enabled
 			or environment.adjustment_enabled
 	):
-		_fail("SSAO, SSIL, SSR, SDFGI, glow, and Environment adjustments must be disabled by the shared visual contract.")
+		_fail("SSAO, SSIL, SDFGI, glow, and Environment adjustments must be disabled by the shared visual contract.")
+		return false
+	# SSR is banned under hardware RT -- the RT pass owns reflections and reads
+	# the roughness byte as its own transport -- and is the fallback's entire
+	# reflection source. The manager owns the switch either way, so an authored
+	# scene never has to know which one it will get.
+	if environment.ssr_enabled and _active_backend == RTBackend.HARDWARE:
+		_fail("Environment SSR must be disabled: hardware RT owns reflections.")
 		return false
 	if (
 			environment.tonemap_mode != Environment.TONE_MAPPER_LINEAR
@@ -1583,6 +1346,12 @@ func configure_ground_layer(
 		window_size: float,
 		height_range: Vector2,
 		ambient: Color) -> void:
+	# The layer exists so terrain and grass appear in RT reflection misses. The
+	# raster fallback reflects them through SSR instead, so the heightfield is
+	# pure cost there and the upload is skipped. Producers call this
+	# unconditionally and do not need to know which pipeline is installed.
+	if _active_backend == RTBackend.RASTER:
+		return
 	if image == null or image.is_empty() or window_size <= 0.0:
 		if _ground_texture == null:
 			return
@@ -1752,7 +1521,54 @@ func _mark_fog_dirty() -> void:
 	# the tree. The periodic _publish_snapshot pass picks the values up either way.
 	if _fog_signal_muted or not is_inside_tree():
 		return
+	if _active_backend == RTBackend.RASTER:
+		_push_raster_fog()
 	distance_fog_changed.emit(get_distance_fog())
+
+
+## Managed BlinnPhong materials under the raster fallback. The manager keeps no
+## scene representation there, so this is deliberately the whole of what it
+## knows about the geometry: which materials exist, so distance fog can be
+## pushed to them. No meshes, no atlases, no acceleration structure.
+func _collect_raster_materials() -> void:
+	_material_sources.clear()
+	var root := get_node_or_null(geometry_root_path)
+	if root == null:
+		return
+	var mesh_nodes := root.find_children("*", "MeshInstance3D", true, false)
+	if root is MeshInstance3D:
+		mesh_nodes.push_front(root)
+	var seen := {}
+	for node in mesh_nodes:
+		var mesh_node := node as MeshInstance3D
+		if mesh_node == null or mesh_node.mesh == null or not _is_managed_geometry(mesh_node):
+			continue
+		for surface in mesh_node.mesh.get_surface_count():
+			var material := mesh_node.get_active_material(surface) as ShaderMaterial
+			if material == null or material.shader != BLINN_PHONG_SHADER:
+				continue
+			var material_id := material.get_instance_id()
+			if seen.has(material_id):
+				continue
+			seen[material_id] = true
+			_material_sources.append(material)
+
+
+func _push_raster_fog() -> void:
+	var fog := get_distance_fog()
+	var params := Vector4(
+		float(fog.get("begin", 0.0)),
+		float(fog.get("end", 1.0)),
+		float(fog.get("curve", 1.0)),
+		1.0 if bool(fog.get("enabled", false)) else 0.0)
+	var color: Color = fog.get("color", Color.BLACK)
+	for material in _material_sources:
+		if not is_instance_valid(material):
+			continue
+		RenderingServer.material_set_param(
+			material.get_rid(), RT_FOG_PARAMS_PARAMETER, params)
+		RenderingServer.material_set_param(
+			material.get_rid(), RT_FOG_COLOR_PARAMETER, color)
 
 
 func _sky_bake_size(sky: Sky) -> Vector2i:
@@ -2066,8 +1882,8 @@ func get_active_rt_backend() -> StringName:
 	match _active_backend:
 		RTBackend.HARDWARE:
 			return &"hardware"
-		RTBackend.SOFTWARE:
-			return &"software"
+		RTBackend.RASTER:
+			return &"raster"
 		_:
 			return &"none"
 
@@ -2479,13 +2295,7 @@ func _register_receiver_only_node(mesh_node: MeshInstance3D) -> void:
 		for material_index in range(material_count_before, _material_records.size()):
 			_apply_material_renderer_override(material_index)
 	_commit_current_snapshot()
-	_apply_instance_renderer_override(
-		mesh_node, instance_index, true, _active_backend == RTBackend.HARDWARE)
-	if _software_tracer:
-		var sync_error: String = _software_tracer.sync_receiver_instances(
-			_current_snapshot, _material_sources, _instances)
-		if not sync_error.is_empty():
-			_fail(sync_error)
+	_apply_instance_renderer_override(mesh_node, instance_index, true)
 
 
 func _unregister_receiver_only_instance(instance_index: int) -> void:
@@ -2518,11 +2328,6 @@ func _unregister_receiver_only_instance(instance_index: int) -> void:
 	_instance_revision += 1
 	_receiver_light_revision += 1
 	_commit_current_snapshot()
-	if _software_tracer:
-		var sync_error: String = _software_tracer.sync_receiver_instances(
-			_current_snapshot, _material_sources, _instances)
-		if not sync_error.is_empty():
-			_fail(sync_error)
 
 
 func _incremental_receiver_material_error(material: ShaderMaterial) -> String:
@@ -2765,9 +2570,8 @@ func _make_material_record(material: ShaderMaterial) -> Dictionary:
 	var normal_texture_id := (normal_value as Texture2D).get_instance_id() if normal_value is Texture2D else 0
 	var albedo_region: Vector4 = _albedo_region_by_texture_id.get(albedo_texture_id, Vector4.ZERO)
 	var normal_region: Vector4 = _normal_region_by_texture_id.get(normal_texture_id, Vector4.ZERO)
-	# The shared scene contract is renderer-independent linear radiance. Primary
-	# software materials receive these values through unhinted uniforms; terminal
-	# hits and hardware buffers consume the same records directly.
+	# The shared scene contract is renderer-independent linear radiance. Terminal
+	# hits and hardware buffers consume these records directly.
 	var diffuse_rt := (diffuse_value as Color).srgb_to_linear()
 	var ambient_rt := (ambient_value as Color).srgb_to_linear()
 	var emission_rt := (emission_value as Color).srgb_to_linear()
@@ -3445,14 +3249,6 @@ func _build_receiver_light_lists(
 			if _light_cannot_affect_receiver(light, bounds):
 				continue
 			candidates.append(light_index)
-		if _active_backend == RTBackend.SOFTWARE and candidates.size() > software_max_lights_per_receiver:
-			var matching_names := PackedStringArray()
-			for light_index in candidates:
-				var matching_light: Dictionary = lights[light_index]
-				matching_names.append(String(matching_light.get("path", matching_light.get("name", "light"))))
-			var instance_name := String(_render_instances[instance_index].get("path", "instance %d" % instance_index))
-			return {"error": "%s is affected by %d lights, exceeding software_max_lights_per_receiver (%d): %s" % [
-				instance_name, candidates.size(), software_max_lights_per_receiver, ", ".join(matching_names)]}
 		candidate_lists[instance_index] = candidates
 		recomputed += 1
 	var maximum := 0
@@ -3576,13 +3372,17 @@ func _packed_int_arrays_equal(left: PackedInt32Array, right: PackedInt32Array) -
 	return true
 
 
+## Every override here is hardware-RT-only: the carrier layer remap, the
+## material-ID transport and the native shadow suppression all exist to feed the
+## compositor. The raster fallback installs none of them, which is exactly what
+## leaves it rendering as ordinary Blinn-Phong with native shadow maps.
 func _apply_renderer_overrides() -> void:
 	for i in _material_sources.size():
 		_apply_material_renderer_override(i)
 	for i in _instances.size():
 		var mesh_node := _managed_mesh_node(_instances[i])
 		if mesh_node != null:
-			_apply_instance_renderer_override(mesh_node, i, true, _active_backend == RTBackend.HARDWARE)
+			_apply_instance_renderer_override(mesh_node, i, true)
 	for light in _lights:
 		if is_instance_valid(light):
 			_suppress_native_light_shadow(light)
@@ -3603,16 +3403,14 @@ func _apply_material_renderer_override(material_index: int) -> void:
 		material.get_rid(), RT_HAS_NORMAL_PARAMETER, bool(record["has_normal"]))
 	RenderingServer.material_set_param(
 		material.get_rid(), RT_PIPELINE_ACTIVE_PARAMETER, true)
-	if _active_backend == RTBackend.HARDWARE:
-		RenderingServer.material_set_param(
-			material.get_rid(), RT_MATERIAL_ID_PARAMETER, material_index + 1)
+	RenderingServer.material_set_param(
+		material.get_rid(), RT_MATERIAL_ID_PARAMETER, material_index + 1)
 
 
-func _apply_instance_renderer_override(mesh_node: MeshInstance3D, instance_index: int, apply_id: bool, use_carrier_layer: bool) -> void:
+func _apply_instance_renderer_override(mesh_node: MeshInstance3D, instance_index: int, apply_id: bool) -> void:
 	if not mesh_node.get_instance().is_valid():
 		return
-	var renderer_layers := RT_CARRIER_LAYER_MASK if use_carrier_layer else mesh_node.layers
-	RenderingServer.instance_set_layer_mask(mesh_node.get_instance(), renderer_layers)
+	RenderingServer.instance_set_layer_mask(mesh_node.get_instance(), RT_CARRIER_LAYER_MASK)
 	if apply_id:
 		RenderingServer.instance_geometry_set_shader_parameter(mesh_node.get_instance(), &"rt_instance_id", instance_index + 1)
 
@@ -3623,8 +3421,6 @@ func _suppress_native_light_shadow(light: Light3D) -> void:
 
 
 func _suppress_light_on_managed(light: Light3D) -> void:
-	if _active_backend != RTBackend.HARDWARE:
-		return
 	if light.get_base().is_valid():
 		RenderingServer.light_set_cull_mask(
 			light.get_base(), light.light_cull_mask & ~RT_CARRIER_LAYER_MASK)
@@ -3661,6 +3457,13 @@ func _restore_renderer_overrides() -> void:
 			RenderingServer.material_set_param(material.get_rid(), RT_HAS_ALBEDO_PARAMETER, false)
 			RenderingServer.material_set_param(material.get_rid(), RT_HAS_NORMAL_PARAMETER, false)
 			RenderingServer.material_set_param(material.get_rid(), RT_PIPELINE_ACTIVE_PARAMETER, false)
+			# The fallback's fog push is a renderer override like any other and
+			# has to come back off, or a stopped manager leaves the scene's own
+			# raster appearance fogged.
+			RenderingServer.material_set_param(
+				material.get_rid(), RT_FOG_PARAMS_PARAMETER, Vector4(0.0, 1.0, 1.0, 0.0))
+			RenderingServer.material_set_param(
+				material.get_rid(), RT_FOG_COLOR_PARAMETER, Color.BLACK)
 	for item in _instances:
 		var mesh_node := _managed_mesh_node(item)
 		if mesh_node != null:
@@ -3779,7 +3582,7 @@ func _publish_snapshot() -> void:
 			receiver_dirty_flags[i] = 1
 		# Reassert backend-owned instance state after gameplay processing. Hardware
 		# needs the private carrier layer; both paths need the one-based instance ID.
-		_apply_instance_renderer_override(mesh_node, i, true, _active_backend == RTBackend.HARDWARE)
+		_apply_instance_renderer_override(mesh_node, i, true)
 		if transforms_changed:
 			next_transforms[i] = current_transform
 		elif current_transform != _snapshot_transforms[i]:
@@ -4027,8 +3830,7 @@ func _commit_current_snapshot() -> void:
 	}
 	next_snapshot.make_read_only()
 	_current_snapshot = next_snapshot
-	if _active_backend == RTBackend.HARDWARE:
-		_snapshot_bridge.publish(next_snapshot)
+	_snapshot_bridge.publish(next_snapshot)
 	_profile_snapshot_updates += 1
 
 
@@ -4166,10 +3968,6 @@ func get_profile_snapshot() -> Dictionary:
 		var render_profile: Dictionary = _rt_effect.get_profile_snapshot()
 		for key in render_profile:
 			result[key] = render_profile[key]
-	if _software_tracer:
-		var software_profile := _software_tracer.get_profile_snapshot()
-		for key in software_profile:
-			result[key] = software_profile[key]
 	if _post_stack:
 		var post_profile := _post_stack.get_profile_snapshot()
 		for key in post_profile:
@@ -4329,14 +4127,6 @@ func _fail(reason: String) -> void:
 	_failed = true
 	_manager_active = false
 	_ready_emitted = false
-	if Engine.is_editor_hint():
-		# Editor failures are transient by construction: the scene is edited into
-		# and out of the RT contract constantly. Record the reason and let the
-		# caller unwind; the editor preview driver tears down to plain raster and
-		# retries instead of latching failure or reporting through push_error.
-		_editor_preview_error = reason
-		rt_failed.emit(reason)
-		return
 	push_error(reason)
 	# Disable stale RT immediately, including failures that happen after renderer
 	# overrides were applied but before a valid compositor scenario was installed.
@@ -4373,6 +4163,7 @@ func _get_post_settings() -> Dictionary:
 		"post_cas_enabled": post_cas_enabled,
 		"post_cas_sharpness": post_cas_sharpness,
 		"recover_opaque_coverage_from_rgb": _active_backend == RTBackend.HARDWARE,
+		"scene_capture_opaque": _active_backend == RTBackend.RASTER,
 		"enabled": retro_post_enabled,
 		"brightness": post_brightness,
 		"contrast": post_contrast,

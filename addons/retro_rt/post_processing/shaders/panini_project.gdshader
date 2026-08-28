@@ -14,6 +14,11 @@ uniform float panini_extent_y = 1.0;
 // Rectilinear tangent extents rendered by the private capture camera.
 uniform vec2 capture_tan_half_fov = vec2(1.0);
 
+// Catmull-Rom reconstruction is faded out between this footprint and 1:1 so the
+// magnified branch lands on exactly the bilinear tap the minified branch starts
+// from. Without the fade the two branches meet at a visible ring.
+const float CATMULL_ROM_FADE_START = 0.9;
+
 
 vec2 panini_source_uv(vec2 output_uv) {
 	vec2 output_ndc = output_uv * 2.0 - 1.0;
@@ -42,12 +47,56 @@ vec2 clamp_source_uv(vec2 uv) {
 }
 
 
+// Nine-tap Catmull-Rom reduced to its five significant bilinear taps. The four
+// dropped corner taps carry a small share of the unit weight sum, so the kept
+// weights are renormalized. Only texture(), floor(), and arithmetic are used,
+// which keeps this inside the same plain canvas-fragment contract -- no compute,
+// no RenderingDevice -- as the rest of the post stack.
+vec3 catmull_rom_sample(vec2 uv, vec2 texel_grid) {
+	vec2 sample_position = uv * texel_grid;
+	vec2 center_texel = floor(sample_position - 0.5) + 0.5;
+	vec2 f = sample_position - center_texel;
+
+	vec2 weight0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+	vec2 weight1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+	vec2 weight2 = f * (0.5 + f * (2.0 - 1.5 * f));
+	vec2 weight3 = f * f * (-0.5 + 0.5 * f);
+	// weight1 + weight2 stays within [1.0, 1.125] for f in [0,1]; the guard only
+	// protects the division from denormal input.
+	vec2 weight12 = max(weight1 + weight2, vec2(0.00001));
+
+	vec2 uv0 = (center_texel - 1.0) / texel_grid;
+	vec2 uv3 = (center_texel + 2.0) / texel_grid;
+	vec2 uv12 = (center_texel + weight2 / weight12) / texel_grid;
+
+	vec3 color = texture(
+		source_texture, clamp_source_uv(vec2(uv12.x, uv0.y))).rgb
+		* (weight12.x * weight0.y);
+	color += texture(
+		source_texture, clamp_source_uv(vec2(uv0.x, uv12.y))).rgb
+		* (weight0.x * weight12.y);
+	color += texture(
+		source_texture, clamp_source_uv(uv12)).rgb
+		* (weight12.x * weight12.y);
+	color += texture(
+		source_texture, clamp_source_uv(vec2(uv3.x, uv12.y))).rgb
+		* (weight3.x * weight12.y);
+	color += texture(
+		source_texture, clamp_source_uv(vec2(uv12.x, uv3.y))).rgb
+		* (weight12.x * weight3.y);
+
+	float total = weight12.x * (weight0.y + weight12.y + weight3.y)
+		+ weight12.y * (weight0.x + weight3.x);
+	return color / max(total, 0.00001);
+}
+
+
 void fragment() {
 	vec2 source_uv = panini_source_uv(UV);
 
-	// The derivative decision and fixed upper bound are portable to GLES3. The
-	// common magnified/1:1 path performs exactly one bilinear lookup; only
-	// minified regions take the bounded four-tap branch.
+	// The derivative decision and fixed upper bound keep the cost bounded and
+	// the branch uniform enough to be cheap. Only minified regions take the
+	// four-tap branch.
 	vec2 derivative_x = dFdx(source_uv);
 	vec2 derivative_y = dFdy(source_uv);
 	vec2 source_pixels = max(source_size, vec2(1.0));
@@ -56,7 +105,19 @@ void fragment() {
 		length(derivative_y * source_pixels));
 	vec3 color;
 	if (footprint <= 1.0) {
-		color = texture(source_texture, clamp_source_uv(source_uv)).rgb;
+		// The capture camera is always wider than the display FOV, so the image
+		// center magnifies by more than 2x at every supported FOV. One bilinear
+		// tap is what makes that center read as soft; Catmull-Rom reconstructs
+		// the same texels with edge slope preserved and no extra source data.
+		vec3 bilinear = texture(source_texture, clamp_source_uv(source_uv)).rgb;
+		float sharpness = 1.0 - smoothstep(
+			CATMULL_ROM_FADE_START, 1.0, footprint);
+		color = mix(
+			bilinear, catmull_rom_sample(source_uv, source_pixels), sharpness);
+		// Catmull-Rom's negative lobes overshoot around high-contrast edges. The
+		// source is the upstream-clamped perceptual image, so the valid range is
+		// exactly [0,1] and the overshoot is a halo rather than signal.
+		color = clamp(color, vec3(0.0), vec3(1.0));
 	} else {
 		float filter_amount = min(footprint - 1.0, 1.0);
 		vec2 maximum_step = 2.0 / source_pixels;

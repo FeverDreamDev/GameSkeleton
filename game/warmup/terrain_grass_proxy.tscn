@@ -68,13 +68,13 @@ use_custom_data = true
 instance_count = 2
 mesh = SubResource("ArrayMesh_uhm3m")
 
-[node name="TerrainGrassWarmupProxy" type="Node3D" unique_id=1737713542]
+[node name="TerrainGrassWarmupProxy" type="Node3D" unique_id=1239632700]
 
-[node name="TerrainVertexColorFormat" type="MeshInstance3D" parent="." unique_id=62066915]
+[node name="TerrainVertexColorFormat" type="MeshInstance3D" parent="." unique_id=1262043288]
 cast_shadow = 0
 mesh = SubResource("ArrayMesh_0cow3")
 
-[node name="GrassVertexColorUVFormat" type="MultiMeshInstance3D" parent="." unique_id=1965077781]
+[node name="GrassVertexColorUVFormat" type="MultiMeshInstance3D" parent="." unique_id=51386401]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -2)
 cast_shadow = 0
 multimesh = SubResource("MultiMesh_pftdr")

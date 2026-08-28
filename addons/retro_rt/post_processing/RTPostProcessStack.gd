@@ -205,7 +205,16 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_requested_render_scale = _get_requested_render_scale(_settings)
 	_render_size = _scaled_render_size(_output_size, _requested_render_scale)
 	_scene_viewport = _make_viewport("SceneCapture", _render_size)
-	_scene_viewport.transparent_bg = true
+	# Hardware RT needs a transparent capture: managed pixels carry ID transport
+	# rather than colour, and the shared present reconstructs the environment
+	# behind every uncovered texel from the immutable snapshot.
+	#
+	# The raster fallback has no transport to hide, and Godot refuses to run
+	# screen-space reflections into a transparent viewport -- silently, with a
+	# warning -- which would leave the fallback with no reflections at all. So it
+	# captures opaque and lets the viewport draw its own sky; coverage then reads
+	# 1 everywhere and the present composites nothing behind it.
+	_scene_viewport.transparent_bg = not bool(_settings.get("scene_capture_opaque", false))
 	_scene_viewport.use_hdr_2d = true
 	_scene_viewport.world_3d = _root_viewport.world_3d
 	_container.add_child(_scene_viewport)
@@ -343,9 +352,7 @@ func update(settings: Dictionary) -> void:
 	var environment_mode := int(environment.get("mode", 0))
 	var fallback: Color = environment.get("fallback_linear", Color.BLACK)
 	var inverse_basis: Basis = environment.get("inverse_sky_basis", Basis.IDENTITY)
-	var scene_input_linear := (
-		RenderingServer.get_current_rendering_method() != "gl_compatibility"
-		and _scene_viewport.use_hdr_2d)
+	var scene_input_linear := _scene_viewport.use_hdr_2d
 	var recover_opaque_coverage := (
 		bool(settings.get("recover_opaque_coverage_from_rgb", false)))
 	var panorama: Texture2D
@@ -494,7 +501,6 @@ func shutdown() -> void:
 
 
 func get_profile_snapshot() -> Dictionary:
-	var compatibility := RenderingServer.get_current_rendering_method() == "gl_compatibility"
 	var data_hdr_requested := (
 		_edge_viewport != null
 		and _blend_viewport != null
@@ -511,8 +517,9 @@ func get_profile_snapshot() -> Dictionary:
 		and _resolve_viewport.transparent_bg)
 	# Four owned render-size color targets (scene, edges, weights, resolve), one
 	# persistent native-size Panini target, plus the native-size EASU target only
-	# while the FSR path is active.
-	var bytes_per_target_pixel := 4 if compatibility else 8
+	# while the FSR path is active. Forward+ honors use_hdr_2d, so every one of
+	# them is RGBA16F.
+	var bytes_per_target_pixel := 8
 	var panini_buffer_bytes := (
 		_output_size.x * _output_size.y * bytes_per_target_pixel
 		if _panini_viewport != null else 0)
@@ -534,10 +541,7 @@ func get_profile_snapshot() -> Dictionary:
 		"post_smaa_quality": int(_settings.get("post_smaa_quality", 2)),
 		"post_smaa_quality_name": RTVisualContract.quality_name(int(_settings.get("post_smaa_quality", 2))),
 		"post_input_transfer": (
-			&"scene_linear" if (
-				RenderingServer.get_current_rendering_method() != "gl_compatibility"
-				and _scene_viewport != null
-				and _scene_viewport.use_hdr_2d)
+			&"scene_linear" if (_scene_viewport != null and _scene_viewport.use_hdr_2d)
 			else &"srgb_to_scene_linear"),
 		"post_output_transfer": &"explicit_scene_linear_to_srgb",
 		"post_retro_grade_enabled": bool(
@@ -573,14 +577,12 @@ func get_profile_snapshot() -> Dictionary:
 		"post_internal_camera_source_visual_state_exact": (
 			_camera_source_visual_state_exact()),
 		"post_internal_camera_capture_override": _panini_active,
-		# Compatibility ignores HDR 2D. Transparent RGBA8 data targets still
-		# preserve all four SMAA weights there; RD uses RGBA16F for every pass.
 		"post_persistent_buffer_bytes": persistent_bytes,
-		"post_data_viewports_hdr": data_hdr_requested and not compatibility,
+		"post_data_viewports_hdr": data_hdr_requested,
 		"post_data_viewports_hdr_requested": data_hdr_requested,
 		"post_data_viewports_rgba": data_rgba,
 		"post_scene_viewport_hdr": (
-			_scene_viewport != null and _scene_viewport.use_hdr_2d and not compatibility),
+			_scene_viewport != null and _scene_viewport.use_hdr_2d),
 		"post_scene_viewport_hdr_requested": (
 			_scene_viewport != null and _scene_viewport.use_hdr_2d),
 		# Instrumented explicit Node/Resource construction since the preceding
@@ -617,9 +619,9 @@ func get_profile_snapshot() -> Dictionary:
 		"post_panini_enabled": _panini_active,
 		"post_panini_bypass_reason": _panini_bypass_reason,
 		"post_panini_projection": &"classic_d1_s0",
-		"post_panini_sample_mode": &"adaptive_1_or_4",
-		"post_panini_sample_taps_min": 1,
-		"post_panini_sample_taps_max": 4,
+		"post_panini_sample_mode": &"catmull_rom_or_box",
+		"post_panini_sample_taps_min": 4,
+		"post_panini_sample_taps_max": 6,
 		"post_panini_output_domain": &"native",
 		"post_panini_target_persistent": _panini_viewport != null,
 		"post_panini_buffer_bytes": panini_buffer_bytes,
@@ -761,9 +763,7 @@ func get_debug_contract_snapshot() -> Dictionary:
 		"panini_viewport_size": (
 			_panini_viewport.size if _panini_viewport else Vector2i.ZERO),
 		"panini_buffer_bytes": (
-			_output_size.x * _output_size.y
-			* (4 if RenderingServer.get_current_rendering_method() == "gl_compatibility" else 8)
-			if _panini_viewport else 0),
+			_output_size.x * _output_size.y * 8 if _panini_viewport else 0),
 		"final_presentation_size": (
 			Vector2i(_final_rect.size) if _final_rect else Vector2i.ZERO),
 		"edge_uniform_size": _shader_viewport_size(_edge_material),
@@ -789,9 +789,9 @@ func get_debug_contract_snapshot() -> Dictionary:
 		"panini_source_uv_max": _panini_source_uv_max,
 		"panini_perimeter_samples": _panini_perimeter_samples,
 		"panini_invalid_samples": _panini_invalid_samples,
-		"panini_sample_mode": &"adaptive_1_or_4",
-		"panini_sample_taps_min": 1,
-		"panini_sample_taps_max": 4,
+		"panini_sample_mode": &"catmull_rom_or_box",
+		"panini_sample_taps_min": 4,
+		"panini_sample_taps_max": 6,
 		"panini_bounds_valid": _panini_bounds_valid(),
 		"fsr_active": _active and _fsr_required(),
 		"sharpen_mode": _sharpen_mode() if _active else SHARPEN_NONE,
@@ -830,12 +830,11 @@ func _make_canvas_pass(pass_name: String, size: Vector2i, material: Material) ->
 	# The scene capture keeps its clear: it is a real 3D render into a transparent
 	# target, where uncovered pixels are the point.
 	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_NEVER
-	# The SMAA blend pass stores a real directional weight in alpha. Compatibility
-	# ignores HDR 2D, so a transparent target is also required there to guarantee
-	# an RGBA (rather than RGB-only) data surface.
+	# The SMAA blend pass stores a real directional weight in alpha, so the
+	# target has to be RGBA rather than RGB-only.
 	viewport.transparent_bg = true
-	# Edge/blend textures are numerical data. RD honors this as RGBA16F;
-	# Compatibility keeps the transparent RGBA8 fallback described above.
+	# Edge/blend textures are numerical data, and Forward+ honors this as
+	# RGBA16F. Quantizing them to 8 bits would quantize the weights.
 	viewport.use_hdr_2d = true
 	var rect := ColorRect.new()
 	_record_explicit_allocation()
@@ -1218,22 +1217,28 @@ static func _debug_panini_capture_contract_with_perimeter(
 		/ (PANINI_DISTANCE + cos(half_horizontal)))
 	var output_aspect := float(output_size.x) / float(output_size.y)
 	var panini_extent_y := tan(half_horizontal) / output_aspect
-	var mapped_min := Vector2(INF, INF)
-	var mapped_max := Vector2(-INF, -INF)
-	var invalid_mapped_samples := 0
-	for point: Vector2 in perimeter:
-		var mapped := _panini_inverse_rectilinear(
-			point, panini_extent_x, panini_extent_y)
-		if not is_finite(mapped.x) or not is_finite(mapped.y):
-			invalid_mapped_samples += 1
-			continue
-		mapped_min.x = minf(mapped_min.x, mapped.x)
-		mapped_min.y = minf(mapped_min.y, mapped.y)
-		mapped_max.x = maxf(mapped_max.x, mapped.x)
-		mapped_max.y = maxf(mapped_max.y, mapped.y)
+	# The mapping's extrema over the output rectangle are closed-form, so finding
+	# them needs no scan. mapped.x = tan(phi) is odd and strictly increasing in
+	# output_ndc.x across the supported |phi| < 90 degrees, and
+	# mapped.y = output_ndc.y * extent_y * (D + cos phi) / ((D + 1) * cos phi) is
+	# linear in output_ndc.y and strictly increasing in |phi|. Both extrema land
+	# on the four logical corners, which are members of the perimeter set, so
+	# this returns exactly what a full border scan returns. Evaluating it
+	# directly is what keeps a smoothed sprint FOV, which moves every frame, off
+	# a multi-millisecond per-frame scan of every border texel center.
+	var mapped_corner := _panini_inverse_rectilinear(
+		Vector2.ONE, panini_extent_x, panini_extent_y)
+	if not is_finite(mapped_corner.x) or not is_finite(mapped_corner.y):
+		return {
+			"valid": false,
+			"perimeter_samples": perimeter.size(),
+			"invalid_samples": perimeter.size(),
+		}
+	var mapped_max := mapped_corner
+	var mapped_min := -mapped_corner
 
-	var mapped_abs_x := maxf(absf(mapped_min.x), absf(mapped_max.x))
-	var mapped_abs_y := maxf(absf(mapped_min.y), absf(mapped_max.y))
+	var mapped_abs_x := absf(mapped_corner.x)
+	var mapped_abs_y := absf(mapped_corner.y)
 	# Keep the mapped perimeter at least half a source texel inside the capture.
 	# EASU preserves normalized coordinates, so the source projection's aspect is
 	# the internal render aspect even though Panini itself runs at native output.
@@ -1267,12 +1272,12 @@ static func _debug_panini_capture_contract_with_perimeter(
 		and source_uv_min.y >= safe_uv_min.y - 0.000001
 		and source_uv_max.x <= safe_uv_max.x + 0.000001
 		and source_uv_max.y <= safe_uv_max.y + 0.000001)
-	# The first complete perimeter scan produced these extrema, so valid extrema
-	# prove every finite sample is inside the source. Only rescan the exceptional
-	# invalid-contract path to retain an exact diagnostic count.
-	var invalid_samples := invalid_mapped_samples
-	if invalid_mapped_samples > 0 or not bounds_inside_safe:
-		invalid_samples = 0
+	# The extrema above bound the whole perimeter by construction, so valid
+	# extrema prove every finite sample is inside the source. Only the
+	# exceptional invalid-contract path scans the perimeter, and it does so to
+	# retain an exact diagnostic count rather than to find the bounds.
+	var invalid_samples := 0
+	if not bounds_inside_safe:
 		for point: Vector2 in perimeter:
 			var mapped := _panini_inverse_rectilinear(
 				point, panini_extent_x, panini_extent_y)

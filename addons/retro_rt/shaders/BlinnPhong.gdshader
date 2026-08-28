@@ -36,8 +36,21 @@ uniform bool rt_has_albedo_texture = false;
 uniform bool rt_has_normal_texture = false;
 instance uniform int rt_instance_id = 0;
 
+// Distance fog, pushed by RTSceneManager while the raster fallback is installed
+// and left disabled under hardware RT, where the compositor applies the same
+// curve itself. Unmanaged geometry (shell grass) fades on exactly this ramp
+// through its own subscription to distance_fog_changed, which is what keeps a
+// prop, the terrain under it and the grass around it fading together.
+// params: x=begin, y=end (> begin), z=curve, w=enabled.
+uniform vec4 rt_fog_params = vec4(0.0, 1.0, 1.0, 0.0);
+uniform vec3 rt_fog_color : source_color = vec3(0.0);
+
 varying vec3 rt_triplanar_position;
 varying vec3 rt_triplanar_weights;
+// Written in fragment(), read in light(), so the direct specular lobe fades on
+// the same ramp as the diffuse term instead of surviving as a highlight against
+// flat fog.
+varying float rt_fog_amount;
 
 
 vec4 sample_triplanar(sampler2D map, vec3 weights, vec3 position) {
@@ -69,6 +82,20 @@ vec3 get_triplanar_weights(vec3 mapping_normal, float sharpness) {
 	return absolute_normal.y >= absolute_normal.z
 		? vec3(0.0, 1.0, 0.0)
 		: vec3(0.0, 0.0, 1.0);
+}
+
+
+// Canonical Retro RT distance fog. Keep this function byte-identical in every
+// copy: addons/retro_rt/shaders/rt_shadow_reflect.glsl,
+// addons/retro_rt/shaders/BlinnPhong.gdshader,
+// addons/procedural_terrain_grass/shaders/grass_shell.gdshader.
+// Normative text: addons/retro_rt/docs/RT_PIPELINE.md, "Distance fog".
+// params: x=begin, y=end (> begin), z=curve, w=enabled. distance is radial.
+float rt_fog_factor(vec4 params, float view_distance) {
+	if (params.w < 0.5) {
+		return 0.0;
+	}
+	return pow(smoothstep(params.x, params.y, view_distance), params.z);
 }
 
 
@@ -171,17 +198,30 @@ void fragment() {
 		sampled_albedo *= COLOR.rgb;
 	}
 	vec3 tinted_albedo = diffuse_color.rgb * sampled_albedo;
+	// VERTEX is view space in fragment(), so its length is the radial distance
+	// the canonical curve is defined against. Fog is never applied while the
+	// compositor owns the pixel: there ALBEDO and EMISSION are ID/albedo
+	// transport, not colour, and the RT pass fogs its own result.
+	rt_fog_amount = rt_pipeline_active
+		? 0.0
+		: rt_fog_factor(rt_fog_params, length(VERTEX));
+	float rt_fog_survival = 1.0 - rt_fog_amount;
+
 	// Managed hardware pixels transport albedo through emission so native
 	// environment lighting cannot contaminate the compositor's source value.
-	ALBEDO = rt_pipeline_active ? vec3(0.0) : tinted_albedo;
+	// Scaling standalone albedo by the fog survival fades every light Godot
+	// evaluates against it, which is the same identity shell grass relies on.
+	ALBEDO = rt_pipeline_active ? vec3(0.0) : tinted_albedo * rt_fog_survival;
 
 	// For managed hardware pixels the compositor needs the sampled albedo in
 	// scene color to evaluate ambient and direct diffuse terms. It always
 	// replaces this carrier later. Outside RTSceneManager, preserve the normal
-	// standalone material appearance.
+	// standalone material appearance and add the fog radiance back here, which
+	// is exactly mix(lit, rt_fog_color, fog).
 	EMISSION = rt_pipeline_active && rt_material_id > 0
 		? tinted_albedo
-		: (tinted_albedo * ambient_light.rgb) + emission_color.rgb;
+		: ((tinted_albedo * ambient_light.rgb) + emission_color.rgb) * rt_fog_survival
+			+ rt_fog_color * rt_fog_amount;
 
 	// A flat NORMAL_MAP leaves NORMAL unchanged. Triplanar mode uses Godot's
 	// synthesized basis; UV0 mode derives a per-fragment TBN and writes the
@@ -205,8 +245,11 @@ void fragment() {
 
 	// Disable Godot's environment/SSR/probe PBR contribution. The RT pass owns
 	// reflections and evaluates all authored direct lights itself.
+	// Outside the RT pipeline this is what Godot's screen-space reflections
+	// read, so it is the raster fallback's mirror strength. It fades with fog
+	// for the same reason the specular lobe does.
 	SPECULAR = !rt_pipeline_active && mirror_enabled
-		? clamp(reflection_strength, 0.0, 1.0)
+		? clamp(reflection_strength, 0.0, 1.0) * rt_fog_survival
 		: 0.0;
 	METALLIC = 0.0;
 	// The roughness byte is project-owned transport for the per-pixel reflection
@@ -239,7 +282,8 @@ void light() {
 				SPECULAR_LIGHT += specular_color.rgb
 					* blinn
 					* direct_specular_intensity
-					* radiance;
+					* radiance
+					* (1.0 - rt_fog_amount);
 			}
 		}
 	} else if (is_rt_carrier) {

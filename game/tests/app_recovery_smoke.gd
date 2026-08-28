@@ -1,7 +1,7 @@
 extends SceneTree
 
 ## Recovery routing and menu/pause lifecycle coverage for GameApp. Run with:
-## godot --path . --rendering-method gl_compatibility --script res://game/tests/app_recovery_smoke.gd
+## godot --path . --rendering-method forward_plus --script res://game/tests/app_recovery_smoke.gd
 
 const TEST_SAVE_DIRECTORY := "res://.godot/app_recovery_smoke_saves"
 const TEST_SLOTS: Array[StringName] = [

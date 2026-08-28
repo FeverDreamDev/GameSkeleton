@@ -1,13 +1,14 @@
 # Retro RT
 
-Ray-traced shadows and reflections for Blinn-Phong materials in Godot 4.7+,
-with one visual contract shared by three runtime configurations: Forward+
-hardware RT, Forward+ forced software RT, and Compatibility software RT. All
-three feed the same fullscreen SMAA 1x + FSR 1 post stack, so the image is the
-same picture at three performance points rather than three different looks.
+Ray-traced shadows and reflections for Blinn-Phong materials in Godot 4.7+.
+Forward+ only, with two runtime configurations under one visual contract:
+hardware RT where the adapter supports it, and a raster fallback -- Godot's own
+shadow maps and screen-space reflections -- where it does not. Both feed the
+same fullscreen SMAA 1x + FSR 1 post stack, so the fallback is the same picture
+with cheaper shadows and reflections rather than a different look.
 
 No textures to import, no `.gdextension`, no autoloads, no input actions. The
-add-on is one folder and six global classes.
+add-on is one folder and five global classes.
 
 ## Install
 
@@ -29,14 +30,18 @@ survive a rename; the script consts would not.)
 
 - **Godot 4.7 or newer.** There is no version gate — on an older engine
   `RTLightingEffect` fails at `extends CompositorEffect` parse time.
-- **Hardware RT** additionally needs Forward+ on Vulkan, with the
-  `RenderingDevice` exposing buffer-device-address and ray-tracing-pipeline
-  support, and a non-CPU adapter. Everything else — Compatibility and
-  non-Vulkan Forward+ — selects the software backend automatically.
-- The software backend needs no compute, no storage buffers, no compositor and
-  no ray-tracing pipeline. It rasterizes primary visibility and traverses a CPU
-  BVH from the fragment shader, which is why Compatibility stays a first-class
-  target.
+- **Forward+.** The Mobile and Compatibility renderers are not supported.
+- **Hardware RT** additionally needs Vulkan, with the `RenderingDevice`
+  exposing buffer-device-address and ray-tracing-pipeline support, and a
+  non-CPU adapter. `RTSceneManager.hardware_rt_supported()` answers this
+  statically, before any manager starts, and
+  `hardware_rt_unavailable_reason()` says why when it cannot.
+- **Anything else runs the raster fallback**, automatically. It installs no
+  compositor, collects no scene, and builds no acceleration structure: managed
+  materials render through `BlinnPhong.gdshader`'s standalone branch with
+  native shadow maps, and the manager turns on `Environment.ssr_enabled` for
+  reflections. The post stack, the distance fog and the quality presets are
+  unchanged, which is what keeps the two configurations one picture.
 
 ## Quick start
 
@@ -55,9 +60,9 @@ RTExample (Node)
 
 `RTSceneManager` publishes every active `DirectionalLight3D`, `OmniLight3D`,
 `SpotLight3D` and `AreaLight3D` beneath its geometry root, builds the
-acceleration structure, installs the compositor effect (hardware) or the
-material overrides (software), and owns the post stack. It sets its own
-`process_priority` to 100000 so it runs after gameplay.
+acceleration structure, installs the compositor effect, and owns the post
+stack. It sets its own `process_priority` to 100000 so it runs after gameplay.
+Under the raster fallback it does none of the first three and only the last.
 
 Two exported node paths locate the rest, and both default to this layout:
 `geometry_root_path` (`../`) and `world_environment_path` (`../WorldEnvironment`).
@@ -66,7 +71,7 @@ Geometry is opt-in: add rigid ray-visible meshes to `retro_rt_managed`. Add a
 managed mesh to `retro_rt_receiver_only` when it should receive primary RT
 lighting/shadows but never cast a ray shadow or appear in reflections. Receiver
 slots are appended/tombstoned/reused incrementally, so streamed terrain does not
-rebuild the hardware TLAS or software BLAS/BVH. Set `managed_geometry_group` to
+rebuild the hardware TLAS. Set `managed_geometry_group` to
 an empty name only when you explicitly want the legacy scan-all behavior.
 
 `auto_start` defaults on. A persistent shell can set it off, assemble an active
@@ -89,16 +94,25 @@ Authored parameters:
 | --- | --- | --- |
 | `ambient_light`, `diffuse_color`, `emission_color`, `specular_color` | `Color` | `source_color` |
 | `albedo_texture`, `normal_texture` | `sampler2D` | optional; anisotropic, repeat |
-| `vertex_color_enabled` | `bool` | primary raster/software colour; receiver-only geometry only |
+| `vertex_color_enabled` | `bool` | primary raster colour; receiver-only geometry only |
 | `triplanar_enabled`, `triplanar_world_space`, `triplanar_scale`, `triplanar_offset`, `triplanar_sharpness` | | for UV-less geometry |
 | `shininess` | `1..256` | Blinn-Phong exponent |
 | `direct_specular_intensity` | `0..2` | |
 | `mirror_enabled`, `reflection_strength`, `reflection_shadows_enabled` | | per-material RT reflection controls; the shadow toggle covers reflected geometry and the analytic ground alike |
 
 `rt_pipeline_active`, `rt_material_id`, `rt_has_albedo_texture`,
-`rt_has_normal_texture` and the `rt_instance_id` instance uniform are written by
-the manager. Leave them alone; the shader falls back to standalone raster when
-`rt_pipeline_active` is false, which is what you see with the add-on inactive.
+`rt_has_normal_texture`, `rt_fog_params`, `rt_fog_color` and the
+`rt_instance_id` instance uniform are written by the manager. Leave them alone;
+the shader falls back to standalone raster when `rt_pipeline_active` is false,
+which is both what you see with the add-on inactive and what the raster
+fallback renders.
+
+That standalone branch is a complete material, not a placeholder: Blinn-Phong
+direct lighting with native `ATTENUATION` (so shadow maps work), `SPECULAR` set
+from `reflection_strength` on `mirror_enabled` surfaces (which is what Godot's
+SSR consumes), and the shared distance fog applied from `rt_fog_params`. The
+manager pushes fog to managed materials itself under the fallback, because
+nothing else does it there.
 
 ### What startup validates
 
@@ -120,9 +134,15 @@ has to stay inside the shared contract:
   Viewport and refuses a second;
 - opaque, rigid, triangle `MeshInstance3D` geometry: no alpha, skinning, morphs,
   vertex deformation, `MultiMesh` or `GridMap`;
-- at most 256 lights (hardware) and `software_max_lights_per_receiver` lights per
-  receiver (software, 16 by default, 32 maximum). Overflow is an error, never a
-  silent drop.
+- at most 256 lights. Overflow is an error, never a silent drop.
+
+Under the raster fallback only the camera, the `Environment` and the post-stack
+contract are validated. There is no managed geometry to check, because there is
+no acceleration structure to put it in. The one contract that differs is
+`Environment.ssr_enabled`: hardware RT rejects it, because the RT pass owns
+reflections and reads the roughness byte as its own transport, while the
+fallback turns it on and restores the authored value on teardown. Author it off
+and let the manager own the switch, and one scene serves both.
 
 Texture references and pixel content of managed maps are static; changing them
 needs a scene reload.
@@ -165,7 +185,7 @@ everything below.
 `rt_quality_changed(preset: int, requested_scale: float)`,
 `topology_sync_started`, `topology_sync_completed`
 
-**Enums** — `RTBackend { AUTO, HARDWARE, SOFTWARE }`,
+**Enums** — `RTBackend { HARDWARE, RASTER }` (reported state, not a request),
 `RTQualityPreset { NATIVE, QUALITY, BALANCED, PERFORMANCE }`,
 `SMAAQuality { LOW, MEDIUM, HIGH }`, `RTEnvironmentMode { FLAT, PANORAMA }`
 
@@ -175,8 +195,11 @@ everything below.
 | --- | --- |
 | `start_rt()` | awaitable `bool`; true only when ready |
 | `stop_rt()` | —; restores every owned renderer override and wakes start waiters |
+| `set_ray_tracing_enabled(enabled: bool)` | awaitable `bool`; reinstalls the pipeline, so it stops the current one and starts the other |
+| `RTSceneManager.hardware_rt_supported()` | static `bool`; safe to call before any manager exists |
+| `RTSceneManager.hardware_rt_unavailable_reason()` | static `String`; empty when hardware RT is available |
 | `request_topology_sync()` | —; queues a safe full rebuild for ray-visible topology |
-| `get_active_rt_backend()` | `&"hardware"`, `&"software"` or `&"none"` |
+| `get_active_rt_backend()` | `&"hardware"`, `&"raster"` or `&"none"` |
 | `set_rt_quality(preset: int)` | — |
 | `get_rt_quality_scale()` / `get_rt_quality_name()` | `float` / `StringName` |
 | `get_ray_render_resolution()` | internal traced size |
@@ -194,10 +217,8 @@ everything below.
 | `managed_geometry_group` | `retro_rt_managed` | empty retains legacy scan-all |
 | `receiver_only_geometry_group` | `retro_rt_receiver_only` | primary receiver, traversal mask zero |
 | `startup_timeout_seconds` | `15.0` | bounds the backend-ready handshake |
-| `preview_in_editor` | `true` | see below |
-| `rt_backend` | `AUTO` | read-only after `_ready()` |
+| `ray_tracing_enabled` | `true` | change it on a running manager through `set_ray_tracing_enabled()` |
 | `max_scene_lights` | `256` | |
-| `software_max_lights_per_receiver` | `16` | read-only after `_ready()`, max 32 |
 | `ray_origin_bias` / `ray_max_distance` | `0.001` / `10000.0` | |
 | `profiling_enabled` | `false` | feeds `get_profile_snapshot()` |
 | `rt_quality` | `NATIVE` | |
@@ -216,31 +237,28 @@ Every post-processing setter updates the live stack.
 `RTVisualContract` (Resource) is the authorable form of the shared AA / grade /
 sharpening settings, plus the static viewport-state helpers the stack uses to
 capture, normalize and restore the root Viewport. `RTLightingEffect`
-(CompositorEffect), `RTPostProcessStack` and `RTSoftwareTracer` / `RTSoftwareBVH`
-are owned by the manager and are not meant to be instantiated directly.
+(CompositorEffect) and `RTPostProcessStack` are owned by the manager and are not
+meant to be instantiated directly.
 
 ### Global class names this add-on registers
 
-`RTSceneManager`, `RTLightingEffect`, `RTSoftwareTracer`, `RTSoftwareBVH`,
-`RTPostProcessStack`, `RTVisualContract`. Check these against your project and
-any other add-ons before installing — Godot reports a global class collision as
-an error.
+`RTSceneManager`, `RTLightingEffect`, `RTPostProcessStack`, `RTVisualContract`,
+`RTPaniniCamera3D`. Check these against your project and any other add-ons
+before installing — Godot reports a global class collision as an error.
 
-## Editor preview
+## In the editor
 
-`preview_in_editor` (on by default) previews real ray tracing in the editor
-viewport, always through the software tracer regardless of `rt_backend`: its
-overrides are renderer-only state that restores cleanly, so a half-assembled
-scene degrades to ordinary raster instead of rendering garbage.
+The manager is runtime-only. The editor viewport shows managed materials through
+`BlinnPhong.gdshader`'s standalone branch — ordinary Blinn-Phong with native
+shadows — which is exactly what the raster fallback renders, so what you author
+against is an honest preview of one of the two shipping configurations.
 
-Preview is RT shadows and reflections only. It deliberately does **not** run the
-post stack — `RTPostProcessStack.configure()` sets `disable_3d` on the root
-viewport and presents through a `CanvasLayer`, which in the editor would blank
-the viewport and its gizmos. No grade, no SMAA, no FSR until you press play. The
-runtime remains the authoritative image.
-
-Editor failures never latch: they tear down to plain raster, warn once, and
-retry. Headless editor runs (import, export) install no preview at all.
+There is deliberately no editor RT preview. Hardware RT would have to install a
+`CompositorEffect` on the edited scene's `World3D` scenario and switch managed
+materials into visibility-buffer transport, which renders as garbage the moment
+the compositor is missing — and the post stack cannot run there either, because
+`RTPostProcessStack.configure()` sets `disable_3d` on the root viewport, which in
+the editor blanks the viewport and its gizmos. Press play to see the real image.
 
 ## Anti-aliasing is SMAA, and cannot be MSAA
 
@@ -269,6 +287,6 @@ licensed — see `post_processing/smaa/LICENSE-SMAA.txt`. The shader ports prese
 the reference presets and lookup conventions in Godot shader syntax.
 
 `docs/RT_PIPELINE.md` is the architecture and validation spec: transport,
-resolution domains, colour and exposure, environment baking, the software
-acceleration structure, profiling fields, and the measured parity and frame-time
-results behind the design.
+resolution domains, colour and exposure, environment baking, the raster
+fallback, profiling fields, and the measured parity and frame-time results
+behind the design.

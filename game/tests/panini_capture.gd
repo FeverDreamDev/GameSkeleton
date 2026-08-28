@@ -52,9 +52,13 @@ func _run() -> void:
 	# depends on the host profile.
 	UISave.directory = "res://.godot/panini_capture_saves"
 	_app = APP_SCENE.instantiate() as GameApp
-	if OS.get_cmdline_user_args().has("--force-software"):
-		(_app.get_node("RTSceneManager") as RTSceneManager).rt_backend = (
-			RTSceneManager.RTBackend.SOFTWARE)
+	if OS.get_cmdline_user_args().has("--force-raster"):
+		# The present path is pipeline-independent, so the acceptance sweep is
+		# worth running against the fallback too on a machine that can ray trace.
+		# Set on the shell rather than the manager: GameApp reasserts its session
+		# choice onto the manager before every world's RT start, so anything set
+		# directly on the manager here would be overwritten.
+		_app.set("_rt_enabled", false)
 	add_child(_app)
 	_check(await _wait_for(
 		func() -> bool: return FlowSystem.get_mode() == FlowSystem.Mode.MENU,
@@ -74,10 +78,12 @@ func _run() -> void:
 		await _finish()
 		return
 
-	_check(RenderingServer.get_current_rendering_method() == "gl_compatibility",
-		"the run uses the Compatibility renderer")
-	_check(_app.rt_manager.get_active_rt_backend() == &"software",
-		"the run uses the software RT backend")
+	_check(RenderingServer.get_current_rendering_method() == "forward_plus",
+		"the run uses the Forward+ renderer")
+	var capture_backend := _app.rt_manager.get_active_rt_backend()
+	_check(capture_backend == &"hardware" or capture_backend == &"raster",
+		"the run brings up a pipeline to capture through")
+	print("panini_capture backend: %s" % capture_backend)
 
 	# Exercise every player-facing endpoint in the active renderer, including
 	# a fresh full-perimeter containment contract at each angle.
@@ -109,8 +115,11 @@ func _run() -> void:
 		"Native remains a true EASU bypass upstream of Panini")
 	_check(int(native_profile.get("post_panini_buffer_bytes", 0)) > 0,
 		"Panini reports its persistent native-size buffer bytes")
-	_check(native_profile.get("post_panini_sample_mode", &"invalid") == &"adaptive_1_or_4",
-		"the stack uses the portable one-or-four-tap Panini filter")
+	_check(native_profile.get("post_panini_sample_mode", &"invalid") == &"catmull_rom_or_box",
+		"the stack uses the portable Catmull-Rom or box Panini filter")
+	# Restore what the scene authored rather than hardcoding off, so the rest of
+	# the run keeps presenting the sharpening the application actually ships.
+	var authored_cas: bool = _app.rt_manager.post_cas_enabled
 	_app.rt_manager.post_cas_enabled = true
 	for _frame in 2:
 		await get_tree().process_frame
@@ -118,7 +127,7 @@ func _run() -> void:
 	_check(cas_profile.get("post_sharpen_mode", &"invalid") == &"cas"
 		and bool(cas_profile.get("post_panini_enabled", false)),
 		"CAS remains downstream of Native Panini when enabled")
-	_app.rt_manager.post_cas_enabled = false
+	_app.rt_manager.post_cas_enabled = authored_cas
 
 	for preset: int in [
 		RTSceneManager.RTQualityPreset.QUALITY,
