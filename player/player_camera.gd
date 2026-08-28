@@ -88,7 +88,7 @@ func _ready() -> void:
 		return
 
 	if camera:
-		camera.set_display_horizontal_fov(base_horizontal_fov)
+		_apply_base_horizontal_fov()
 		target_pitch = camera.rotation.x
 
 	target_yaw = player.rotation.y
@@ -128,7 +128,7 @@ func reset_view() -> void:
 
 	if camera:
 		camera.rotation.x = 0.0
-		camera.set_display_horizontal_fov(base_horizontal_fov)
+		_apply_base_horizontal_fov()
 	if bob_pivot:
 		bob_pivot.position = Vector3.ZERO
 	if landing_pivot:
@@ -259,8 +259,27 @@ func set_base_horizontal_fov(value: float, immediate: bool = true) -> void:
 		value,
 		RTPaniniCamera3D.MIN_HORIZONTAL_FOV,
 		RTPaniniCamera3D.MAX_HORIZONTAL_FOV)
+	if camera:
+		# The ceiling follows the session base even when the angle itself eases
+		# in, because the post stack sizes a render target from it and must not
+		# discover the new maximum partway through a sprint.
+		camera.set_max_display_horizontal_fov(_sprint_horizontal_fov_ceiling())
 	if immediate and camera:
 		camera.set_display_horizontal_fov(base_horizontal_fov)
+
+
+## The widest angle a sprint transition can reach from the current session base.
+func _sprint_horizontal_fov_ceiling() -> float:
+	if not dynamic_fov_enabled:
+		return base_horizontal_fov
+	return minf(
+		base_horizontal_fov + SPRINT_HORIZONTAL_FOV_BOOST,
+		RTPaniniCamera3D.MAX_HORIZONTAL_FOV)
+
+
+func _apply_base_horizontal_fov() -> void:
+	camera.set_max_display_horizontal_fov(_sprint_horizontal_fov_ceiling())
+	camera.set_display_horizontal_fov(base_horizontal_fov)
 
 
 ## Returns the angle actually used for rendering, including a partially blended

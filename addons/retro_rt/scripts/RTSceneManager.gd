@@ -207,6 +207,30 @@ const RECEIVER_BOUNDS_MARGIN := 0.0001
 		post_panini_enabled = value
 		_update_post_settings()
 
+## How much 3D capture resolution the Panini pass is given, expressed as the
+## source texels it reads per output pixel at screen center.
+##
+## The projection's capture camera is always wider than the display FOV, so the
+## screen center is a magnification of whatever the capture rendered. At 1.0 that
+## magnification is gone entirely and the center is reconstructed one texel per
+## pixel; lower values trade center sharpness for 3D cost. The relationship is
+## quadratic -- the capture spends roughly `4.8 * value^2` times the output pixel
+## count at a 130-degree display FOV, and `7.6 * value^2` at 140 -- so this is
+## the single most expensive visual control in the stack.
+##
+## Only the 3D capture and its resolve scale. Presentation, the projection
+## target and the UI stay at native output resolution at every value.
+@export_range(0.25, 1.0, 0.01) var post_panini_capture_sharpness: float = (
+		RTPostProcessStack.PANINI_DEFAULT_CAPTURE_SHARPNESS):
+	set(value):
+		if not is_finite(value):
+			return
+		post_panini_capture_sharpness = clampf(
+			value,
+			RTPostProcessStack.PANINI_MIN_CAPTURE_SHARPNESS,
+			RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS)
+		_update_post_settings()
+
 @export var retro_post_enabled: bool = true:
 	set(value):
 		retro_post_enabled = value
@@ -1840,8 +1864,15 @@ func get_scene_viewport() -> SubViewport:
 	return null
 
 
-## Every pass renders at the output size; nothing in the stack scales resolution.
+## What the 3D passes actually render at. Presentation is always the output size,
+## but the Panini projection sizes the private capture for its own sampling
+## requirement, and ray tracing dispatches over that capture rather than over the
+## presented image. Falls back to the output size with no stack or no projection.
 func get_ray_render_resolution() -> Vector2i:
+	if _post_stack != null and _post_stack.has_method("get_capture_size"):
+		var capture: Vector2i = _post_stack.call("get_capture_size")
+		if capture.x > 0 and capture.y > 0:
+			return capture
 	return get_full_render_resolution()
 
 
@@ -3889,12 +3920,21 @@ func get_profile_snapshot() -> Dictionary:
 		int(result.get("ray_tracing_width", 0)),
 		int(result.get("ray_tracing_height", 0)))
 	var backend_dispatch_pixels := int(result.get("ray_tracing_dispatch_pixels", 0))
+	# Presentation resolution and 3D render resolution are no longer the same
+	# number: the Panini projection sizes the capture for its own sampling
+	# requirement, and every 3D pass including the ray dispatch follows it. These
+	# used to be assigned from the output on the assumption that nothing scaled,
+	# which would now understate the real dispatch by the capture ratio.
+	var capture_resolution := output_resolution
+	var post_capture: Variant = result.get("post_capture_size")
+	if post_capture is Vector2i and post_capture.x > 0 and post_capture.y > 0:
+		capture_resolution = post_capture
 	result["output_resolution"] = output_resolution
-	result["render_resolution"] = output_resolution
+	result["render_resolution"] = capture_resolution
 	result["full_render_resolution"] = output_resolution
-	result["ray_tracing_full_resolution"] = output_resolution
-	result["ray_tracing_resolution"] = output_resolution
-	result["ray_tracing_dispatched_pixels"] = output_resolution.x * output_resolution.y
+	result["ray_tracing_full_resolution"] = capture_resolution
+	result["ray_tracing_resolution"] = capture_resolution
+	result["ray_tracing_dispatched_pixels"] = capture_resolution.x * capture_resolution.y
 	result["ray_tracing_backend_dispatch_size"] = backend_dispatch_size
 	result["ray_tracing_backend_dispatch_pixels"] = backend_dispatch_pixels
 	return result
@@ -4041,6 +4081,7 @@ func _update_post_settings() -> void:
 func _get_post_settings() -> Dictionary:
 	return {
 		"post_panini_enabled": post_panini_enabled,
+		"post_panini_capture_sharpness": post_panini_capture_sharpness,
 		"recover_opaque_coverage_from_rgb": _active_backend == RTBackend.HARDWARE,
 		"scene_capture_opaque": _active_backend == RTBackend.RASTER,
 		"enabled": retro_post_enabled,

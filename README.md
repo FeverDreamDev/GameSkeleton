@@ -66,11 +66,16 @@ evidence are recorded in
   the fallback the manager pushes the fog to managed materials itself, since no compositor
   is there to apply it. Terrain vertex colours are authored in scene-linear and target the
   grass canopy so the ground stays invisible under grass.
-- Every pass runs at the native output size; there is no resolution scaling and, as of
-  2026-08-28, no anti-aliasing — the custom SMAA 1x, FSR 1 and CAS were removed and a
-  replacement has yet to be chosen. The FPS camera applies a classic Panini projection
-  before RetroGrade; the reticle and Win98 UI remain native-resolution layers above
-  presentation. The full order is `3D + RT -> scene resolve (environment + fog) ->
+- Presentation runs at the native output size, and there is no upscaling: no
+  reconstruction, no history, nothing temporal. As of 2026-08-28 there is also no
+  anti-aliasing — the custom SMAA 1x, FSR 1 and CAS were removed and a replacement has
+  yet to be chosen. The FPS camera applies a classic Panini projection before RetroGrade;
+  the reticle and Win98 UI remain native-resolution layers above presentation. Because
+  that projection magnifies the screen center, the 3D capture behind it is rendered
+  above native and sized for the projection's own sampling requirement —
+  `RTSceneManager.post_panini_capture_sharpness` is that control, and it is the most
+  expensive visual setting in the project. It is also, incidentally, the only thing
+  currently reducing geometric aliasing. The full order is `3D + RT -> scene resolve (environment + fog) ->
   Panini -> RetroGrade -> HUD/UI`. Only the FPS camera opts in, so cutscene and
   utility cameras bypass it. Shifted camera offsets also bypass the symmetric Panini mapping.
 - **Graphics** in the main and pause menus leads with **RT shadows & mirrors**, a single
@@ -153,9 +158,13 @@ otherwise select hardware RT, so the two pipelines can be measured against each
 other on one machine. `PERF_PROFILE=1` adds the RT manager's main-thread cost
 and its snapshot counters.
 
-`PERF_FOV=120|130|140` selects the FPS camera's horizontal display FOV.
-With profiling enabled, `post_pass_gpu_ms.panini` isolates the projection target and
-`post_panini_buffer_bytes` reports its persistent native-size color buffer.
+`PERF_FOV=120|130|140` selects the FPS camera's horizontal display FOV, and
+`PERF_PANINI_SHARPNESS=f` sets the projection's capture sharpness — the source texels it
+reads per output pixel at screen center, where 1.0 removes the center magnification
+entirely. Cost is quadratic in it; `post_capture_pixel_ratio` reports what the capture
+actually spends. With profiling enabled, `post_pass_gpu_ms.panini` isolates the
+projection target and `post_panini_buffer_bytes` reports its persistent output-size
+color buffer.
 
 `PERF_CARRIER=0` is an attribution toggle only. It hides the hardware material-ID
 carrier, deliberately makes managed pixels lose RT lighting, and prints a warning;

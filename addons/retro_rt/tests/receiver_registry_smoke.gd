@@ -230,8 +230,8 @@ func _run() -> void:
 			> float(after.get("post_panini_display_horizontal_fov", 180.0)),
 			"Panini reports the conservative horizontal capture overscan")
 		_check(after.get("post_panini_sample_mode", &"invalid")
-			== &"catmull_rom_or_box",
-			"Panini reports its Catmull-Rom or box adaptive sampling contract")
+			== &"catmull_rom_or_tent",
+			"Panini reports its Catmull-Rom or tent adaptive sampling contract")
 		_check(after.get("post_present_source", &"invalid") == &"panini",
 			"presentation reads the projected native-output target")
 		_check(after.get("post_panini_viewport_size", Vector2i.ZERO)

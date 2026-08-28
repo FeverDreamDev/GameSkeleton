@@ -29,6 +29,22 @@ const MAX_HORIZONTAL_FOV: float = 140.0
 			value, MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV)
 		_apply_projection_contract()
 
+## The widest horizontal display FOV this camera will ever request.
+##
+## The post stack sizes its private 3D capture from this ceiling rather than
+## from the live angle, because that capture is a render target: resizing it
+## costs a reallocation, and [member display_horizontal_fov] moves every frame
+## while a sprint transition eases. A ceiling below the live angle stays correct
+## -- the capture frustum still widens to contain the projection -- and only
+## costs some of the sharpness the capture was sized to deliver.
+@export_range(120.0, 140.0, 0.1, "degrees") var max_display_horizontal_fov: float = (
+		MAX_HORIZONTAL_FOV):
+	set(value):
+		if not is_finite(value):
+			return
+		max_display_horizontal_fov = clampf(
+			value, MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV)
+
 
 func _init() -> void:
 	_apply_projection_contract()
@@ -42,6 +58,10 @@ func _ready() -> void:
 
 func set_display_horizontal_fov(value: float) -> void:
 	display_horizontal_fov = value
+
+
+func set_max_display_horizontal_fov(value: float) -> void:
+	max_display_horizontal_fov = value
 
 
 func _apply_projection_contract() -> void:

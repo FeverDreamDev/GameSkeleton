@@ -8,6 +8,16 @@ const VIEWPORT_OWNER_META := &"__rt_post_process_owner"
 const PANINI_DISTANCE := 1.0
 const PANINI_MIN_HORIZONTAL_FOV := 1.0
 const PANINI_MAX_HORIZONTAL_FOV := 175.0
+## Center sampling ratio the Panini capture is sized for: source texels per
+## output pixel along the horizontal axis at screen center, where 1.0 means the
+## projection magnifies nothing at all. See [method panini_capture_size].
+const PANINI_MIN_CAPTURE_SHARPNESS := 0.25
+const PANINI_MAX_CAPTURE_SHARPNESS := 1.0
+const PANINI_DEFAULT_CAPTURE_SHARPNESS := 0.5
+## Hard per-axis ceiling on the capture. Sharpness already bounds the request;
+## this only keeps a pathological output size from asking for a target no driver
+## will allocate.
+const PANINI_MAX_CAPTURE_AXIS := 8192
 
 var _owner: Node
 var _root_viewport: Viewport
@@ -32,6 +42,10 @@ var _present_material: ShaderMaterial
 var _final_layer: CanvasLayer
 var _final_rect: ColorRect
 var _output_size := Vector2i.ZERO
+## Size of the 3D capture and its resolve. Equal to the output size unless the
+## Panini pass is active, in which case it is sized for that projection.
+var _capture_size := Vector2i.ZERO
+var _capture_resize_count := 0
 var _source_camera_instance_id := 0
 var _settings: Dictionary = {}
 var _active := false
@@ -64,12 +78,14 @@ var _panini_source_uv_max := Vector2.ONE
 var _panini_perimeter_samples := 0
 var _panini_invalid_samples := 0
 var _panini_contract_output_size := Vector2i.ZERO
+var _panini_contract_capture_size := Vector2i.ZERO
 var _panini_contract_display_fov := 0.0
-var _panini_cached_perimeter_size := Vector2i.ZERO
-var _panini_cached_perimeter := PackedVector2Array()
+var _panini_capture_sharpness := PANINI_DEFAULT_CAPTURE_SHARPNESS
+var _panini_capture_ceiling_fov := 0.0
 var _panini_property_camera_instance_id := 0
 var _panini_camera_has_enabled_property := false
 var _panini_camera_has_display_fov_property := false
+var _panini_camera_has_max_display_fov_property := false
 
 
 func _reservation_is_current() -> bool:
@@ -181,7 +197,6 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	# captures opaque and lets the viewport draw its own sky; coverage then reads
 	# 1 everywhere and the present composites nothing behind it.
 	_scene_viewport.transparent_bg = not bool(_settings.get("scene_capture_opaque", false))
-	_scene_viewport.use_hdr_2d = true
 	_scene_viewport.world_3d = _root_viewport.world_3d
 	_container.add_child(_scene_viewport)
 	RenderingServer.viewport_set_disable_2d(_scene_viewport.get_viewport_rid(), true)
@@ -233,6 +248,18 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_final_layer.add_child(_final_rect)
 	_container.add_child(_final_layer)
 
+	# Every owned target stores scene-linear radiance between passes; the resolve
+	# shader decodes coverage on that assumption and has no sRGB fallback branch.
+	# Forward+ honors this, so a refusal is a broken platform assumption rather
+	# than a supported configuration, and it fails here instead of silently
+	# shifting every colour in the frame.
+	for target: SubViewport in [_scene_viewport, _resolve_viewport, _panini_viewport]:
+		if not target.use_hdr_2d:
+			shutdown()
+			return (
+				"The platform did not honor HDR 2D on the '%s' scene-radiance target."
+				% target.name)
+
 	_active = true
 	_resize(size)
 	update(settings)
@@ -269,7 +296,6 @@ func update(settings: Dictionary) -> void:
 	var environment_mode := int(environment.get("mode", 0))
 	var fallback: Color = environment.get("fallback_linear", Color.BLACK)
 	var inverse_basis: Basis = environment.get("inverse_sky_basis", Basis.IDENTITY)
-	var scene_input_linear := _scene_viewport.use_hdr_2d
 	var recover_opaque_coverage := (
 		bool(settings.get("recover_opaque_coverage_from_rgb", false)))
 	var panorama: Texture2D
@@ -278,7 +304,6 @@ func update(settings: Dictionary) -> void:
 	# Resolve is the only pass that reads SceneCapture, so it is the only one
 	# that reconstructs the environment and decodes coverage. Panini and present
 	# consume an already-composited image.
-	_resolve_material.set_shader_parameter(&"scene_input_is_linear", scene_input_linear)
 	_resolve_material.set_shader_parameter(
 		&"recover_opaque_coverage_from_rgb", recover_opaque_coverage)
 	_resolve_material.set_shader_parameter(&"environment_mode", environment_mode)
@@ -392,26 +417,29 @@ func shutdown() -> void:
 	_panini_perimeter_samples = 0
 	_panini_invalid_samples = 0
 	_panini_contract_output_size = Vector2i.ZERO
+	_panini_contract_capture_size = Vector2i.ZERO
 	_panini_contract_display_fov = 0.0
-	_panini_cached_perimeter_size = Vector2i.ZERO
-	_panini_cached_perimeter = PackedVector2Array()
+	_panini_capture_ceiling_fov = 0.0
+	_capture_size = Vector2i.ZERO
+	_capture_resize_count = 0
 	_panini_property_camera_instance_id = 0
 	_panini_camera_has_enabled_property = false
 	_panini_camera_has_display_fov_property = false
+	_panini_camera_has_max_display_fov_property = false
 
 
 func get_profile_snapshot() -> Dictionary:
 	var data_hdr_requested := _resolve_viewport != null and _resolve_viewport.use_hdr_2d
 	var data_rgba := _resolve_viewport != null and _resolve_viewport.transparent_bg
-	# Two owned native-size color targets (scene capture, resolve) plus the
-	# persistent native-size Panini target. Forward+ honors use_hdr_2d, so every
+	# Two owned capture-size color targets (scene capture, resolve) plus the
+	# persistent output-size Panini target. Forward+ honors use_hdr_2d, so every
 	# one of them is RGBA16F.
 	var bytes_per_target_pixel := 8
 	var panini_buffer_bytes := (
 		_output_size.x * _output_size.y * bytes_per_target_pixel
 		if _panini_viewport != null else 0)
 	var persistent_bytes := (
-		_output_size.x * _output_size.y * bytes_per_target_pixel * 2)
+		_capture_size.x * _capture_size.y * bytes_per_target_pixel * 2)
 	persistent_bytes += panini_buffer_bytes
 	var pass_timings := _measured_pass_timings()
 	return {
@@ -427,11 +455,18 @@ func get_profile_snapshot() -> Dictionary:
 		"post_environment_composite": true,
 		"post_recovers_hardware_opaque_coverage": (
 			bool(_settings.get("recover_opaque_coverage_from_rgb", false))),
-		# Every stage is root-native; nothing in the stack scales resolution.
+		# Presentation is always root-native. The 3D capture and its resolve are
+		# the only stages that leave that domain, and only to give the Panini
+		# projection the source density it samples at.
 		"post_native_size": _output_size,
 		"post_output_size": _output_size,
-		"post_render_size": _output_size,
-		"post_rendered_pixels": _output_size.x * _output_size.y,
+		"post_render_size": _capture_size,
+		"post_rendered_pixels": _capture_size.x * _capture_size.y,
+		"post_capture_size": _capture_size,
+		"post_capture_pixel_ratio": (
+			float(_capture_size.x * _capture_size.y)
+			/ maxf(float(_output_size.x * _output_size.y), 1.0)),
+		"post_capture_resize_count": _capture_resize_count,
 		"post_final_presentation_size": (
 			Vector2i(_final_rect.size) if _final_rect != null else Vector2i.ZERO),
 		"post_internal_camera_active": (
@@ -474,15 +509,18 @@ func get_profile_snapshot() -> Dictionary:
 		"post_panini_enabled": _panini_active,
 		"post_panini_bypass_reason": _panini_bypass_reason,
 		"post_panini_projection": &"classic_d1_s0",
-		"post_panini_sample_mode": &"catmull_rom_or_box",
-		"post_panini_sample_taps_min": 4,
-		"post_panini_sample_taps_max": 6,
+		"post_panini_sample_mode": &"catmull_rom_or_tent",
+		"post_panini_sample_taps_min": 6,
+		"post_panini_sample_taps_max": 9,
 		"post_panini_output_domain": &"native",
 		"post_panini_target_persistent": _panini_viewport != null,
 		"post_panini_buffer_bytes": panini_buffer_bytes,
 		"post_panini_viewport_size": (
 			_panini_viewport.size if _panini_viewport != null else Vector2i.ZERO),
-		"post_panini_source_size": _output_size,
+		"post_panini_source_size": _capture_size,
+		"post_panini_capture_sharpness": _panini_capture_sharpness,
+		"post_panini_capture_ceiling_fov": _panini_capture_ceiling_fov,
+		"post_panini_center_texels_per_pixel": _panini_center_sampling_ratio(),
 		"post_panini_source_stage": &"scene_resolve",
 		"post_panini_display_horizontal_fov": _panini_display_horizontal_fov,
 		"post_panini_capture_horizontal_fov": _panini_capture_horizontal_fov,
@@ -583,6 +621,13 @@ func get_scene_viewport() -> SubViewport:
 	return _scene_viewport
 
 
+## Size of the 3D capture, which is what every 3D pass -- raster and ray tracing
+## alike -- actually renders at. Equal to the output size unless the Panini pass
+## is active and has sized it for its own sampling requirement.
+func get_capture_size() -> Vector2i:
+	return _capture_size
+
+
 func get_debug_contract_snapshot() -> Dictionary:
 	# Validation-only seam for confirming that presentation and every source
 	# texture stay in their intended pixel domains after a resize.
@@ -615,9 +660,9 @@ func get_debug_contract_snapshot() -> Dictionary:
 		"panini_source_uv_max": _panini_source_uv_max,
 		"panini_perimeter_samples": _panini_perimeter_samples,
 		"panini_invalid_samples": _panini_invalid_samples,
-		"panini_sample_mode": &"catmull_rom_or_box",
-		"panini_sample_taps_min": 4,
-		"panini_sample_taps_max": 6,
+		"panini_sample_mode": &"catmull_rom_or_tent",
+		"panini_sample_taps_min": 6,
+		"panini_sample_taps_max": 9,
 		"panini_bounds_valid": _panini_bounds_valid(),
 		"internal_camera_current": (
 			_internal_camera != null and _internal_camera.is_current()),
@@ -638,7 +683,9 @@ func _make_viewport(viewport_name: String, size: Vector2i) -> SubViewport:
 	viewport.name = viewport_name
 	viewport.transparent_bg = false
 	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
-	RTVisualContract.apply_native_viewport_state(viewport, size)
+	# Every target the stack owns carries scene radiance between passes, so all of
+	# them are RGBA16F. Only the root presentation target stays LDR.
+	RTVisualContract.apply_native_viewport_state(viewport, size, true)
 	return viewport
 
 
@@ -654,10 +701,7 @@ func _make_canvas_pass(pass_name: String, size: Vector2i, material: Material) ->
 	# The scene capture keeps its clear: it is a real 3D render into a transparent
 	# target, where uncovered pixels are the point.
 	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_NEVER
-	# Canvas passes carry scene radiance, so they stay RGBA16F rather than being
-	# quantized to 8 bits partway through the chain.
 	viewport.transparent_bg = true
-	viewport.use_hdr_2d = true
 	var rect := ColorRect.new()
 	_record_explicit_allocation()
 	rect.name = "Pass"
@@ -677,32 +721,48 @@ func _record_explicit_allocation() -> void:
 func _resize(output_size: Vector2i) -> void:
 	var resize_started := Time.get_ticks_usec()
 	_output_size = output_size
-	for viewport in [_scene_viewport, _resolve_viewport]:
-		RTVisualContract.apply_native_viewport_state(viewport, _output_size)
-	# Root/final presentation is deliberately LDR, but the intermediate targets
-	# carry scene radiance and use HDR 2D.
-	_scene_viewport.use_hdr_2d = true
-	_resolve_viewport.use_hdr_2d = true
-	RTVisualContract.apply_native_viewport_state(_panini_viewport, _output_size)
-	_panini_viewport.use_hdr_2d = true
+	RTVisualContract.apply_native_viewport_state(
+		_panini_viewport, _output_size, true)
 	_panini_viewport.render_target_update_mode = (
 		SubViewport.UPDATE_ALWAYS if _panini_active else SubViewport.UPDATE_DISABLED)
-	# Describes the resolve source texel domain. The present pass deliberately
-	# has no such uniform: its source is always 1:1 with the rect it covers.
-	_resolve_material.set_shader_parameter(&"viewport_size", Vector2(_output_size))
-	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
+	# While bypassed the capture is the output. While active, _resolve_panini_state()
+	# re-derives it for the new output on this same frame, so leaving it alone here
+	# avoids shrinking and regrowing a large target inside one resize.
+	if not _panini_active:
+		_apply_capture_size(_output_size)
 	_apply_present_source()
 	_resize_last_usec = Time.get_ticks_usec() - resize_started
 	_resize_peak_usec = maxi(_resize_peak_usec, _resize_last_usec)
 	_resize_count += 1
 
 
+## Sizes the 3D capture and its resolve. Every other stage stays at the output
+## size; only these two follow the projection's sampling requirement.
+func _apply_capture_size(capture_size: Vector2i) -> void:
+	var next := Vector2i(maxi(capture_size.x, 1), maxi(capture_size.y, 1))
+	if next == _capture_size:
+		return
+	_capture_size = next
+	# Root/final presentation is deliberately LDR, but these carry scene radiance.
+	RTVisualContract.apply_native_viewport_state(_scene_viewport, _capture_size, true)
+	RTVisualContract.apply_native_viewport_state(_resolve_viewport, _capture_size, true)
+	# Describes the resolve source texel domain, and the Panini source domain.
+	# The present pass deliberately has no such uniform: its source is always 1:1
+	# with the rect it covers.
+	_resolve_material.set_shader_parameter(&"viewport_size", Vector2(_capture_size))
+	_panini_material.set_shader_parameter(&"source_size", Vector2(_capture_size))
+	# The corner rays are screen points in the capture, not the output.
+	_apply_camera_rays()
+	_capture_resize_count += 1
+
+
 func _apply_present_source() -> void:
-	# Resolve is always native-size and perceptual. Bypass binds it straight to
-	# present; the active path inserts the persistent native-size projection.
+	# Resolve is 1:1 with the capture and perceptual. Panini resamples it to the
+	# output size; bypass binds it straight to present, which is only correct
+	# because a bypassed capture is the output size.
 	var pre_panini_source: Texture2D = _resolve_viewport.get_texture()
 	_panini_material.set_shader_parameter(&"source_texture", pre_panini_source)
-	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
+	_panini_material.set_shader_parameter(&"source_size", Vector2(_capture_size))
 	var present_source: Texture2D = (
 		_panini_viewport.get_texture() if _panini_active
 		else pre_panini_source)
@@ -741,8 +801,17 @@ func _sync_camera() -> void:
 	if not _internal_camera.is_current():
 		_internal_camera.make_current()
 
-	var width := float(maxi(_output_size.x, 1))
-	var height := float(maxi(_output_size.y, 1))
+	_apply_camera_rays()
+
+
+## Frustum corner rays for the resolve pass's environment reconstruction.
+## Camera3D.project_position() interprets its argument in the camera's own
+## viewport, which is the capture -- not the output the projection presents to.
+func _apply_camera_rays() -> void:
+	if _internal_camera == null or _resolve_material == null:
+		return
+	var width := float(maxi(_capture_size.x, 1))
+	var height := float(maxi(_capture_size.y, 1))
 	_resolve_material.set_shader_parameter(
 		&"camera_ray_top_left", _camera_ray(_internal_camera, Vector2.ZERO))
 	_resolve_material.set_shader_parameter(
@@ -755,6 +824,13 @@ func _sync_camera() -> void:
 
 func _resolve_panini_state(source_camera: Camera3D) -> void:
 	_panini_requested = bool(_settings.get("post_panini_enabled", false))
+	var requested_sharpness := float(_settings.get(
+		"post_panini_capture_sharpness", PANINI_DEFAULT_CAPTURE_SHARPNESS))
+	_panini_capture_sharpness = clampf(
+		requested_sharpness if is_finite(requested_sharpness)
+		else PANINI_DEFAULT_CAPTURE_SHARPNESS,
+		PANINI_MIN_CAPTURE_SHARPNESS,
+		PANINI_MAX_CAPTURE_SHARPNESS)
 	_cache_panini_camera_properties(source_camera)
 	_panini_camera_capable = (
 		source_camera != null
@@ -817,8 +893,32 @@ func _resolve_panini_state(source_camera: Camera3D) -> void:
 		_set_panini_active(false)
 		return
 
+	# Size the capture from the widest angle this camera can request, not from
+	# the live one. The live angle moves every frame while a sprint transition
+	# eases, and the capture is a render target: following it would reallocate
+	# mid-motion. A capture sized for the ceiling contains every narrower FOV,
+	# so the only cost of the difference is sharpness the capture already paid
+	# for. Sizing on the ceiling also keeps this decision free of the contract
+	# below, which is what stops an invalid contract from oscillating the
+	# capture between two sizes on alternating frames.
+	_panini_capture_ceiling_fov = _read_panini_capture_ceiling(source_camera)
+	# A camera that declares no ceiling keeps the plain output-sized capture. The
+	# alternative -- sizing from the live angle -- is the reallocation this whole
+	# mechanism exists to avoid, so the sharper capture stays a declared
+	# capability rather than something inferred frame to frame.
+	var desired_capture := _output_size
+	if _panini_capture_ceiling_fov > 0.0:
+		var projected := panini_capture_size(
+			_output_size, _panini_capture_ceiling_fov, _panini_capture_sharpness)
+		if projected.x > 0 and projected.y > 0:
+			desired_capture = projected
+	if desired_capture != _capture_size:
+		_apply_capture_size(desired_capture)
+		_apply_present_source()
+
 	if (
 		_panini_contract_output_size != _output_size
+		or _panini_contract_capture_size != _capture_size
 		or not is_equal_approx(_panini_contract_display_fov, display_fov)
 	):
 		_apply_panini_capture_contract(display_fov)
@@ -844,6 +944,7 @@ func _cache_panini_camera_properties(camera: Camera3D) -> void:
 	_panini_property_camera_instance_id = instance_id
 	_panini_camera_has_enabled_property = false
 	_panini_camera_has_display_fov_property = false
+	_panini_camera_has_max_display_fov_property = false
 	if camera == null:
 		return
 	for property: Dictionary in camera.get_property_list():
@@ -852,6 +953,27 @@ func _cache_panini_camera_properties(camera: Camera3D) -> void:
 			_panini_camera_has_enabled_property = true
 		elif property_name == &"display_horizontal_fov":
 			_panini_camera_has_display_fov_property = true
+		elif property_name == &"max_display_horizontal_fov":
+			_panini_camera_has_max_display_fov_property = true
+
+
+## The widest display FOV the source camera declares it will ever request, or 0
+## when it declares none. Optional capability: a camera without it presents
+## through an output-sized capture exactly as before.
+func _read_panini_capture_ceiling(camera: Camera3D) -> float:
+	if camera == null or not _panini_camera_has_max_display_fov_property:
+		return 0.0
+	var value: Variant = camera.get(&"max_display_horizontal_fov")
+	if not (value is float or value is int):
+		return 0.0
+	var ceiling := float(value)
+	if (
+		not is_finite(ceiling)
+		or ceiling < PANINI_MIN_HORIZONTAL_FOV
+		or ceiling > PANINI_MAX_HORIZONTAL_FOV
+	):
+		return 0.0
+	return ceiling
 
 
 func _set_panini_active(enabled: bool) -> void:
@@ -861,22 +983,25 @@ func _set_panini_active(enabled: bool) -> void:
 	if _panini_viewport != null:
 		_panini_viewport.render_target_update_mode = (
 			SubViewport.UPDATE_ALWAYS if enabled else SubViewport.UPDATE_DISABLED)
+	# A bypassed frame presents the resolve target 1:1, so the capture has to
+	# return to the output size with the pass. Every bypass reason funnels
+	# through here, which is what keeps the projected capture from outliving the
+	# projection and stretching the image across a camera change.
+	if not enabled and _scene_viewport != null:
+		_apply_capture_size(_output_size)
 	if _panini_material != null and _present_material != null:
 		_apply_present_source()
 
 
 func _apply_panini_capture_contract(display_horizontal_fov: float) -> void:
-	# Border coordinates depend only on the native output dimensions. Cache the
-	# complete scan perimeter so a smoothed sprint transition recomputes the
-	# nonlinear mapping without allocating thousands of points every frame.
-	if _panini_cached_perimeter_size != _output_size:
-		_panini_cached_perimeter_size = _output_size
-		_panini_cached_perimeter = _panini_perimeter_points(_output_size)
-	var contract := _debug_panini_capture_contract_with_perimeter(
-		display_horizontal_fov,
-		_output_size,
-		_panini_cached_perimeter)
+	# The bounds themselves are closed-form. The perimeter is only the diagnostic
+	# dataset behind invalid_samples, and that path cannot be reached from a
+	# contract whose capture was derived from these same bounds, so it is built
+	# on demand rather than cached across frames.
+	var contract := debug_panini_capture_contract(
+		display_horizontal_fov, _output_size, _capture_size)
 	_panini_contract_output_size = _output_size
+	_panini_contract_capture_size = _capture_size
 	_panini_contract_display_fov = display_horizontal_fov
 	_panini_display_horizontal_fov = display_horizontal_fov
 	_panini_capture_horizontal_fov = float(contract.get("capture_horizontal_fov", 0.0))
@@ -898,36 +1023,138 @@ func _apply_panini_capture_contract(display_horizontal_fov: float) -> void:
 	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
 
 
-## Validation seam for the CPU half of the projection contract. Runtime calls it
-## only after FOV or either size domain changes; tests can exercise aspect/FOV
-## boundaries without constructing a renderer or reading back a framebuffer.
-static func debug_panini_capture_contract(
+## Rectilinear half-tangents the projection must be able to read for this output
+## and FOV, already inset by the half-texel margin. Both extrema are analytic;
+## see the derivation in [method _panini_capture_contract].
+## Returns a zero vector for an unsupported FOV or an empty output.
+static func panini_required_tangents(
 		display_horizontal_fov: float,
-		output_size: Vector2i) -> Dictionary:
-	return _debug_panini_capture_contract_with_perimeter(
-		display_horizontal_fov,
-		output_size,
-		_panini_perimeter_points(output_size))
-
-
-static func _debug_panini_capture_contract_with_perimeter(
-		display_horizontal_fov: float,
-		output_size: Vector2i,
-		perimeter: PackedVector2Array) -> Dictionary:
+		output_size: Vector2i) -> Vector2:
 	if (
 		output_size.x < 1
 		or output_size.y < 1
-		or perimeter.is_empty()
+		or not is_finite(display_horizontal_fov)
+		or display_horizontal_fov < PANINI_MIN_HORIZONTAL_FOV
+		or display_horizontal_fov > PANINI_MAX_HORIZONTAL_FOV
+	):
+		return Vector2.ZERO
+	var half_horizontal := deg_to_rad(display_horizontal_fov) * 0.5
+	var output_aspect := float(output_size.x) / float(output_size.y)
+	var corner := _panini_inverse_rectilinear(
+		Vector2.ONE,
+		panini_extent_x(display_horizontal_fov),
+		tan(half_horizontal) / output_aspect)
+	if not is_finite(corner.x) or not is_finite(corner.y):
+		return Vector2.ZERO
+	# Keep the mapped perimeter at least half a source texel inside the capture.
+	# The margin uses the output size rather than the capture size: a capture is
+	# never smaller than the output, so its own half-texel inset is narrower and
+	# this stays the conservative choice at any capture resolution.
+	return Vector2(
+		absf(corner.x) / maxf(1.0 - 1.0 / float(maxi(output_size.x, 2)), 0.5),
+		absf(corner.y) / maxf(1.0 - 1.0 / float(maxi(output_size.y, 2)), 0.5))
+
+
+## Horizontal Panini-plane extent reached by a display FOV. With D=1 this is
+## 2*tan(fov/4), the closed form the shader inverts.
+static func panini_extent_x(display_horizontal_fov: float) -> float:
+	var half_horizontal := deg_to_rad(display_horizontal_fov) * 0.5
+	return (
+		(PANINI_DISTANCE + 1.0) * sin(half_horizontal)
+		/ (PANINI_DISTANCE + cos(half_horizontal)))
+
+
+## Size of the private 3D capture, given the widest display FOV the source
+## camera can request and a target center sharpness.
+##
+## Two independent decisions live here.
+##
+## The aspect is the ratio of the two required half-tangents, which is the
+## sharpness optimum rather than a convenience. Capture width is proportional to
+## sqrt(aspect) at a fixed pixel count while the horizontal capture tangent is
+## flat until the aspect passes that ratio and grows linearly after it, so the
+## horizontal center ratio peaks exactly there. It is also the only aspect that
+## wastes no frustum: an output-aspect capture at 130 degrees renders 41 percent
+## of its width outside anything the projection can sample.
+##
+## The scale is then chosen so the horizontal center ratio equals `sharpness`
+## exactly, because with that aspect the ratio reduces to the linear scale
+## itself. Sharpness 1.0 therefore means the screen center is reconstructed one
+## source texel per output pixel and the projection magnifies nothing at all.
+## The vertical axis lands above the horizontal by a factor that depends only on
+## the projection and the output aspect -- about 1.68x on 16:9 -- and cannot be
+## traded away while pixels stay square.
+##
+## Returns [code]Vector2i.ZERO[/code] when the ceiling FOV has no valid capture,
+## which is the caller's signal to present rectilinear at the output size.
+static func panini_capture_size(
+		output_size: Vector2i,
+		ceiling_horizontal_fov: float,
+		sharpness: float) -> Vector2i:
+	var required := panini_required_tangents(ceiling_horizontal_fov, output_size)
+	var extent_x := panini_extent_x(ceiling_horizontal_fov)
+	if (
+		required.x <= 0.0
+		or required.y <= 0.0
+		or not is_finite(extent_x)
+		or extent_x <= 0.0
+	):
+		return Vector2i.ZERO
+	var clamped_sharpness := clampf(
+		sharpness if is_finite(sharpness) else PANINI_DEFAULT_CAPTURE_SHARPNESS,
+		PANINI_MIN_CAPTURE_SHARPNESS,
+		PANINI_MAX_CAPTURE_SHARPNESS)
+	# The aspect is the contract here, not the individual dimensions: a capture
+	# whose aspect drifts off this ratio pays for width the projection cannot
+	# sample. Clamp the driving axis, then derive the other from the clamped
+	# value so the ratio survives both limits.
+	var aspect := required.x / required.y
+	var width := float(output_size.x) * (required.x / extent_x) * clamped_sharpness
+	width = clampf(width, 2.0, float(PANINI_MAX_CAPTURE_AXIS))
+	if width / aspect > float(PANINI_MAX_CAPTURE_AXIS):
+		width = float(PANINI_MAX_CAPTURE_AXIS) * aspect
+	return Vector2i(
+		maxi(roundi(width), 2),
+		maxi(roundi(width / aspect), 2))
+
+
+## Validation seam for the CPU half of the projection contract. Runtime calls it
+## only after the FOV or either size domain changes; tests can exercise
+## aspect/FOV boundaries without constructing a renderer or reading back a
+## framebuffer. Passing the output size as the capture size describes the
+## unscaled 1:1 capture.
+static func debug_panini_capture_contract(
+		display_horizontal_fov: float,
+		output_size: Vector2i,
+		capture_size: Vector2i = Vector2i.ZERO) -> Dictionary:
+	var capture := capture_size if capture_size.x > 0 and capture_size.y > 0 else output_size
+	if (
+		output_size.x < 1
+		or output_size.y < 1
+		or capture.x < 1
+		or capture.y < 1
 		or not is_finite(display_horizontal_fov)
 		or display_horizontal_fov < PANINI_MIN_HORIZONTAL_FOV
 		or display_horizontal_fov > PANINI_MAX_HORIZONTAL_FOV
 	):
 		return {"valid": false}
+	# _panini_perimeter_points() emits every border texel center plus the four
+	# logical corners, which is exactly this count for any output of at least one
+	# texel per axis. Reporting it arithmetically is what lets the points
+	# themselves stay unbuilt on the ordinary path.
+	var perimeter_samples := 2 * output_size.x + 2 * output_size.y
+	return _panini_capture_contract(
+		display_horizontal_fov, output_size, capture, perimeter_samples)
+
+
+static func _panini_capture_contract(
+		display_horizontal_fov: float,
+		output_size: Vector2i,
+		capture_size: Vector2i,
+		perimeter_samples: int) -> Dictionary:
 
 	var half_horizontal := deg_to_rad(display_horizontal_fov) * 0.5
-	var panini_extent_x := (
-		(PANINI_DISTANCE + 1.0) * sin(half_horizontal)
-		/ (PANINI_DISTANCE + cos(half_horizontal)))
+	var extent_x := panini_extent_x(display_horizontal_fov)
 	var output_aspect := float(output_size.x) / float(output_size.y)
 	var panini_extent_y := tan(half_horizontal) / output_aspect
 	# The mapping's extrema over the output rectangle are closed-form, so finding
@@ -940,27 +1167,23 @@ static func _debug_panini_capture_contract_with_perimeter(
 	# directly is what keeps a smoothed sprint FOV, which moves every frame, off
 	# a multi-millisecond per-frame scan of every border texel center.
 	var mapped_corner := _panini_inverse_rectilinear(
-		Vector2.ONE, panini_extent_x, panini_extent_y)
+		Vector2.ONE, extent_x, panini_extent_y)
 	if not is_finite(mapped_corner.x) or not is_finite(mapped_corner.y):
 		return {
 			"valid": false,
-			"perimeter_samples": perimeter.size(),
-			"invalid_samples": perimeter.size(),
+			"perimeter_samples": perimeter_samples,
+			"invalid_samples": perimeter_samples,
 		}
 	var mapped_max := mapped_corner
 	var mapped_min := -mapped_corner
 
-	var mapped_abs_x := absf(mapped_corner.x)
-	var mapped_abs_y := absf(mapped_corner.y)
-	# Keep the mapped perimeter at least half a source texel inside the capture.
-	var horizontal_margin := maxf(
-		1.0 - 1.0 / float(maxi(output_size.x, 2)), 0.5)
-	var vertical_margin := maxf(
-		1.0 - 1.0 / float(maxi(output_size.y, 2)), 0.5)
-	var required_tan_x := mapped_abs_x / horizontal_margin
-	var required_tan_y := mapped_abs_y / vertical_margin
-	var capture_tan_y := maxf(required_tan_y, required_tan_x / output_aspect)
-	var capture_tan_x := capture_tan_y * output_aspect
+	var required := panini_required_tangents(display_horizontal_fov, output_size)
+	# The capture's own aspect decides the frustum. panini_capture_size() picks
+	# the aspect that leaves no unsampled width; any other capture, including the
+	# plain output-aspect one, only widens the frustum past what is required.
+	var capture_aspect := float(capture_size.x) / float(capture_size.y)
+	var capture_tan_y := maxf(required.y, required.x / capture_aspect)
+	var capture_tan_x := capture_tan_y * capture_aspect
 	var capture_tangent := Vector2(capture_tan_x, capture_tan_y)
 	var capture_horizontal_fov := rad_to_deg(2.0 * atan(capture_tan_x))
 	var capture_vertical_fov := rad_to_deg(2.0 * atan(capture_tan_y))
@@ -971,9 +1194,9 @@ static func _debug_panini_capture_contract_with_perimeter(
 	var source_uv_max := Vector2(
 		0.5 + 0.5 * mapped_max.x / capture_tan_x,
 		0.5 - 0.5 * mapped_min.y / capture_tan_y)
-	# Count raw coordinates before the shader's final defensive clamp. The safe
-	# range is inset by half an internal capture texel so a valid contract cannot
-	# expose an unrendered border even after reduced-resolution reconstruction.
+	# Count raw coordinates before the shader's final defensive clamp. The inset
+	# uses the output size, which is never larger than the capture, so a valid
+	# contract cannot expose an unrendered border at any capture resolution.
 	var safe_uv_min := Vector2(
 		0.5 / float(output_size.x), 0.5 / float(output_size.y))
 	var safe_uv_max := Vector2.ONE - safe_uv_min
@@ -988,9 +1211,9 @@ static func _debug_panini_capture_contract_with_perimeter(
 	# retain an exact diagnostic count rather than to find the bounds.
 	var invalid_samples := 0
 	if not bounds_inside_safe:
-		for point: Vector2 in perimeter:
+		for point: Vector2 in _panini_perimeter_points(output_size):
 			var mapped := _panini_inverse_rectilinear(
-				point, panini_extent_x, panini_extent_y)
+				point, extent_x, panini_extent_y)
 			var raw_uv := Vector2(
 				0.5 + 0.5 * mapped.x / capture_tan_x,
 				0.5 - 0.5 * mapped.y / capture_tan_y)
@@ -1019,8 +1242,11 @@ static func _debug_panini_capture_contract_with_perimeter(
 		"valid": valid,
 		"display_horizontal_fov": display_horizontal_fov,
 		"output_aspect": output_aspect,
-		"panini_extent_x": panini_extent_x,
+		"panini_extent_x": extent_x,
 		"panini_extent_y": panini_extent_y,
+		"capture_size": capture_size,
+		"capture_aspect": capture_aspect,
+		"required_tan_half_fov": required,
 		"capture_horizontal_fov": capture_horizontal_fov,
 		"capture_vertical_fov": capture_vertical_fov,
 		"capture_tan_half_fov": capture_tangent,
@@ -1028,7 +1254,7 @@ static func _debug_panini_capture_contract_with_perimeter(
 		"mapped_rect_max": mapped_max,
 		"source_uv_min": source_uv_min,
 		"source_uv_max": source_uv_max,
-		"perimeter_samples": perimeter.size(),
+		"perimeter_samples": perimeter_samples,
 		"invalid_samples": invalid_samples,
 	}
 
@@ -1078,6 +1304,25 @@ static func _panini_inverse_rectilinear(
 	var panini_scale := (PANINI_DISTANCE + 1.0) / (PANINI_DISTANCE + cos_phi)
 	var tan_theta := panini_y / panini_scale
 	return Vector2(tan(phi), tan_theta / cos_phi)
+
+
+## Source texels the projection reads per output pixel at screen center, on both
+## axes. This is the number the whole capture-sizing mechanism exists to raise:
+## below 1.0 the center is a magnification of the capture, which is what reads as
+## soft no matter how good the reconstruction filter is. Zero while bypassed.
+func _panini_center_sampling_ratio() -> Vector2:
+	if not _panini_active or _capture_size.x < 1 or _capture_size.y < 1:
+		return Vector2.ZERO
+	var extent_x := panini_extent_x(_panini_display_horizontal_fov)
+	var half_horizontal := deg_to_rad(_panini_display_horizontal_fov) * 0.5
+	var extent_y := (
+		tan(half_horizontal) / (float(_output_size.x) / float(_output_size.y)))
+	var tangent := Vector2(
+		maxf(_panini_capture_tan_half_fov.x, 0.00001),
+		maxf(_panini_capture_tan_half_fov.y, 0.00001))
+	return Vector2(
+		(extent_x / tangent.x) * float(_capture_size.x) / float(maxi(_output_size.x, 1)),
+		(extent_y / tangent.y) * float(_capture_size.y) / float(maxi(_output_size.y, 1)))
 
 
 func _panini_mapping_inside_source() -> bool:

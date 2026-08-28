@@ -91,12 +91,51 @@ vec3 catmull_rom_sample(vec2 uv, vec2 texel_grid) {
 }
 
 
+// Separable 3x3 tent over the pixel's own footprint, for the minified regions.
+// Each bilinear tap already averages a 2x2 texel neighbourhood, so three taps
+// per axis tile a footprint of up to about four texels with no gap between
+// kernels, where two taps per axis leave one from a footprint of two upward.
+// That matters far more than it used to: a supersampled capture minifies most
+// of the frame instead of only the corners.
+vec3 footprint_tent_sample(
+		vec2 uv, vec2 derivative_x, vec2 derivative_y, float footprint) {
+	// The outer taps sit on the footprint edges once it is wide enough to need
+	// them and collapse onto the center as it approaches 1:1, where a single
+	// bilinear tap is already the exact filter. That is what lets this meet the
+	// Catmull-Rom branch continuously at a footprint of one.
+	float spread = 0.5 * clamp(
+		(footprint - 1.0) / max(footprint, 0.00001), 0.0, 1.0);
+	vec2 step_x = derivative_x * spread;
+	vec2 step_y = derivative_y * spread;
+
+	vec3 color = texture(
+		source_texture, clamp_source_uv(uv - step_x - step_y)).rgb;
+	color += texture(
+		source_texture, clamp_source_uv(uv + step_x - step_y)).rgb;
+	color += texture(
+		source_texture, clamp_source_uv(uv - step_x + step_y)).rgb;
+	color += texture(
+		source_texture, clamp_source_uv(uv + step_x + step_y)).rgb;
+	color += 2.0 * texture(
+		source_texture, clamp_source_uv(uv - step_y)).rgb;
+	color += 2.0 * texture(
+		source_texture, clamp_source_uv(uv + step_y)).rgb;
+	color += 2.0 * texture(
+		source_texture, clamp_source_uv(uv - step_x)).rgb;
+	color += 2.0 * texture(
+		source_texture, clamp_source_uv(uv + step_x)).rgb;
+	color += 4.0 * texture(source_texture, clamp_source_uv(uv)).rgb;
+	return color * (1.0 / 16.0);
+}
+
+
 void fragment() {
 	vec2 source_uv = panini_source_uv(UV);
 
-	// The derivative decision and fixed upper bound keep the cost bounded and
-	// the branch uniform enough to be cheap. Only minified regions take the
-	// four-tap branch.
+	// Which side of 1:1 this pixel falls on decides the filter, and the capture
+	// resolution decides which side most of the frame falls on. Both branches
+	// are a fixed tap count, and both reduce to the same single bilinear tap at
+	// a footprint of exactly one, so the boundary between them is invisible.
 	vec2 derivative_x = dFdx(source_uv);
 	vec2 derivative_y = dFdy(source_uv);
 	vec2 source_pixels = max(source_size, vec2(1.0));
@@ -105,10 +144,9 @@ void fragment() {
 		length(derivative_y * source_pixels));
 	vec3 color;
 	if (footprint <= 1.0) {
-		// The capture camera is always wider than the display FOV, so the image
-		// center magnifies by more than 2x at every supported FOV. One bilinear
-		// tap is what makes that center read as soft; Catmull-Rom reconstructs
-		// the same texels with edge slope preserved and no extra source data.
+		// The capture is magnified here. One bilinear tap is what makes a
+		// magnified center read as soft; Catmull-Rom reconstructs the same
+		// texels with edge slope preserved and no extra source data.
 		vec3 bilinear = texture(source_texture, clamp_source_uv(source_uv)).rgb;
 		float sharpness = 1.0 - smoothstep(
 			CATMULL_ROM_FADE_START, 1.0, footprint);
@@ -119,21 +157,8 @@ void fragment() {
 		// exactly [0,1] and the overshoot is a halo rather than signal.
 		color = clamp(color, vec3(0.0), vec3(1.0));
 	} else {
-		float filter_amount = min(footprint - 1.0, 1.0);
-		vec2 maximum_step = 2.0 / source_pixels;
-		vec2 tap_x = clamp(
-			derivative_x * (0.5 * filter_amount), -maximum_step, maximum_step);
-		vec2 tap_y = clamp(
-			derivative_y * (0.5 * filter_amount), -maximum_step, maximum_step);
-
-		color = texture(
-			source_texture, clamp_source_uv(source_uv + tap_x + tap_y)).rgb * 0.25;
-		color += texture(
-			source_texture, clamp_source_uv(source_uv + tap_x - tap_y)).rgb * 0.25;
-		color += texture(
-			source_texture, clamp_source_uv(source_uv - tap_x + tap_y)).rgb * 0.25;
-		color += texture(
-			source_texture, clamp_source_uv(source_uv - tap_x - tap_y)).rgb * 0.25;
+		color = footprint_tent_sample(
+			source_uv, derivative_x, derivative_y, footprint);
 	}
 	COLOR = vec4(color, 1.0);
 }

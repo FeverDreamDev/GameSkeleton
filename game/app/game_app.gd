@@ -62,6 +62,11 @@ var _retro_post_enabled: bool = true
 var _grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
 var _fps_counter_enabled: bool = false
 var _horizontal_fov: float = 130.0
+# Source texels the Panini pass reads per output pixel at screen center. Seeded
+# from whatever main.tscn authored on the manager, so the scene stays the single
+# place the shipped value lives.
+var _panini_capture_sharpness: float = (
+		RTPostProcessStack.PANINI_DEFAULT_CAPTURE_SHARPNESS)
 var _fps_layer: CanvasLayer
 
 
@@ -127,6 +132,10 @@ func _wire_systems() -> bool:
 		rt_manager.rt_ready.connect(_on_rt_ready)
 		rt_manager.rt_failed.connect(_on_rt_failed)
 		rt_manager.distance_fog_changed.connect(_on_distance_fog_changed)
+		# Adopt the authored capture sharpness before the first
+		# _apply_graphics_preferences() pushes the session value back down, so the
+		# scene stays the one place the shipped default lives.
+		_panini_capture_sharpness = rt_manager.post_panini_capture_sharpness
 		_apply_graphics_preferences()
 	return true
 
@@ -306,11 +315,14 @@ func _open_graphics_options() -> void:
 	_graphics_dialog.grass_quality = _grass_quality
 	_graphics_dialog.fps_counter_enabled = _fps_counter_enabled
 	_graphics_dialog.horizontal_fov = _horizontal_fov
+	_graphics_dialog.panini_sharpness = _panini_capture_sharpness
 	_graphics_dialog.rt_toggled.connect(_on_graphics_rt_toggled)
 	_graphics_dialog.retro_post_toggled.connect(_on_graphics_retro_post_toggled)
 	_graphics_dialog.grass_quality_selected.connect(_on_graphics_grass_quality_selected)
 	_graphics_dialog.fps_counter_toggled.connect(_on_graphics_fps_counter_toggled)
 	_graphics_dialog.horizontal_fov_changed.connect(_on_graphics_horizontal_fov_changed)
+	_graphics_dialog.panini_sharpness_changed.connect(
+		_on_graphics_panini_sharpness_changed)
 	_graphics_dialog.finished.connect(_on_graphics_dialog_finished.unbind(1))
 	UISystem.show_modal(_graphics_dialog)
 
@@ -829,6 +841,7 @@ func _apply_graphics_preferences() -> void:
 	# the value. Changing it on a running manager goes through the setter below.
 	rt_manager.ray_tracing_enabled = _rt_enabled
 	rt_manager.retro_post_enabled = _retro_post_enabled
+	rt_manager.post_panini_capture_sharpness = _panini_capture_sharpness
 
 
 ## The RT toggle genuinely reinstalls the pipeline, so unlike every other entry
@@ -846,6 +859,17 @@ func _on_graphics_rt_toggled(enabled: bool) -> void:
 
 func _on_graphics_retro_post_toggled(enabled: bool) -> void:
 	_retro_post_enabled = enabled
+	_apply_graphics_preferences()
+
+
+## Resizes the 3D capture, so the dialog only emits this once a drag settles.
+func _on_graphics_panini_sharpness_changed(sharpness: float) -> void:
+	if not is_finite(sharpness):
+		return
+	_panini_capture_sharpness = clampf(
+		sharpness,
+		RTPostProcessStack.PANINI_MIN_CAPTURE_SHARPNESS,
+		RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS)
 	_apply_graphics_preferences()
 
 

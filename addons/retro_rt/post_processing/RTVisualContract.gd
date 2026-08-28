@@ -141,7 +141,14 @@ static func capture_viewport_state(viewport: Viewport) -> Dictionary:
 	return state
 
 
-static func apply_native_viewport_state(viewport: Viewport, native_size: Vector2i) -> void:
+## `hdr_2d` selects the target format. The root/final presentation target is
+## deliberately LDR: the final canvas shader performs the single explicit display
+## transfer, and an HDR 2D destination would add a renderer-owned second one. The
+## stack's internal targets carry scene radiance between passes and ask for true.
+static func apply_native_viewport_state(
+		viewport: Viewport,
+		native_size: Vector2i,
+		hdr_2d: bool = false) -> void:
 	viewport.use_taa = false
 	viewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 	viewport.msaa_3d = Viewport.MSAA_DISABLED
@@ -151,17 +158,17 @@ static func apply_native_viewport_state(viewport: Viewport, native_size: Vector2
 	viewport.texture_mipmap_bias = 0.0
 	viewport.anisotropic_filtering_level = Viewport.ANISOTROPY_4X
 	viewport.use_debanding = false
-	# The final canvas shader performs the single explicit display transfer.
-	# Keeping the destination canvas LDR prevents a renderer-owned second
-	# linear-to-display conversion on platforms that support HDR 2D.
-	viewport.use_hdr_2d = false
+	viewport.use_hdr_2d = hdr_2d
 	if viewport is SubViewport:
 		var subviewport := viewport as SubViewport
 		subviewport.size = Vector2i(maxi(native_size.x, 1), maxi(native_size.y, 1))
 		subviewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 
 
-static func native_viewport_failure(viewport: Viewport, native_size: Vector2i) -> String:
+static func native_viewport_failure(
+		viewport: Viewport,
+		native_size: Vector2i,
+		hdr_2d: bool = false) -> String:
 	if viewport.use_taa:
 		return "TAA remained enabled"
 	if viewport.screen_space_aa != Viewport.SCREEN_SPACE_AA_DISABLED:
@@ -180,8 +187,11 @@ static func native_viewport_failure(viewport: Viewport, native_size: Vector2i) -
 		return "the platform did not accept 4x anisotropic filtering"
 	if viewport.use_debanding:
 		return "debanding remained enabled"
-	if viewport.use_hdr_2d:
-		return "HDR 2D remained enabled on the explicit display-transfer target"
+	if viewport.use_hdr_2d != hdr_2d:
+		return (
+			"the platform did not honor HDR 2D on a scene-radiance target"
+			if hdr_2d
+			else "HDR 2D remained enabled on the explicit display-transfer target")
 	if viewport is SubViewport:
 		var expected := Vector2i(maxi(native_size.x, 1), maxi(native_size.y, 1))
 		if (viewport as SubViewport).size != expected:

@@ -33,6 +33,7 @@ script = ExtResource("5_rt")
 world_environment_path = NodePath("")
 auto_start = false
 post_panini_enabled = true
+post_panini_capture_sharpness = 0.75
 
 [node name="WorldRoot" type="Node3D" parent="." unique_id=1250619597]
 process_mode = 1

@@ -15,6 +15,7 @@ func _initialize() -> void:
 	_test_manager_default()
 	_test_capture_contract_matrix()
 	_test_analytic_bounds_match_full_scan()
+	_test_capture_sizing()
 	_test_invalid_contracts()
 	_test_shader_contract()
 	if _failures.is_empty():
@@ -104,6 +105,68 @@ func _test_analytic_bounds_match_full_scan() -> void:
 				and is_equal_approx(reported.y, scanned.y),
 				"closed-form bounds equal the full border scan for %s at %.2f degrees"
 					% [output, fov])
+
+
+## The capture size is the projection's only real sharpness control, and its two
+## claims are exact rather than approximate: the horizontal center ratio equals
+## the requested sharpness, and no capture width goes unsampled.
+func _test_capture_sizing() -> void:
+	var outputs := [
+		Vector2i(1920, 1080),
+		Vector2i(2560, 1440),
+		Vector2i(3440, 1440),
+		Vector2i(1600, 1200),
+	]
+	for output: Vector2i in outputs:
+		for fov in [120.0, 130.0, 140.0]:
+			var previous_ratio := 0.0
+			for sharpness in [0.25, 0.5, 0.75, 1.0]:
+				var capture := RTPostProcessStack.panini_capture_size(
+					output, fov, sharpness)
+				var label := "%s at %.0f degrees, sharpness %.2f" % [
+					output, fov, sharpness]
+				_check(capture.x >= 2 and capture.y >= 2,
+					"capture size is allocatable for %s" % label)
+				var contract := RTPostProcessStack.debug_panini_capture_contract(
+					fov, output, capture)
+				_check(bool(contract.get("valid", false)),
+					"the projected capture yields a valid contract for %s" % label)
+				var ratio := _center_sampling_ratio(contract, output, capture)
+				_check(absf(ratio.x - sharpness) < 0.01,
+					"horizontal center ratio equals the requested sharpness for %s"
+						% label)
+				# Sharpness is a horizontal target; the vertical axis lands above
+				# it by a factor fixed by the projection and the output aspect.
+				_check(ratio.y > ratio.x,
+					"the vertical center axis is never the limiting one for %s" % label)
+				var uv_min: Vector2 = contract.get("source_uv_min", Vector2.ZERO)
+				var uv_max: Vector2 = contract.get("source_uv_max", Vector2.ONE)
+				_check(uv_min.x < 0.002 and uv_max.x > 0.998,
+					"the projection samples the whole capture width for %s" % label)
+				_check(ratio.x > previous_ratio,
+					"more sharpness buys more center resolution for %s" % label)
+				previous_ratio = ratio.x
+	# Out-of-range sharpness is clamped rather than honored, and an unsupported
+	# ceiling FOV reports no capture at all so the caller can stay rectilinear.
+	var clamped := RTPostProcessStack.panini_capture_size(
+		Vector2i(1920, 1080), 130.0, 9.0)
+	var maximum := RTPostProcessStack.panini_capture_size(
+		Vector2i(1920, 1080), 130.0, RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS)
+	_check(clamped == maximum, "an over-range sharpness clamps to the maximum")
+	for fov in [NAN, INF, 0.0, 180.0]:
+		_check(RTPostProcessStack.panini_capture_size(
+			Vector2i(1920, 1080), fov, 1.0) == Vector2i.ZERO,
+			"ceiling FOV %.3f yields no projected capture" % fov)
+
+
+func _center_sampling_ratio(
+		contract: Dictionary, output: Vector2i, capture: Vector2i) -> Vector2:
+	var tangent: Vector2 = contract.get("capture_tan_half_fov", Vector2.ONE)
+	return Vector2(
+		(float(contract.get("panini_extent_x", 0.0)) / tangent.x)
+			* float(capture.x) / float(output.x),
+		(float(contract.get("panini_extent_y", 0.0)) / tangent.y)
+			* float(capture.y) / float(output.y))
 
 
 func _test_invalid_contracts() -> void:

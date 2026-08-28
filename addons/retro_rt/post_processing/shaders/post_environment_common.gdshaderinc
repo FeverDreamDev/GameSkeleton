@@ -9,7 +9,6 @@ uniform vec3 camera_ray_top_right = vec3(0.0, 0.0, -1.0);
 uniform vec3 camera_ray_bottom_left = vec3(0.0, 0.0, -1.0);
 uniform vec3 camera_ray_bottom_right = vec3(0.0, 0.0, -1.0);
 uniform bool recover_opaque_coverage_from_rgb = false;
-uniform bool scene_input_is_linear = false;
 
 float rt_post_scene_coverage(vec4 sampled) {
 	float coverage = clamp(sampled.a, 0.0, 1.0);

@@ -114,8 +114,8 @@ func _run() -> void:
 		"Panini reads the scene resolve target")
 	_check(int(native_profile.get("post_panini_buffer_bytes", 0)) > 0,
 		"Panini reports its persistent native-size buffer bytes")
-	_check(native_profile.get("post_panini_sample_mode", &"invalid") == &"catmull_rom_or_box",
-		"the stack uses the portable Catmull-Rom or box Panini filter")
+	_check(native_profile.get("post_panini_sample_mode", &"invalid") == &"catmull_rom_or_tent",
+		"the stack uses the Catmull-Rom or tent Panini filter")
 	# Grade and posterization are independently toggled downstream to catch
 	# accidental pass fusion or source rebinding.
 	_app.call("_on_graphics_retro_post_toggled", false)
@@ -144,6 +144,40 @@ func _run() -> void:
 		"Panini and the native UI share the output pixel domain")
 	_check(int(steady_profile.get("post_per_frame_allocation_count", -1)) == 0,
 		"steady-state presentation allocates no post resources")
+
+	# The 3D capture is sized for the camera's declared FOV ceiling precisely so
+	# that a smoothed sprint transition never reallocates it. Sprint here and
+	# confirm the count holds while the display angle is actually moving.
+	var capture_resizes := int(steady_profile.get("post_capture_resize_count", -1))
+	var capture_size: Vector2i = steady_profile.get("post_capture_size", Vector2i.ZERO)
+	_check(capture_resizes > 0 and capture_size.x > 0 and capture_size.y > 0,
+		"the projection reports a sized 3D capture")
+	var source_camera := _app.get_viewport().get_camera_3d()
+	_check(source_camera != null and source_camera.has_method(
+		&"set_display_horizontal_fov"),
+		"the acceptance run can drive the source camera's display FOV")
+	if source_camera != null and source_camera.has_method(
+			&"set_display_horizontal_fov"):
+		var angles := {}
+		for step in 40:
+			# The same shape PlayerCamera's exponential sprint ease produces: many
+			# distinct angles, none of them the value the capture was sized for.
+			source_camera.call(
+				&"set_display_horizontal_fov", 130.0 + 0.25 * float(step))
+			await get_tree().process_frame
+			var frame_profile := _app.rt_manager.get_profile_snapshot()
+			angles[snappedf(float(frame_profile.get(
+				"post_panini_display_horizontal_fov", 0.0)), 0.01)] = true
+			_check(bool(frame_profile.get("post_panini_bounds_valid", false)),
+				"the capture contains the projection at every eased angle")
+		var sprint_profile := _app.rt_manager.get_profile_snapshot()
+		_check(angles.size() > 20,
+			"the sweep actually moved the display FOV across distinct angles")
+		_check(int(sprint_profile.get("post_capture_resize_count", -1))
+			== capture_resizes,
+			"a moving display FOV never resizes the 3D capture")
+		_check(int(sprint_profile.get("post_per_frame_allocation_count", -1)) == 0,
+			"a moving display FOV allocates no post resources")
 
 	await _finish(steady_profile)
 

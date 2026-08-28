@@ -13,10 +13,15 @@ signal retro_post_toggled(enabled: bool)
 signal grass_quality_selected(quality: int)
 signal fps_counter_toggled(enabled: bool)
 signal horizontal_fov_changed(fov: float)
+## Deliberately not emitted on every step of a drag. Changing this resizes the
+## 3D capture, which is a render-target reallocation and costs about one dropped
+## frame each time; the readout still follows the handle live.
+signal panini_sharpness_changed(sharpness: float)
 
 const MIN_HORIZONTAL_FOV := 120.0
 const MAX_HORIZONTAL_FOV := 140.0
 const DEFAULT_HORIZONTAL_FOV := 130.0
+const PANINI_SHARPNESS_STEP := 0.05
 
 var rendering_method: StringName = &"unknown"
 var active_backend: StringName = &"none"
@@ -25,10 +30,14 @@ var retro_post_enabled: bool = true
 var grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
 var fps_counter_enabled: bool = false
 var horizontal_fov: float = DEFAULT_HORIZONTAL_FOV
+var panini_sharpness: float = RTPostProcessStack.PANINI_DEFAULT_CAPTURE_SHARPNESS
 
 var _backend_value: Label
 var _fov_slider: HSlider
 var _fov_value: Label
+var _sharpness_slider: HSlider
+var _sharpness_value: Label
+var _sharpness_dragging: bool = false
 
 
 func _init() -> void:
@@ -112,6 +121,45 @@ func _build_body() -> Control:
 	fov_row.add_child(_fov_value)
 	_fov_slider.value_changed.connect(_on_horizontal_fov_value_changed)
 
+	# The Panini projection magnifies the screen center, so the 3D capture behind
+	# it is rendered above native to cancel that out. This is how much of it is
+	# cancelled, and it is by a wide margin the most expensive control here: the
+	# capture spends roughly 4.8x the output pixel count at 100% and a fifth of
+	# that at the minimum.
+	var sharpness_row := HBoxContainer.new()
+	sharpness_row.add_theme_constant_override("separation", 12)
+	column.add_child(sharpness_row)
+
+	var sharpness_label := Label.new()
+	sharpness_label.text = "Panini sharpness"
+	sharpness_label.custom_minimum_size.x = 132.0
+	sharpness_row.add_child(sharpness_label)
+
+	_sharpness_slider = HSlider.new()
+	_sharpness_slider.name = "PaniniSharpnessSlider"
+	_sharpness_slider.min_value = RTPostProcessStack.PANINI_MIN_CAPTURE_SHARPNESS
+	_sharpness_slider.max_value = RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS
+	_sharpness_slider.step = PANINI_SHARPNESS_STEP
+	_sharpness_slider.allow_lesser = false
+	_sharpness_slider.allow_greater = false
+	_sharpness_slider.focus_mode = Control.FOCUS_ALL
+	_sharpness_slider.custom_minimum_size.x = 160.0
+	_sharpness_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sharpness_slider.value = _clamp_sharpness(panini_sharpness)
+	sharpness_row.add_child(_sharpness_slider)
+
+	_sharpness_value = Label.new()
+	_sharpness_value.name = "PaniniSharpnessValue"
+	_sharpness_value.custom_minimum_size.x = 42.0
+	_sharpness_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_sharpness_value.text = _sharpness_text(_sharpness_slider.value)
+	sharpness_row.add_child(_sharpness_value)
+	_sharpness_slider.value_changed.connect(_on_panini_sharpness_value_changed)
+	# A mouse drag applies once, on release. Keyboard and programmatic changes
+	# never start a drag, so they still apply on the spot.
+	_sharpness_slider.drag_started.connect(_on_panini_sharpness_drag_started)
+	_sharpness_slider.drag_ended.connect(_on_panini_sharpness_drag_ended)
+
 	# Grass is the single most expensive thing in the scene -- it is drawn as
 	# stacked shell layers, so it costs its shell count in overdraw over whatever
 	# fraction of the screen it covers. That makes it the most useful thing to
@@ -191,15 +239,23 @@ func _backend_text() -> String:
 
 func _hint_text(hardware_available: bool) -> String:
 	var session_note := "Settings apply for this session and reset on restart."
+	# Panini sharpness costs more frame time than everything else in this dialog
+	# put together, and it is not obvious from the name, so it gets said plainly.
+	var sharpness_note := (
+		"Panini sharpness is the biggest performance setting here: it renders the "
+		+ "3D scene above native resolution to cancel the projection's center "
+		+ "magnification, and the cost rises sharply toward 100%.")
 	if hardware_available:
 		return (
 			"Turning ray tracing off falls back to shadow maps and screen-space reflections.\n"
+			+ sharpness_note + "\n"
 			+ session_note)
 	# The reason matters more than the fact here: "unavailable" alone reads as a
 	# bug on a machine the player believes is capable.
 	return (
 		"Ray tracing is unavailable on this machine, so the raster fallback is in use.\n"
 		+ RTSceneManager.hardware_rt_unavailable_reason() + "\n"
+		+ sharpness_note + "\n"
 		+ session_note)
 
 
@@ -219,6 +275,37 @@ func _on_horizontal_fov_value_changed(value: float) -> void:
 	if _fov_value != null:
 		_fov_value.text = _fov_text(horizontal_fov)
 	horizontal_fov_changed.emit(horizontal_fov)
+
+
+func _clamp_sharpness(value: float) -> float:
+	if not is_finite(value):
+		return RTPostProcessStack.PANINI_DEFAULT_CAPTURE_SHARPNESS
+	return clampf(
+		snappedf(value, PANINI_SHARPNESS_STEP),
+		RTPostProcessStack.PANINI_MIN_CAPTURE_SHARPNESS,
+		RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS)
+
+
+func _sharpness_text(value: float) -> String:
+	return "%d%%" % roundi(value * 100.0)
+
+
+func _on_panini_sharpness_value_changed(value: float) -> void:
+	panini_sharpness = _clamp_sharpness(value)
+	if _sharpness_value != null:
+		_sharpness_value.text = _sharpness_text(panini_sharpness)
+	if not _sharpness_dragging:
+		panini_sharpness_changed.emit(panini_sharpness)
+
+
+func _on_panini_sharpness_drag_started() -> void:
+	_sharpness_dragging = true
+
+
+func _on_panini_sharpness_drag_ended(value_changed: bool) -> void:
+	_sharpness_dragging = false
+	if value_changed:
+		panini_sharpness_changed.emit(panini_sharpness)
 
 
 func _on_rt_toggled(enabled: bool) -> void:

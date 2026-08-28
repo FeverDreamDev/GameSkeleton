@@ -200,8 +200,13 @@ reflector's fog rather than the reflected path length.
 
 ## Shared post-processing: scene resolve, Panini, grade
 
-Every runtime pipeline uses `RTPostProcessStack`. There are three canvas passes
-and no resolution scaling: everything runs at the native output size.
+Every runtime pipeline uses `RTPostProcessStack`. There are three canvas passes.
+Presentation is always native, and there is no resolution *scaling* in the
+upscaler sense — no reconstruction, no history, nothing temporal. The one stage
+that leaves the output pixel domain is the 3D capture, which the Panini pass
+sizes for its own sampling requirement; see **Capture resolution is the
+projection's sharpness control**. With Panini bypassed the capture is the output
+size and every stage in the chain is 1:1.
 
 **There is currently no anti-aliasing.** The custom SMAA 1x implementation, FSR 1
 (EASU and RCAS), FidelityFX CAS and the RT quality presets that drove them were
@@ -209,15 +214,17 @@ all removed on 2026-08-28. They existed to make one image work across renderers
 this project no longer targets, and the cost of keeping them parity-matched
 outgrew what they bought. A replacement is still to be chosen; see **Why
 anti-aliasing cannot be MSAA** below for the one option that is permanently
-closed off.
+closed off. Note that the Panini capture is supersampled at the shipped
+sharpness, so it is currently doing the geometric-aliasing work an AA pass would
+otherwise do.
 
 ```text
-3D scene / RT result                             (native output size)
-    -> internal scene capture
+3D scene / RT result                             (capture size)
+    -> internal scene capture                    (capture size)
     -> scene resolve: coverage decode, environment reconstruction, fog,
-       one normalized HDR-to-SDR clamp, scene-linear-to-sRGB
-    -> classic Panini D=1, S=0                    (optional, native output size)
-    -> sRGB-to-scene-linear, RetroGrade, display-range clamp
+       one normalized HDR-to-SDR clamp, scene-linear-to-sRGB   (capture size)
+    -> classic Panini D=1, S=0                   (optional, to native output size)
+    -> sRGB-to-scene-linear, RetroGrade, display-range clamp   (native output size)
     -> explicit scene-linear-to-sRGB transfer
     -> final scene CanvasLayer (-100)
     -> normal gameplay Canvas/UI
@@ -271,7 +278,7 @@ Its native-output horizontal extent makes the left and right center rays exactly
 minus/plus half the selected display FOV; the vertical center extent follows
 from output aspect. Each FOV or size-domain change evaluates the inverse mapping
 at one logical corner, adds a half-texel margin, and chooses the smallest
-symmetric perspective capture that contains it. That conservative private-camera
+perspective capture frustum that contains it. That conservative private-camera
 overscan prevents black borders, clamped corners, and culling holes without
 altering the authored camera.
 
@@ -279,36 +286,106 @@ One corner is sufficient because the mapping is monotonic on both axes:
 `mapped.x = tan(phi)` is odd and strictly increasing in output NDC x across the
 supported `|phi| < 90` degrees, and `mapped.y` is linear in output NDC y and
 strictly increasing in `|phi|`. Both extrema therefore land on the four logical
-corners. The CPU still caches every output-border texel center plus those four
-corners whenever output size changes, and `post_panini_perimeter_samples` still
-reports that set, but the perimeter is now only scanned on the exceptional
-invalid-contract path to retain an exact `invalid_samples` diagnostic. The
-closed form is what keeps the smoothed sprint FOV, which moves every frame, off
-a scan that cost about 2 ms per frame at 1080p and 3.2 ms at 3440x1440;
-`panini_projection_smoke.gd` pins the closed form against a full border scan.
+corners. `post_panini_perimeter_samples` still reports every output-border texel
+center plus those four corners, but the perimeter is only materialized and
+scanned on the exceptional invalid-contract path, to retain an exact
+`invalid_samples` diagnostic. The closed form is what keeps the smoothed sprint
+FOV, which moves every frame, off a scan that cost about 2 ms per frame at 1080p
+and 3.2 ms at 3440x1440; `panini_projection_smoke.gd` pins the closed form
+against a full border scan.
 
-The GLES3-safe canvas shader reconstructs with a five-tap Catmull-Rom where the
-warp magnifies and uses exactly four bilinear samples at the positive/negative
-derivative corners where it minifies. The diagnostic contract names this
-`catmull_rom_or_box`. Catmull-Rom is there because the capture camera is always
-wider than the display FOV, so the image center is magnified by 2.8x
-horizontally at 130 degrees and 3.9x at 140; a single bilinear tap over that
-magnification is what made the center read as soft. The kernel is renormalized
-over its five kept taps, so it is exactly transparent at 1:1 and shifts no
-brightness on a flat field, and it fades to that single bilinear tap as the
-footprint approaches 1:1 so the two branches meet with no ring. Its negative
-lobes are clamped to the `[0,1]` range the upstream resolve already guarantees.
-It uses no compute, history, `textureGather`, dynamic allocation, or
-renderer-specific branch. The native-size Panini SubViewport is persistent,
-resized in place, and set to `UPDATE_DISABLED` while bypassed.
+### Capture resolution is the projection's sharpness control
 
-Panini magnifies the center, and nothing sharpens it back: the CAS pass that
-used to sit after it was removed along with FSR. Any replacement sharpener
-belongs in the same place, between Panini and the grade.
+The projection reads its source through a warp that compresses the periphery, so
+the screen center is a magnification of whatever the capture rendered. That
+magnification, not the reconstruction filter, is what decides how sharp a
+Panini frame can be. `post_panini_center_texels_per_pixel` reports it directly:
+source texels read per output pixel at screen center, where 1.0 means the center
+is not magnified at all.
+
+The 3D capture and its resolve are therefore the only stages that leave the
+output pixel domain. Presentation, the projection target, and every UI canvas
+stay at native output resolution at all times.
+
+Two decisions size that capture, and both are exact rather than tuned.
+
+**Aspect.** The capture uses the ratio of the two required half-tangents. That
+ratio is the sharpness optimum, not a convenience: capture width grows as
+`sqrt(aspect)` at a fixed pixel count, while the horizontal capture tangent is
+flat until the aspect passes that ratio and grows linearly after it, so the
+horizontal center ratio peaks exactly there. It is also the only aspect that
+wastes no frustum. An output-aspect capture at a 130-degree display FOV renders
+41 percent of its width outside anything the projection can sample —
+`post_panini_source_uv_min/max` used to span `[0.203, 0.797]` horizontally and
+now spans the full `[0, 1]`, and the capture FOV needed at 140 degrees fell from
+159 to 140.
+
+**Scale.** `RTSceneManager.post_panini_capture_sharpness` is the center ratio
+itself: with the optimal aspect the ratio reduces to the linear scale, so the
+setting means what it reports. The cost is quadratic in it, roughly
+`4.8 * value^2` times the output pixel count at a 130-degree display FOV and
+`7.6 * value^2` at 140. Measured on the terrain scene at 2560x1440 with hardware
+RT:
+
+| sharpness | capture pixels | median frame | scene pass |
+| --- | --- | --- | --- |
+| 0.353 | 0.94x | 3.35 ms | 2.56 ms |
+| 0.458 | 1.59x | 5.02 ms | 4.49 ms |
+| 0.55 | 2.29x | 6.93 ms | 6.38 ms |
+| 0.65 | 3.19x | 9.34 ms | 8.24 ms |
+| 0.75 | 4.25x | 12.09 ms | 11.10 ms |
+| 1.00 | 7.56x | 20.93 ms | 19.03 ms |
+
+The add-on defaults to 0.5 and `main.tscn` selects 0.75. Since the capture is
+supersampled at any value above roughly 0.5, this is also the only thing in the
+stack currently reducing geometric aliasing; expect to lower it once real
+anti-aliasing lands.
+
+The capture is sized from `RTPaniniCamera3D.max_display_horizontal_fov` — the
+widest angle the camera declares it will ever request — rather than from the
+live angle, because the capture is a render target and the live angle moves
+every frame while a sprint transition eases. `PlayerCamera` sets that ceiling to
+its session base plus the sprint boost. A ceiling below the live angle stays
+correct, since the frustum still widens to contain the projection, and only
+costs sharpness the capture already paid for; a camera that declares no ceiling
+keeps the plain output-sized capture. `panini_capture.tscn` sweeps the display
+FOV across 40 eased angles and asserts `post_capture_resize_count` does not move.
+
+### Reconstruction filter
+
+The canvas shader picks its filter from the per-pixel footprint, and the capture
+resolution decides which branch most of the frame takes. The diagnostic contract
+names the pair `catmull_rom_or_tent`.
+
+Below a 1:1 footprint the capture is magnified, and a single bilinear tap is what
+makes a magnified center read as soft. A five-tap Catmull-Rom reconstructs the
+same texels with edge slope preserved and no extra source data. The kernel is
+renormalized over its five kept taps, so it is exactly transparent at 1:1 and
+shifts no brightness on a flat field, and it fades to that single bilinear tap as
+the footprint approaches 1:1. Its negative lobes are clamped to the `[0,1]` range
+the upstream resolve already guarantees.
+
+Above a 1:1 footprint the capture is minified, and a supersampled capture minifies
+most of the frame rather than only the corners — at sharpness 0.75 the footprint
+runs from 1.47 at center to 5.32 at the corners. A separable 3x3 tent over the
+pixel's own footprint covers that: each bilinear tap already averages a 2x2 texel
+neighbourhood, so three taps per axis tile a footprint of up to about four texels
+with no gap between kernels, where the two taps per axis this replaced leave one
+from a footprint of two upward. Its outer taps collapse onto the center as the
+footprint approaches 1:1, which is what lets the two branches meet with no
+visible ring.
+
+Neither branch uses compute, history, dynamic allocation, or a varying tap count.
+The output-size Panini SubViewport is persistent, resized in place, and set to
+`UPDATE_DISABLED` while bypassed; a bypassed frame presents the resolve target
+1:1, so the capture returns to the output size with the pass.
+
+Nothing sharpens after the projection: the CAS pass that used to sit there was
+removed along with FSR. Any replacement sharpener belongs in the same place,
+between Panini and the grade.
 `generated/shader_warmup_manifest.tres` includes `panini_project.gdshader`; rerun
 the normal warmup generator whenever this shader or its material parameters
 change.
-
 `post_panini_source_stage` always reports `scene_resolve`, and
 `post_present_source` reports `panini` while the pass is active or
 `scene_resolve` while it is bypassed.
@@ -332,18 +409,24 @@ captures the authored values first, and restores them on teardown or failure.
 
 ### Targets and precision
 
-Every target is native output size; nothing in the stack scales resolution.
+The Panini target and the final presentation are native output size. The scene
+capture and its resolve are the projection's capture size, which equals the
+output size whenever the projection is bypassed.
 
-The scene capture and the resolve target both request `use_hdr_2d = true`, as
-does the persistent Panini target, and Forward+ honors it: all three are
-RGBA16F. The `post_*_hdr_requested`, `post_*_hdr`, and
+All three targets ask for `use_hdr_2d = true` and Forward+ honors it, so all
+three are RGBA16F. That is now a startup requirement rather than a preference:
+the resolve shader decodes coverage assuming scene-linear storage and has no sRGB
+fallback branch, so `configure()` fails with the offending target name if any of
+them comes back LDR. The `post_*_hdr_requested`, `post_*_hdr`, and
 `post_data_viewports_rgba` profile fields remain, and still distinguish the
 requested state from what the renderer actually supplied.
 
-Intermediate SubViewports are persistent and resize only when the output size
-changes; they are not reallocated per frame. The Panini target is disabled rather
-than freed while bypassed. Its input is always the resolve target, 1:1, and the
-final present source is Panini when active or the resolve target when bypassed.
+Intermediate SubViewports are persistent and resize only when the output size,
+the capture size, or the projection's active state changes; they are not
+reallocated per frame, and `post_capture_resize_count` is the counter that proves
+it. The Panini target is disabled rather than freed while bypassed. Its input is
+always the resolve target, and the final present source is Panini when active or
+that resolve target, 1:1, when bypassed.
 
 Posterization happens in the grade and remains intentionally crisp. There is one
 grade path, shared by both pipelines; there is no separate compute grade for
@@ -651,14 +734,18 @@ bytes, output and internal RT resolution, and:
   `post_panini_enabled`, and `post_panini_bypass_reason`; projection/filter
   identity, persistent target and source stage/size; display and conservative
   capture horizontal/vertical FOVs; mapped rect and source-UV bounds; perimeter
-  sample and invalid-sample counts; `post_panini_bounds_valid`; and dedicated
+  sample and invalid-sample counts; `post_panini_bounds_valid`;
+  `post_panini_capture_sharpness`, `post_panini_capture_ceiling_fov` and the
+  achieved `post_panini_center_texels_per_pixel`; and dedicated
   `post_panini_buffer_bytes`;
 - `ray_tracing_full_resolution`, `ray_tracing_resolution`, and dispatched pixel
-  count. Every stage is native output size, so these all agree;
-- `post_output_size`, `post_render_size`, `post_rendered_pixels`, and
-  `post_persistent_buffer_bytes`; camera diagnostic fields report the source
-  identity, active state, visual-state and resource matches, null internal
-  compositor, and the intentional Panini capture-FOV override;
+  count;
+- `post_output_size`, `post_capture_size`, `post_capture_pixel_ratio`,
+  `post_capture_resize_count`, `post_render_size` (an alias of the capture size),
+  `post_rendered_pixels`, and `post_persistent_buffer_bytes`; camera diagnostic
+  fields report the source identity, active state, visual-state and resource
+  matches, null internal compositor, and the intentional Panini capture-FOV
+  override;
 - `post_native_size` (legacy output-size alias), instrumented
   `post_per_frame_allocation_count`/peak, initialization and total explicit
   post-object allocation counts, resize count/timing,
@@ -669,7 +756,7 @@ bytes, output and internal RT resolution, and:
   manager frame. Normal unchanged frames report zero because every viewport,
   material, and pass node is reused; a revision that rebuilds the temporary
   visual-contract Resource is visible in the current/peak counter.
-  The persistent byte count is the owned color targets only: two native-size
+  The persistent byte count is the owned color targets only: two capture-size
   targets (scene capture and resolve) at 8 bytes per pixel, since Forward+ honors
   the RGBA16F request, plus the persistent output-size Panini target. It excludes
   depth/render buffers. `get_post_debug_contract_snapshot()` exposes the same
@@ -708,6 +795,8 @@ The relevant controls are:
 
 - `PERF_PROFILE=1` enables manager and named viewport timings;
 - `PERF_PANINI=0` and `PERF_GRADE=0` isolate post stages;
+- `PERF_PANINI_SHARPNESS=f` sets the projection capture sharpness, which is the
+  single most expensive visual control in the stack;
 - `PERF_FOV=120|130|140` selects exact horizontal display coverage;
 - `PERF_RASTER=1` forces the raster fallback on a hardware-capable system, so
   both pipelines can be measured on one machine;
@@ -736,7 +825,10 @@ anything that asserts hardware RT needs a real ray-tracing adapter and says so.
   It checks symmetry, finite capture FOVs, aspect-derived vertical extent,
   full-perimeter containment, zero invalid pre-clamp samples, invalid-input
   rejection, agreement between the closed-form capture bounds and an exhaustive
-  border scan, and the exact Catmull-Rom/box-derivative shader contract.
+  border scan, and the exact Catmull-Rom/tent-derivative shader contract. It also
+  pins the two capture-sizing claims across every output and FOV: the horizontal
+  center ratio equals the requested sharpness, and no capture width goes
+  unsampled.
 - `addons/retro_rt/tests/raster_fallback_smoke.gd` is the fallback's own probe:
   the backend reports `raster`, `rt_pipeline_active` stays false, native shadow
   toggles are untouched, `Environment.ssr_enabled` is turned on and restored on
@@ -758,8 +850,9 @@ anything that asserts hardware RT needs a real ray-tracing adapter and says so.
   menu reopening, and session retention across gameplay reconstruction.
 - `game/tests/panini_capture.tscn` boots the complete application and terrain
   level, validates every FOV endpoint plus the grade and posterization
-  toggles, saves a real graphical capture, and leaves a native CanvasLayer
-  status marker above the projected scene.
+  toggles, sweeps the display FOV across 40 eased angles to prove a moving angle
+  never resizes the 3D capture, saves a real graphical capture, and leaves a
+  native CanvasLayer status marker above the projected scene.
 
 ```text
 godot --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/panini_projection_smoke.gd

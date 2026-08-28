@@ -23,12 +23,11 @@ vec4 decode_scene_texel(ivec2 pixel) {
 	// Transparent render targets are already premultiplied by coverage. Decode
 	// each exact texel so downstream filtering always happens in scene-linear
 	// storage rather than in whatever the target happens to hold.
-	vec3 straight_srgb = coverage > 0.00001
+	// Forward+ honors use_hdr_2d, so the capture always stores scene-linear
+	// radiance; startup fails loudly if a target ever refuses that format.
+	vec3 linear_rgb = coverage > 0.00001
 		? clamp(sampled.rgb / coverage, vec3(0.0), vec3(1.0))
 		: vec3(0.0);
-	vec3 linear_rgb = scene_input_is_linear
-		? straight_srgb
-		: rt_srgb_to_linear(straight_srgb);
 	vec2 pixel_uv = (vec2(pixel) + vec2(0.5)) / vec2(scene_size);
 	vec3 visible_linear = linear_rgb * coverage;
 	// The environment is only visible where geometry is not. A fully covered

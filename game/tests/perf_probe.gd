@@ -21,6 +21,9 @@ extends SceneTree
 ##   PERF_STARS=0    keep the dome but drop the star field
 ##   PERF_GRADE=0    disable the RetroGrade present pass
 ##   PERF_PANINI=0  directly bypass the Panini projection target
+##   PERF_PANINI_SHARPNESS=f
+##                   source texels per output pixel at screen center the Panini
+##                   capture is sized for; 1.0 removes the center magnification
 ##   PERF_RT=0       stop ray tracing entirely
 ##   PERF_CARRIER=0  hide the hardware material-ID carrier; MEASUREMENT ONLY,
 ##                   deliberately breaks managed-pixel lighting
@@ -82,6 +85,11 @@ func _env_flag(name: String) -> bool:
 func _env_int(name: String, fallback: int) -> int:
 	var raw := OS.get_environment(name)
 	return int(raw) if raw.is_valid_int() else fallback
+
+
+func _env_number(name: String, fallback: float) -> float:
+	var raw := OS.get_environment(name)
+	return float(raw) if raw.is_valid_float() else fallback
 
 
 func _wait_for(predicate: Callable, frames: int) -> bool:
@@ -399,6 +407,8 @@ func _apply_toggles(terrain, day_night) -> void:
 		_shell.rt_manager.retro_post_enabled = false
 	if not _env_flag("PERF_PANINI"):
 		_shell.rt_manager.post_panini_enabled = false
+	_shell.rt_manager.post_panini_capture_sharpness = _env_number(
+		"PERF_PANINI_SHARPNESS", _shell.rt_manager.post_panini_capture_sharpness)
 	# The carrier is a deliberately overbright directional light whose only job is
 	# to transport material/instance IDs through separate specular. Hiding it
 	# measures that raster light pass, but decode_visibility_id then rejects every
