@@ -4,8 +4,8 @@ Ray-traced shadows and reflections for Blinn-Phong materials in Godot 4.7+.
 Forward+ only, with two runtime configurations under one visual contract:
 hardware RT where the adapter supports it, and a raster fallback -- Godot's own
 shadow maps and screen-space reflections -- where it does not. Both feed the
-same fullscreen SMAA 1x + FSR 1 post stack, so the fallback is the same picture
-with cheaper shadows and reflections rather than a different look.
+same fullscreen post stack, so the fallback is the same picture with cheaper
+shadows and reflections rather than a different look.
 
 No textures to import, no `.gdextension`, no autoloads, no input actions. The
 add-on is one folder and five global classes.
@@ -40,8 +40,8 @@ survive a rename; the script consts would not.)
   compositor, collects no scene, and builds no acceleration structure: managed
   materials render through `BlinnPhong.gdshader`'s standalone branch with
   native shadow maps, and the manager turns on `Environment.ssr_enabled` for
-  reflections. The post stack, the distance fog and the quality presets are
-  unchanged, which is what keeps the two configurations one picture.
+  reflections. The post stack and the distance fog are unchanged, which is what
+  keeps the two configurations one picture.
 
 ## Quick start
 
@@ -154,25 +154,14 @@ surfaces, including streamed terrain.
 
 Your gameplay UI must sit on the default canvas layer or higher. The stack
 presents through a `CanvasLayer` at `-100`, so anything above that is drawn
-after the grade and the upscale, ungraded and at native resolution.
+after the grade, ungraded and at native resolution.
 
-## Quality presets
+## Resolution
 
-`rt_quality` scales the internal render domain only. Output resolution, the root
-viewport, the UI and the final present always stay native — `scaling_3d_scale`
-is never touched, so Godot's own renderer scaler is not involved.
-
-| Preset | Scale | Internal at 1920x1080 | Upscaler | Sharpener |
-| --- | ---: | --- | --- | --- |
-| `NATIVE` | 1.00 | 1920x1080 | none (true bypass) | optional CAS, off by default |
-| `QUALITY` | 0.85 | 1632x918 | FSR 1 EASU | FSR 1 RCAS |
-| `BALANCED` | 0.75 | 1440x810 | FSR 1 EASU | FSR 1 RCAS |
-| `PERFORMANCE` | 0.50 | 960x540 | FSR 1 EASU | FSR 1 RCAS |
-
-Other output sizes round up per axis with `max(2, ceil(output * scale))`.
-
-`rt_quality_changed` is a live-change signal, not an initial-state
-notification — read `rt_quality` once in `_ready()`, then listen.
+Every pass runs at the native output size. There is no resolution scaling and no
+upscaler: `scaling_3d_scale` is never touched, so Godot's own renderer scaler is
+not involved either. The RT quality presets that used to drive an internal render
+domain, along with FSR 1, were removed on 2026-08-28.
 
 ## API
 
@@ -182,12 +171,11 @@ everything below.
 ### `RTSceneManager` (Node)
 
 **Signals** — `rt_ready`, `rt_failed(reason: String)`,
-`rt_quality_changed(preset: int, requested_scale: float)`,
 `topology_sync_started`, `topology_sync_completed`
 
 **Enums** — `RTBackend { HARDWARE, RASTER }` (reported state, not a request),
 `RTQualityPreset { NATIVE, QUALITY, BALANCED, PERFORMANCE }`,
-`SMAAQuality { LOW, MEDIUM, HIGH }`, `RTEnvironmentMode { FLAT, PANORAMA }`
+`RTEnvironmentMode { FLAT, PANORAMA }`
 
 **Methods**
 
@@ -200,8 +188,6 @@ everything below.
 | `RTSceneManager.hardware_rt_unavailable_reason()` | static `String`; empty when hardware RT is available |
 | `request_topology_sync()` | —; queues a safe full rebuild for ray-visible topology |
 | `get_active_rt_backend()` | `&"hardware"`, `&"raster"` or `&"none"` |
-| `set_rt_quality(preset: int)` | — |
-| `get_rt_quality_scale()` / `get_rt_quality_name()` | `float` / `StringName` |
 | `get_ray_render_resolution()` | internal traced size |
 | `get_full_render_resolution()` | native output size |
 | `get_render_snapshot()` / `get_profile_snapshot()` | `Dictionary` |
@@ -221,11 +207,6 @@ everything below.
 | `max_scene_lights` | `256` | |
 | `ray_origin_bias` / `ray_max_distance` | `0.001` / `10000.0` | |
 | `profiling_enabled` | `false` | feeds `get_profile_snapshot()` |
-| `rt_quality` | `NATIVE` | |
-| `post_anti_aliasing_enabled` | `true` | SMAA on/off |
-| `post_smaa_quality` | `HIGH` | |
-| `post_fsr_sharpness` | `0.5` | RCAS stops; **0.0 is sharpest**, 2.0 softest |
-| `post_cas_enabled` / `post_cas_sharpness` | `false` / `0.15` | Native-only sharpener |
 | `retro_post_enabled` | `true` | the colour grade |
 | `post_brightness`, `post_contrast`, `post_saturation`, `post_black_point`, `post_color_balance` | | |
 | `post_posterize_enabled`, `post_posterize_levels`, `post_posterize_strength` | | |
@@ -235,7 +216,7 @@ Every post-processing setter updates the live stack.
 ### Other types
 
 `RTVisualContract` (Resource) is the authorable form of the shared AA / grade /
-sharpening settings, plus the static viewport-state helpers the stack uses to
+settings, plus the static viewport-state helpers the stack uses to
 capture, normalize and restore the root Viewport. `RTLightingEffect`
 (CompositorEffect) and `RTPostProcessStack` are owned by the manager and are not
 meant to be instantiated directly.
@@ -260,7 +241,11 @@ the compositor is missing — and the post stack cannot run there either, becaus
 `RTPostProcessStack.configure()` sets `disable_3d` on the root viewport, which in
 the editor blanks the viewport and its gizmos. Press play to see the real image.
 
-## Anti-aliasing is SMAA, and cannot be MSAA
+## There is no anti-aliasing, and it cannot be MSAA
+
+The custom SMAA 1x that used to fill this gap was removed on 2026-08-28, along
+with FSR 1 and CAS. A replacement is still to be chosen. Whatever it is, it
+cannot be MSAA, and that is a property of the renderer rather than a preference.
 
 Hardware RT here is a deferred visibility-buffer renderer — `BlinnPhong.gdshader`
 packs a 21-bit instance + material ID through the separate-specular target, and
@@ -281,12 +266,7 @@ filter (`addons/retro_rt/examples/*`) once your own scene is set up.
 
 ## Credits
 
-`post_processing/smaa/AreaTexDX10.dds` and `SearchTex.dds` are the unmodified
-lookup textures from Jorge Jimenez's SMAA reference implementation, MIT
-licensed — see `post_processing/smaa/LICENSE-SMAA.txt`. The shader ports preserve
-the reference presets and lookup conventions in Godot shader syntax.
-
 `docs/RT_PIPELINE.md` is the architecture and validation spec: transport,
 resolution domains, colour and exposure, environment baking, the raster
-fallback, profiling fields, and the measured parity and frame-time results
+fallback, profiling fields, and the measured frame-time results
 behind the design.

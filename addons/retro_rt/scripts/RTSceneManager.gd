@@ -10,7 +10,6 @@ class_name RTSceneManager
 
 signal rt_ready
 signal rt_failed(reason: String)
-signal rt_quality_changed(preset: int, requested_scale: float)
 signal topology_sync_started
 signal topology_sync_completed
 ## Emitted when the fog parameters or the environment background radiance change.
@@ -28,19 +27,6 @@ enum RTBackend {
 enum RTEnvironmentMode {
 	FLAT,
 	PANORAMA,
-}
-
-enum SMAAQuality {
-	LOW,
-	MEDIUM,
-	HIGH,
-}
-
-enum RTQualityPreset {
-	NATIVE,
-	QUALITY,
-	BALANCED,
-	PERFORMANCE,
 }
 
 ## The live lights match the published snapshot.
@@ -153,9 +139,6 @@ const SKY_RADIANCE_SIZES := [32, 64, 128, 256, 512, 1024, 2048]
 # resolve fails loudly at parse time instead.
 const BLINN_PHONG_SHADER := preload("res://addons/retro_rt/shaders/BlinnPhong.gdshader")
 const RECEIVER_BOUNDS_MARGIN := 0.0001
-const RT_QUALITY_SCALES := [1.0, 0.85, 0.75, 0.5]
-const RT_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
-
 @export_node_path("Node") var geometry_root_path: NodePath = NodePath("../")
 @export_node_path("WorldEnvironment") var world_environment_path: NodePath = NodePath("../WorldEnvironment")
 ## Starts the runtime renderer from [method _ready]. Disable this when a loading
@@ -214,15 +197,6 @@ const RT_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
 		fog_curve = clampf(value, 0.01, 8.0)
 		_mark_fog_dirty()
 
-@export_group("Quality")
-
-var _rt_quality_preset: RTQualityPreset = RTQualityPreset.NATIVE
-@export var rt_quality: RTQualityPreset = RTQualityPreset.NATIVE:
-	get:
-		return _rt_quality_preset
-	set(value):
-		_set_rt_quality_value(int(value))
-
 @export_group("Post Processing")
 
 ## Master gate for the shared Panini projection pass. Cameras must additionally
@@ -231,40 +205,6 @@ var _rt_quality_preset: RTQualityPreset = RTQualityPreset.NATIVE
 @export var post_panini_enabled: bool = false:
 	set(value):
 		post_panini_enabled = value
-		_update_post_settings()
-
-@export var post_anti_aliasing_enabled: bool = true:
-	set(value):
-		post_anti_aliasing_enabled = value
-		_update_post_settings()
-
-@export var post_smaa_quality: SMAAQuality = SMAAQuality.HIGH:
-	set(value):
-		post_smaa_quality = value
-		_update_post_settings()
-
-## FSR 1 RCAS attenuation in stops, per the reference FsrRcasCon
-## (con = exp2(-value)). The sense is inverted: 0.0 is maximum sharpness and 2.0
-## the minimum. Applies only while a reduced quality preset is active; Native
-## bypasses FSR entirely.
-@export_range(0.0, 2.0, 0.01) var post_fsr_sharpness: float = 0.5:
-	set(value):
-		post_fsr_sharpness = value
-		_update_post_settings()
-
-## Optional FidelityFX CAS on the Native presentation. Off by default so Native
-## stays the reference image. Reduced presets sharpen with RCAS as part of FSR
-## and ignore this.
-@export var post_cas_enabled: bool = false:
-	set(value):
-		post_cas_enabled = value
-		_update_post_settings()
-
-## Standard CAS 0..1 sharpness. 0.15 is a conservative starting point for this
-## renderer's hard highlights and high-contrast geometry.
-@export_range(0.0, 1.0, 0.01) var post_cas_sharpness: float = 0.15:
-	set(value):
-		post_cas_sharpness = value
 		_update_post_settings()
 
 @export var retro_post_enabled: bool = true:
@@ -1888,18 +1828,6 @@ func get_active_rt_backend() -> StringName:
 			return &"none"
 
 
-func set_rt_quality(preset: int) -> void:
-	rt_quality = preset
-
-
-func get_rt_quality_scale() -> float:
-	return float(RT_QUALITY_SCALES[int(rt_quality)])
-
-
-func get_rt_quality_name() -> StringName:
-	return RT_QUALITY_NAMES[int(rt_quality)]
-
-
 ## The SubViewport the scene is rendered into, or null before the post stack runs.
 ##
 ## The root Viewport renders no 3D at all once this manager is active, so callers
@@ -1912,33 +1840,9 @@ func get_scene_viewport() -> SubViewport:
 	return null
 
 
+## Every pass renders at the output size; nothing in the stack scales resolution.
 func get_ray_render_resolution() -> Vector2i:
-	if _post_stack and _post_stack.has_method("get_render_size"):
-		var post_size: Variant = _post_stack.call("get_render_size")
-		if post_size is Vector2i and post_size.x > 0 and post_size.y > 0:
-			return post_size
-	var output_size := get_full_render_resolution()
-	if output_size.x <= 0 or output_size.y <= 0:
-		return Vector2i.ZERO
-	var scale := get_rt_quality_scale()
-	return Vector2i(
-		maxi(2, ceili(float(output_size.x) * scale)),
-		maxi(2, ceili(float(output_size.y) * scale)))
-
-
-func _set_rt_quality_value(preset: int) -> void:
-	if preset < RTQualityPreset.NATIVE or preset > RTQualityPreset.PERFORMANCE:
-		push_warning("Ignored invalid RT quality preset: %d" % preset)
-		return
-	if int(_rt_quality_preset) == preset:
-		return
-	_rt_quality_preset = preset
-	# Serialized scene values are applied before the manager enters the tree.
-	# Treat the signal as a live-change notification; initial consumers read the
-	# exported property directly and configure() receives its current value.
-	if is_inside_tree():
-		_update_post_settings()
-		rt_quality_changed.emit(preset, get_rt_quality_scale())
+	return get_full_render_resolution()
 
 
 func _collect_scene() -> bool:
@@ -3972,42 +3876,25 @@ func get_profile_snapshot() -> Dictionary:
 		var post_profile := _post_stack.get_profile_snapshot()
 		for key in post_profile:
 			result[key] = post_profile[key]
-	# Backend snapshots may describe their source viewport as the full render
-	# size. Canonical quality diagnostics are assigned after every merge so a
-	# backend cannot overwrite the output/render distinction.
+	# Backend snapshots may describe their source viewport themselves. The
+	# canonical resolution fields are assigned after every merge so a backend
+	# cannot overwrite them.
 	var output_resolution := full_resolution
-	var render_resolution := get_ray_render_resolution()
 	var post_output: Variant = result.get("post_output_size")
 	if post_output is Vector2i and post_output.x > 0 and post_output.y > 0:
 		output_resolution = post_output
-	var post_render: Variant = result.get("post_render_size")
-	if post_render is Vector2i and post_render.x > 0 and post_render.y > 0:
-		render_resolution = post_render
 	# Preserve the hardware callback's raw facts before the canonical target
-	# fields below are normalized for both backends.
+	# fields below are normalized.
 	var backend_dispatch_size := Vector2i(
 		int(result.get("ray_tracing_width", 0)),
 		int(result.get("ray_tracing_height", 0)))
 	var backend_dispatch_pixels := int(result.get("ray_tracing_dispatch_pixels", 0))
-	var effective_scale := Vector2.ONE
-	if output_resolution.x > 0 and output_resolution.y > 0:
-		effective_scale = Vector2(
-			float(render_resolution.x) / float(output_resolution.x),
-			float(render_resolution.y) / float(output_resolution.y))
-	var resolution_method: StringName = (
-		&"native" if render_resolution == output_resolution else &"internal_subviewport")
-	result["rt_quality_preset"] = int(rt_quality)
-	result["rt_quality_name"] = get_rt_quality_name()
-	result["rt_quality_scale"] = get_rt_quality_scale()
-	result["ray_tracing_requested_scale"] = get_rt_quality_scale()
 	result["output_resolution"] = output_resolution
-	result["render_resolution"] = render_resolution
+	result["render_resolution"] = output_resolution
 	result["full_render_resolution"] = output_resolution
 	result["ray_tracing_full_resolution"] = output_resolution
-	result["ray_tracing_resolution"] = render_resolution
-	result["ray_tracing_effective_scale"] = effective_scale
-	result["ray_tracing_dispatched_pixels"] = render_resolution.x * render_resolution.y
-	result["ray_tracing_resolution_method"] = resolution_method
+	result["ray_tracing_resolution"] = output_resolution
+	result["ray_tracing_dispatched_pixels"] = output_resolution.x * output_resolution.y
 	result["ray_tracing_backend_dispatch_size"] = backend_dispatch_size
 	result["ray_tracing_backend_dispatch_pixels"] = backend_dispatch_pixels
 	return result
@@ -4153,15 +4040,7 @@ func _update_post_settings() -> void:
 
 func _get_post_settings() -> Dictionary:
 	return {
-		"rt_render_scale": get_rt_quality_scale(),
-		"rt_quality_preset": int(rt_quality),
-		"rt_quality_name": get_rt_quality_name(),
 		"post_panini_enabled": post_panini_enabled,
-		"post_anti_aliasing_enabled": post_anti_aliasing_enabled,
-		"post_smaa_quality": post_smaa_quality,
-		"post_fsr_sharpness": post_fsr_sharpness,
-		"post_cas_enabled": post_cas_enabled,
-		"post_cas_sharpness": post_cas_sharpness,
 		"recover_opaque_coverage_from_rgb": _active_backend == RTBackend.HARDWARE,
 		"scene_capture_opaque": _active_backend == RTBackend.RASTER,
 		"enabled": retro_post_enabled,

@@ -2,16 +2,13 @@ class_name GraphicsOptionsDialog
 extends UIDialog
 
 ## Session-only graphics controls for the skeleton. The renderer row is deliberately
-## informational -- it is fixed before this dialog exists -- while ray tracing, quality and
+## informational -- it is fixed before this dialog exists -- while ray tracing and
 ## post processing are all safe to change at runtime through RTSceneManager.
 
 ## Whole-pipeline switch: on installs hardware RT shadows and mirrors, off installs the
 ## raster fallback. Emitted only when the machine can actually ray trace; otherwise the
 ## checkbox is disabled and the hint says why.
 signal rt_toggled(enabled: bool)
-signal quality_selected(preset: int)
-signal anti_aliasing_toggled(enabled: bool)
-signal smaa_quality_selected(quality: int)
 signal retro_post_toggled(enabled: bool)
 signal grass_quality_selected(quality: int)
 signal fps_counter_toggled(enabled: bool)
@@ -24,15 +21,11 @@ const DEFAULT_HORIZONTAL_FOV := 130.0
 var rendering_method: StringName = &"unknown"
 var active_backend: StringName = &"none"
 var rt_enabled: bool = true
-var quality_preset: int = RTSceneManager.RTQualityPreset.NATIVE
-var anti_aliasing_enabled: bool = true
-var smaa_quality: int = RTSceneManager.SMAAQuality.HIGH
 var retro_post_enabled: bool = true
 var grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
 var fps_counter_enabled: bool = false
 var horizontal_fov: float = DEFAULT_HORIZONTAL_FOV
 
-var _quality_selector: OptionButton
 var _backend_value: Label
 var _fov_slider: HSlider
 var _fov_value: Label
@@ -118,54 +111,6 @@ func _build_body() -> Control:
 	_fov_value.text = _fov_text(_fov_slider.value)
 	fov_row.add_child(_fov_value)
 	_fov_slider.value_changed.connect(_on_horizontal_fov_value_changed)
-
-	var quality_row := HBoxContainer.new()
-	quality_row.add_theme_constant_override("separation", 12)
-	column.add_child(quality_row)
-
-	var quality_label := Label.new()
-	quality_label.text = "Render quality"
-	quality_label.custom_minimum_size.x = 132.0
-	quality_row.add_child(quality_label)
-
-	_quality_selector = OptionButton.new()
-	_quality_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_quality_selector.add_item("Native (100%)", RTSceneManager.RTQualityPreset.NATIVE)
-	_quality_selector.add_item("Quality (85%, FSR)", RTSceneManager.RTQualityPreset.QUALITY)
-	_quality_selector.add_item("Balanced (75%, FSR)", RTSceneManager.RTQualityPreset.BALANCED)
-	_quality_selector.add_item("Performance (50%, FSR)", RTSceneManager.RTQualityPreset.PERFORMANCE)
-	var selected_index := _quality_selector.get_item_index(quality_preset)
-	if selected_index >= 0:
-		_quality_selector.select(selected_index)
-	_quality_selector.item_selected.connect(_on_quality_item_selected)
-	quality_row.add_child(_quality_selector)
-	UISystem.bind_button(_quality_selector)
-
-	var smaa_toggle := CheckBox.new()
-	smaa_toggle.text = "Enable SMAA"
-	smaa_toggle.button_pressed = anti_aliasing_enabled
-	smaa_toggle.toggled.connect(_on_anti_aliasing_toggled)
-	column.add_child(smaa_toggle)
-	UISystem.bind_button(smaa_toggle)
-
-	var smaa_row := HBoxContainer.new()
-	smaa_row.add_theme_constant_override("separation", 12)
-	column.add_child(smaa_row)
-	var smaa_label := Label.new()
-	smaa_label.text = "SMAA quality"
-	smaa_label.custom_minimum_size.x = 132.0
-	smaa_row.add_child(smaa_label)
-	var smaa_selector := OptionButton.new()
-	smaa_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	smaa_selector.add_item("Low", RTSceneManager.SMAAQuality.LOW)
-	smaa_selector.add_item("Medium", RTSceneManager.SMAAQuality.MEDIUM)
-	smaa_selector.add_item("High", RTSceneManager.SMAAQuality.HIGH)
-	var smaa_selected_index := smaa_selector.get_item_index(smaa_quality)
-	if smaa_selected_index >= 0:
-		smaa_selector.select(smaa_selected_index)
-	smaa_selector.item_selected.connect(_on_smaa_quality_item_selected.bind(smaa_selector))
-	smaa_row.add_child(smaa_selector)
-	UISystem.bind_button(smaa_selector)
 
 	# Grass is the single most expensive thing in the scene -- it is drawn as
 	# stacked shell layers, so it costs its shell count in overdraw over whatever
@@ -279,23 +224,6 @@ func _on_horizontal_fov_value_changed(value: float) -> void:
 func _on_rt_toggled(enabled: bool) -> void:
 	rt_enabled = enabled
 	rt_toggled.emit(enabled)
-
-
-func _on_quality_item_selected(index: int) -> void:
-	if _quality_selector == null:
-		return
-	quality_preset = _quality_selector.get_item_id(index)
-	quality_selected.emit(quality_preset)
-
-
-func _on_anti_aliasing_toggled(enabled: bool) -> void:
-	anti_aliasing_enabled = enabled
-	anti_aliasing_toggled.emit(enabled)
-
-
-func _on_smaa_quality_item_selected(index: int, selector: OptionButton) -> void:
-	smaa_quality = selector.get_item_id(index)
-	smaa_quality_selected.emit(smaa_quality)
 
 
 func _on_retro_post_toggled(enabled: bool) -> void:

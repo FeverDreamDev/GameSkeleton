@@ -1,4 +1,4 @@
-# Scalable internal-resolution RT and shared visual contract
+# Hardware RT, the raster fallback, and the shared visual contract
 
 This is the architecture and validation spec for the Retro RT add-on. For
 installation, the scene contract and the public API, read `../README.md` first —
@@ -53,8 +53,8 @@ Not a second renderer. It is the absence of the first one, plus two switches.
 The manager keeps **no scene representation** under the fallback: no mesh
 extraction, no texture atlases, no light table, no snapshot, no acceleration
 structure. That work exists only to feed a tracer. What it still owns is the
-post stack, the distance fog contract, and the quality presets — everything the
-image shares with hardware RT.
+post stack and the distance fog contract — everything the image shares with
+hardware RT.
 
 Three things then fall out of simply not installing the hardware path:
 
@@ -84,8 +84,8 @@ off-screen and backfacing geometry, and reflections disocclude at screen edges.
 Shadow maps have finite resolution and their own acne and peter-panning
 tradeoffs, where ray-traced shadows have neither. The analytic ground layer is
 hardware-only and is skipped: SSR covers terrain and grass in mirrors instead.
-Everything after the 3D pass — SMAA, FSR, Panini, the retro grade, the present —
-is identical.
+Everything after the 3D pass — the scene resolve, Panini, the retro grade, the
+present — is identical.
 
 ### In the editor
 
@@ -108,14 +108,13 @@ project defaults and the active runtime stack agree on:
 
 - TAA, built-in SMAA/FXAA, 2D MSAA, and 3D MSAA disabled. MSAA in particular is
   incompatible with the hardware RT visibility buffer, not merely unused; see
-  "Why anti-aliasing is SMAA and not MSAA";
+  "Why anti-aliasing cannot be MSAA";
 - native root `scaling_3d_scale = 1.0` with bilinear/no-upscaler mode;
-- no temporal reconstruction, history, motion-vector AA, accumulation,
-  denoising, or dynamic resolution;
+- no anti-aliasing of any kind at present, and no temporal reconstruction,
+  history, motion-vector AA, accumulation, denoising, or dynamic resolution;
 - texture mip bias `0.0`, 4x anisotropic filtering, and debanding disabled;
-- the custom SMAA 1x stack enabled at High quality by default;
-- classic Panini projection available after SMAA/EASU and before sharpening;
-- shared RetroGrade enabled after Panini and sharpening by default.
+- classic Panini projection available after the scene resolve;
+- shared RetroGrade enabled after Panini by default.
 
 The root Viewport state touched by the stack is captured before activation,
 normalized before validation, and restored on normal teardown or failure. If a
@@ -199,129 +198,37 @@ Every path composites `final = lit * (1 - f) + fog_color * f`:
 Fog is applied once, to the primary hit. Reflected radiance inherits the
 reflector's fog rather than the reflected path length.
 
-## RT quality presets and resolution domains
+## Shared post-processing: scene resolve, Panini, grade
 
-`RTSceneManager.rt_quality` selects one of four fixed internal scales. The enum
-is `RTQualityPreset` (`NATIVE`, `QUALITY`, `BALANCED`, `PERFORMANCE`, values
-`0`-`3`); the scales live in `RT_QUALITY_SCALES` and the names in
-`RT_QUALITY_NAMES`. Native is the default.
+Every runtime pipeline uses `RTPostProcessStack`. There are three canvas passes
+and no resolution scaling: everything runs at the native output size.
 
-| Preset | Enum | Scale | Internal size at 1920x1080 | Relative pixels | Upscaler | Sharpener |
-| --- | ---: | ---: | --- | ---: | --- | --- |
-| Native | 0 | 1.00 | 1920x1080 | 100% | none (bypass) | optional CAS, off by default |
-| Quality | 1 | 0.85 | 1632x918 | 72.25% | FSR 1 EASU | FSR 1 RCAS |
-| Balanced | 2 | 0.75 | 1440x810 | 56.25% | FSR 1 EASU | FSR 1 RCAS |
-| Performance | 3 | 0.50 | 960x540 | 25% | FSR 1 EASU | FSR 1 RCAS |
-
-Output resolution is 1920x1080 in every row: only the internal domain scales.
-The internal sizes above are exact because 1920x1080 divides evenly by all three
-reduced scales; other output sizes round up per axis with
-`max(2, ceil(output_dimension * scale))`, so odd dimensions are expected and
-validated (1151x647 at Quality gives 979x550, not 978x549).
-
-The fixed scale contract is exercised through the runtime profile by
-`receiver_registry_smoke.gd` and `game/tests/perf_probe.gd`; changing it also
-requires updating the Graphics menu labels and their application smoke tests.
-
-The root viewport, gameplay UI, final CanvasLayer, and final ColorRect always
-remain at the visible output size. `Viewport.scaling_3d_scale` remains `1.0`;
-quality selection never invokes Godot's root renderer scaler or a separate
-compute upscaler.
-
-Only the private scene-capture, SMAA, and SMAA-resolve SubViewports are resized;
-they share the internal render size. Each internal dimension is
-`max(2, ceil(output_dimension * scale))`. The hardware dispatch and the
-fallback's primary raster therefore follow the same internal pixel count. Native
-is the default; there is no automatic quality controller, persistence, or
-per-platform default.
-
-Reduced presets reconstruct back to the native output size with FSR 1 EASU
-followed by RCAS. The FSR EASU SubViewport is the one target sized to the output
-rather than the render size, and it exists only while a reduced preset is
-active. Expected relative internal pixel workloads are 100%, 72.25%, 56.25% and
-25%; EASU, Panini, sharpening, grade, and final presentation always run at 100%.
-
-Runtime callers select a tier with `set_rt_quality()` and can query
-`get_rt_quality_scale()`, `get_rt_quality_name()`, and
-`get_ray_render_resolution()`. `rt_quality_changed` is a live-change signal;
-it is not an initial-state notification during scene deserialization, so a
-consumer reads `rt_quality` once in `_ready()` before listening for changes.
-`get_full_render_resolution()` continues to mean the native output size.
-
-The authored gameplay camera remains attached to and current in its original
-viewport. A private Camera3D is current only in the scene-capture SubViewport
-and normally mirrors the authored camera's transform, projection parameters,
-offsets, near/far planes, aspect policy, cull mask, Environment, and
-CameraAttributes. It never copies the authored camera's `compositor`. Hardware
-RT continues to use the compositor installed on the World3D scenario by
-RTSceneManager.
-
-Panini is the only intentional camera-parity exception. The authored
-`RTPaniniCamera3D` remains perspective, `KEEP_WIDTH`, and at the selected exact
-horizontal display FOV. When the pass is eligible, the private camera alone is
-switched to the conservative symmetric rectilinear capture frustum derived from
-the complete output perimeter. Transform, near/far, cull mask, Environment and
-CameraAttributes remain unchanged. Profiling reports this as
-`post_internal_camera_capture_override = true`, while preserving the ordinary
-camera-resource parity fields.
-
-Hardware RT reserves render layer 20 for the material-ID carrier. While the
-carrier is active, each managed renderer instance is placed on that layer alone
-and authored lights have that layer removed from their renderer cull masks. This
-skips Godot's otherwise-empty raster `light()` invocation for every authored
-light over managed pixels. Both changes are `RenderingServer` overrides: the
-authored `MeshInstance3D.layers` and `Light3D.light_cull_mask` properties remain
-unchanged and are still what the shared receiver/light candidate lists publish.
-The raster fallback installs neither override, so it keeps the authored renderer
-masks and the authored shadow toggles.
-
-Because the private capture camera mirrors rather than widens the gameplay
-camera mask, a hardware camera must include layer 20. Startup and runtime camera
-switches validate that bit and fail with the camera path and reserved layer when
-it is missing; the add-on never silently edits the authored mask.
-
-## Shared post-processing: SMAA 1x, FSR 1, and Panini
-
-Every runtime backend uses `RTPostProcessStack`. Anti-aliasing is SMAA 1x on
-every backend and every preset. Reduced presets reconstruct with AMD FidelityFX
-Super Resolution 1. An eligible FPS camera then applies classic Panini at native
-output size. SMAA finishes completely before EASU, and Panini finishes before
-CAS/RCAS and the artistic grade.
-
-Native (`rt_render_scale == 1.0`):
+**There is currently no anti-aliasing.** The custom SMAA 1x implementation, FSR 1
+(EASU and RCAS), FidelityFX CAS and the RT quality presets that drove them were
+all removed on 2026-08-28. They existed to make one image work across renderers
+this project no longer targets, and the cost of keeping them parity-matched
+outgrew what they bought. A replacement is still to be chosen; see **Why
+anti-aliasing cannot be MSAA** below for the one option that is permanently
+closed off.
 
 ```text
-internal-resolution 3D scene / RT result  (internal size == output size)
-    -> transparent internal scene capture
-    -> per-texel scene-linear visible reconstruction (geometry + environment + fog)
-    -> one normalized HDR-to-SDR clamp
-    -> SMAA color edge detection
-    -> SMAA blend-weight calculation
-    -> SMAA neighborhood blending
-    -> scene-linear-to-sRGB into the resolve target
-    -> classic Panini D=1, S=0                       (native output size)
-    -> optional FidelityFX CAS (off by default)
+3D scene / RT result                             (native output size)
+    -> internal scene capture
+    -> scene resolve: coverage decode, environment reconstruction, fog,
+       one normalized HDR-to-SDR clamp, scene-linear-to-sRGB
+    -> classic Panini D=1, S=0                    (optional, native output size)
     -> sRGB-to-scene-linear, RetroGrade, display-range clamp
     -> explicit scene-linear-to-sRGB transfer
     -> final scene CanvasLayer (-100)
     -> normal gameplay Canvas/UI
 ```
 
-Quality, Balanced and Performance (`rt_render_scale < 1.0`) insert EASU before
-Panini and select RCAS after it:
-
-```text
-    ... SMAA neighborhood blending                   (internal render size)
-    -> scene-linear-to-sRGB into the resolve target  (internal render size)
-    -> FSR 1 EASU                                    (native output size)
-    -> classic Panini D=1, S=0                       (native output size)
-    -> FSR 1 RCAS
-    -> sRGB-to-scene-linear, RetroGrade, display-range clamp
-    ...
-```
-
-There is no bilinear reconstruction path. FSR 1 is the only upscaler, and it is
-never bypassed at a reduced preset.
+The scene capture is transparent under hardware RT, where managed pixels carry
+ID transport rather than colour and the environment has to be reconstructed
+behind them. The raster fallback captures opaque instead, both because it has no
+transport to hide and because Godot silently disables screen-space reflections
+in a transparent viewport. Coverage then reads 1 everywhere and the resolve pass
+composites nothing behind the image.
 
 All depth, camera-matrix, lighting, RT, shadow, reflection, fog, terrain, grass,
 and environment work is rectilinear and upstream. Panini warps that completed
@@ -348,7 +255,7 @@ payloads and returns to 130 only after an application restart.
 
 The pass runs only when both `RTSceneManager.post_panini_enabled` and the current
 perspective camera capability are enabled. Missing, unsupported, disabled,
-orthographic, and frustum cameras bind the SMAA-resolve or EASU source directly
+orthographic, and frustum cameras bind the scene resolve target directly
 to presentation. Cutscenes, warmup, examples, reflection-bake, and other utility
 cameras therefore retain the ordinary rectilinear path unless they explicitly
 opt in.
@@ -393,257 +300,80 @@ footprint approaches 1:1 so the two branches meet with no ring. Its negative
 lobes are clamped to the `[0,1]` range the upstream resolve already guarantees.
 It uses no compute, history, `textureGather`, dynamic allocation, or
 renderer-specific branch. The native-size Panini SubViewport is persistent,
-resized in place, rebound across quality changes, and set to `UPDATE_DISABLED`
-while bypassed.
+resized in place, and set to `UPDATE_DISABLED` while bypassed.
 
-Panini magnifies the center on every preset, but only the reduced presets get a
-sharpener after it for free, because RCAS is part of FSR. `main.tscn` therefore
-enables `post_cas_enabled` so Native is not the one preset presenting an
-unsharpened magnification; measured against the acceptance capture, CAS at the
-default 0.15 sharpness recovers about 21 percent more center gradient energy.
-The reusable add-on still defaults CAS off.
+Panini magnifies the center, and nothing sharpens it back: the CAS pass that
+used to sit after it was removed along with FSR. Any replacement sharpener
+belongs in the same place, between Panini and the grade.
 `generated/shader_warmup_manifest.tres` includes `panini_project.gdshader`; rerun
 the normal warmup generator whenever this shader or its material parameters
 change.
 
-Which branch a preset takes, and what the profile reports for it:
+`post_panini_source_stage` always reports `scene_resolve`, and
+`post_present_source` reports `panini` while the pass is active or
+`scene_resolve` while it is bypassed.
 
-| Preset | `post_fsr_active` | `post_upscale_method` | `post_sharpen_mode` | `post_easu_frames` | EASU target |
-| --- | --- | --- | --- | --- | --- |
-| Native | `false` | `none` | `none`, or `cas` if enabled | `0` | not allocated |
-| Quality | `true` | `fsr1_easu_rcas` | `rcas` | increments | output size |
-| Balanced | `true` | `fsr1_easu_rcas` | `rcas` | increments | output size |
-| Performance | `true` | `fsr1_easu_rcas` | `rcas` | increments | output size |
+### Why anti-aliasing cannot be MSAA
 
-The branch is chosen purely by `render_size != output_size`, not by the preset
-enum, so a future scale of exactly `1.0` on a non-Native preset would also take
-the bypass. See "RT quality presets and resolution domains" for the scales and
-internal sizes themselves.
+Whatever replaces SMAA, it cannot be MSAA, and that is a property of the
+renderer rather than a preference.
 
-### Why anti-aliasing is SMAA and not MSAA
+Hardware RT here is a deferred visibility-buffer renderer. `BlinnPhong.gdshader`
+packs a 21-bit instance plus material ID through the separate-specular target,
+and the compute shader decodes it before writing results back. Multisample
+resolve averages that packed integer away at exactly the silhouette pixels MSAA
+exists to fix, producing garbage IDs. Separately, `image2D` cannot bind a
+multisampled attachment, and the effect runs at `POST_SKY` with unresolved
+access, so its writes would be discarded by the resolve.
 
-MSAA is force-disabled by `RTVisualContract` on the root and on every owned
-SubViewport, and that is a hard architectural requirement rather than a
-preference. Hardware RT is a deferred visibility-buffer renderer:
-`BlinnPhong.gdshader` packs a 21-bit instance ID plus material ID into the
-separate-specular target through `encode_rt_visibility_id()`, and
-`rt_shadow_reflect.glsl` decodes it with `round(clamp(encoded, 0, 2047))` before
-writing results back with `imageStore`. Multisampling breaks every part of that
-contract: an `image2D` cannot bind a multisampled attachment; the effect runs at
-`POST_SKY` with `access_resolved_color`/`access_resolved_depth` false, so its
-writes would be discarded by the later resolve; and resolve averages samples,
-which destroys a packed integer ID at exactly the silhouette pixels MSAA exists
-to fix. Supporting it would require either a separate non-MSAA visibility pass
-or one ray per coverage sample, and the RT ray count is deliberately tied to
-internal pixel dimensions rather than sample count.
-
-SMAA 1x remains a sharp, spatial, non-temporal solution that runs as an ordinary
-canvas shader pipeline, so the whole post stack is SubViewports rather than a
-second RenderingDevice pipeline. It handles long diagonals and corner patterns
-more deliberately than a single-pass FXAA approximation without requiring
-history or motion vectors.
-
-### SMAA completes at the internal render size
-
-All three SMAA passes and the resolve that consumes them run at `render_size`.
-The neighborhood blend used to be fused into the native-resolution presentation
-shader, where it doubled as a four-tap bilinear upscale; it is now its own
-`SMAAResolve` pass in the internal pixel domain. Two things follow. FSR 1 EASU
-receives a genuinely anti-aliased image, which it requires. And both sharpeners
-can read a neighborhood of the post-SMAA result at all, which a fused pass
-cannot provide.
-
-`SMAAResolve` writes perceptual (sRGB-encoded) color. EASU, RCAS and CAS are all
-specified against display-like color in the 0..1 range rather than linear
-radiance, so the encode happens once here and the present pass performs the
-single decode back to scene-linear before the artistic grade. SMAA itself still
-blends in scene-linear on every renderer.
-
-SMAA's own sub-texel bilinear tap inside the neighborhood blend remains: it
-reads across an edge at a fractional offset and is intrinsic to the algorithm.
-It is a same-resolution filter and must never become a resolution-changing
-resample again.
-
-It applies to edge pixels only. A pixel with no blend weight — the large majority
-of a frame — takes the exact 1:1 texel decode instead, which is the same path the
-pass presents with when custom AA is disabled and what the reference algorithm
-returns for that case. The four-tap read is not merely unnecessary there: at 1:1
-its weights are zero, so three of its four `decode_scene_texel()` calls, each with
-its own environment reconstruction, were computed and then multiplied away.
-
-That environment reconstruction is itself now skipped wherever geometry covers
-the pixel completely, in both the resolve and the edge detector. The term is
-`rt_post_sample_environment(...) * (1.0 - coverage)`, `rt_post_scene_coverage()`
-returns exactly `1.0` for opaque raster and for the recovered managed case, and
-`rt_post_sample_environment()` is always finite — so this is an equivalence
-rather than an approximation, and it was verified as a zero-pixel difference over
-a full frame. A scene that draws its background as geometry rather than leaving it
-to the environment, such as the day/night sky dome, takes that branch everywhere:
-the reconstruction exists for backgrounds that show through, and there it never
-contributes. Together the two removed roughly 0.85 ms of a 6.8 ms frame at
-2560x1440 on an RTX 4060.
-
-The edge detector uses the maximum RGB color delta and the reference local
-contrast adaptation, rather than luminance-only edges or Forward+-only depth,
-normal, or G-buffer predication. It reconstructs the visible environment before
-testing silhouettes, so a geometry/sky boundary is judged from the colors that
-will actually be presented.
-
-The weight shader is a Godot-language SMAA 1x port. Its rectilinear area lookup
-uses the reference component-wise square-root distance encoding and subtexture
-index zero. Its diagonal searches retain the reference end corrections,
-quarter-texel crossing offsets, crossing-edge merge, and raw diagonal-distance
-area lookup; diagonal results take priority over vertical processing. High
-enables the reference diagonal/corner paths. `AreaTexDX10.dds` and
-`SearchTex.dds` are the unmodified official lookup data; both use linear/clamp
-sampling and neither repeats or uses mipmaps. Their MIT notice is kept in
-`post_processing/smaa/LICENSE-SMAA.txt`.
-
-When custom AA is disabled, the edge and blend SubViewports stop updating and
-`SMAAResolve` degrades to an exact 1:1 texel decode. It keeps running either
-way, because it is also the FSR/present source. RetroGrade remains independently
-switchable.
-
-### FSR 1
-
-`fsr_common.gdshaderinc` ports EASU, RCAS and CAS from AMD's reference
-`ffx_fsr1.h` and `ffx_cas.h`. Constraints that keep the port inside the shared
-SubViewport post stack:
-
-- no compute shaders and no RenderingDevice-only APIs, so the pass stays inside
-  the SubViewport post stack rather than standing up a second pipeline;
-- no FSR2, no temporal accumulation, no motion vectors, no history — FSR 1 is
-  spatial, and that is the whole reason it is usable here;
-- no `textureGather`. The reference EASU gathers three channels; this port
-  fetches the same 12 texels with `texelFetch`. The rule originally existed for
-  the Compatibility renderer, which is gone, so a gather port is now possible —
-  it would be an optimization, not a correctness fix, and has not been measured.
-  The kernel stays EASU rather than a bicubic, Lanczos or generic-sharpening
-  substitute;
-- no 16-bit packed path — the full float path only;
-- every fetch coordinate is clamped, so no pass samples out of bounds and no
-  black border pixels appear at the frame edge.
-
-The reference's fast approximate reciprocals return a large finite value for
-`1/0`, which the surrounding saturates absorb. Exact division would produce
-`inf` and then `0*inf = NaN`, so each one is replaced by an exact division with
-the degenerate case handled explicitly. That is more accurate than the
-reference, never less.
-
-EASU maps output pixels to source texel space with the reference `con0`
-relationship, `(output_pixel + 0.5) * (input_size / output_size) - 0.5`. Both
-constants are refreshed by `_resize()` whenever either dimension moves, so a
-window resize and a quality switch are equally safe and no fixed 16:9 output
-resolution is assumed.
-
-RCAS's limiter clamps its numerators against the center sample as well as the
-ring — `min(mn4, e)` and `max(mx4, e)`, matching the reference — while the
-denominators stay on the ring extremes. This only matters when the center sits
-outside its four neighbors, which is exactly the lone-bright-or-dark-pixel case
-that rings. Solving the filter for `result >= 0` gives `w >= -e/(4*mx4)`, so the
-numerator has to see `e`; a ring-only limiter authorizes a lobe that overshoots.
-A black pixel on a uniform `0.5` ring resolves to about `-0.56` without the
-clamp and is correctly left untouched with it; ordinary neighborhoods remain
-unchanged.
-
-### Native is a true bypass
-
-At Native the stack does not create the EASU SubViewport at all. EASU does zero
-work, RCAS does zero work, no bilinear upscale runs, and no upscale buffer is
-allocated. `get_debug_contract_snapshot()` reports `easu_viewport_size`,
-`easu_uniform_input_size` and `easu_uniform_output_size` as zero and `fsr_active`
-as false; the profile reports `post_upscale_method` as `none`. The present pass
-reads the native resolve through Panini when the current camera is eligible, or
-reads resolve directly when it is not. Native is therefore a true *FSR* bypass;
-Panini eligibility is independent of quality.
-
-`_resize()` owns the whole FSR lifecycle, because it is the single place both
-sizes are recomputed. Entering the FSR path allocates the EASU material and
-viewport once; a later size change resizes them in place rather than
-reallocating. Leaving the FSR path rebinds the present pass to the resolve
-target *before* the upscale viewport leaves the tree, so no `ViewportTexture` is
-left dangling and no frame is presented from a freed target. Nothing here is
-allocated per frame.
-
-### Sharpening
-
-RCAS is used only as part of the FSR path and never at Native. CAS is the
-Native-only optional sharpener and is off by default, so Native ships as the
-reference image. The two are never stacked: `sharpen_mode` is `rcas` whenever
-FSR is active, otherwise `cas` when CAS is enabled, otherwise `none`.
-
-`post_fsr_sharpness` is the reference RCAS attenuation in stops per
-`FsrRcasCon`, applied as `exp2(-value)`. Note the inverted sense: `0.0` is
-maximum sharpness and `2.0` the minimum. The default `0.5` is mid-range and
-deliberately conservative, because hard Blinn-Phong highlights, hard RT shadows
-and high-contrast geometry ring easily. `post_cas_sharpness` is on the standard
-CAS `0..1` scale, which the reference `CasSetup` maps to
-`peak = -1/lerp(8, 5, sharpness)`; `0.15` is the recommended starting point.
-
-Native-resolution sharpening is CAS specifically because RCAS belongs to FSR and
-is bypassed along with it.
+`RTVisualContract.apply_native_viewport_state()` therefore force-disables 2D and
+3D MSAA, TAA, built-in screen-space AA and debanding on the root Viewport,
+captures the authored values first, and restores them on teardown or failure.
 
 ### Targets and precision
 
-Scene, edge, blend and resolve SubViewports all request `use_hdr_2d = true`, and
-so do the persistent Panini target and the EASU target while it exists, but this
-is honored: Forward+ gives every one of them RGBA16F, and the profile reports an
-HDR scene capture plus HDR data targets. The targets are also `transparent_bg`,
-which guarantees all four SMAA directional weight channels are present rather
-than RGB-only. The `post_*_hdr_requested`, `post_*_hdr`, and
+Every target is native output size; nothing in the stack scales resolution.
+
+The scene capture and the resolve target both request `use_hdr_2d = true`, as
+does the persistent Panini target, and Forward+ honors it: all three are
+RGBA16F. The `post_*_hdr_requested`, `post_*_hdr`, and
 `post_data_viewports_rgba` profile fields remain, and still distinguish the
 requested state from what the renderer actually supplied.
 
-Intermediate SubViewports are persistent and resize only when the output size or
-quality preset changes; they are not reallocated per frame. Every SMAA
-`viewport_size` uniform receives the internal render size, because its texel
-offsets address the scaled source textures. The Panini target is always allocated
-at native output size and is disabled rather than freed while bypassed. Its input
-is always 1:1 — resolve at Native or EASU at a reduced preset — and the final
-present source is Panini when active or that same upstream image when bypassed.
+Intermediate SubViewports are persistent and resize only when the output size
+changes; they are not reallocated per frame. The Panini target is disabled rather
+than freed while bypassed. Its input is always the resolve target, 1:1, and the
+final present source is Panini when active or the resolve target when bypassed.
 
-Posterization happens after AA and remains intentionally crisp. There is one
+Posterization happens in the grade and remains intentionally crisp. There is one
 grade path, shared by both pipelines; there is no separate compute grade for
 hardware.
 
 ### Artist controls
 
-- `post_anti_aliasing_enabled`;
-- `post_smaa_quality` (`LOW`, `MEDIUM`, or `HIGH`);
-- `post_fsr_sharpness` (RCAS attenuation in stops; reduced presets only);
-- `post_cas_enabled` and `post_cas_sharpness` (Native only);
 - `post_panini_enabled` (manager-wide request; camera capability still gates it);
 - `retro_post_enabled`;
 - brightness, contrast, saturation, black point, and color balance;
 - posterization enable, levels, and strength.
 
-The SMAA presets are fixed shared behavior rather than renderer-specific
-quality overrides:
-
-| Preset | Threshold | Search steps | Diagonal steps | Corner detection |
-| --- | ---: | ---: | ---: | --- |
-| Low | 0.15 | 4 | 0 | off |
-| Medium | 0.10 | 8 | 0 | off |
-| High | 0.10 | 16 | 8 | on, rounding 0.25 |
-
 The final scene is presented on CanvasLayer `-100`. Gameplay UI should remain on
-the default canvas or a higher CanvasLayer, so it is not graded, posterized,
-anti-aliased, upscaled, or Panini-projected as part of the 3D image. EASU and
-Panini operate only on the private rendered 3D scene; fonts, reticles, HUD
-elements, and menus stay at native resolution. `panini_capture.tscn` leaves a
-known status marker above the scene to make that ordering visible.
+the default canvas or a higher CanvasLayer, so it is not graded, posterized or
+Panini-projected as part of the 3D image. Panini operates only on the private
+rendered 3D scene; fonts, reticles, HUD elements, and menus stay at native
+resolution. `panini_capture.tscn` leaves a known status marker above the scene to
+make that ordering visible.
 
 ## Color, exposure, and texture sampling
 
 Forward+ honors the HDR 2D scene-capture request. The capture is sampled as
-scene-linear data and can carry radiance above `1.0` until the common
-pre-SMAA/display-range boundary. The `scene_input_is_linear` uniform the edge
-and resolve shaders read follows `use_hdr_2d`, and exists to decode a
-non-linear capture back to scene-linear if one is ever configured.
+scene-linear data and can carry radiance above `1.0` until the display-range
+boundary in the resolve pass. The `scene_input_is_linear` uniform the resolve
+shader reads follows `use_hdr_2d`, and exists to decode a non-linear capture
+back to scene-linear if one is ever configured.
 
-Both pipelines reconstruct the same visible environment, clamp normalized linear
-scene color once before SMAA, and run the same SMAA and RetroGrade math. The
-resolve pass encodes to perceptual color for FSR/CAS, and the present shader
+Both pipelines reconstruct the same visible environment and clamp normalized
+linear scene color once in the resolve pass. That pass encodes to perceptual
+color, and the present shader
 decodes once, performs the post-grade display clamp, and emits one explicit
 scene-linear-to-sRGB transfer into the deliberately LDR root canvas. Environment
 tonemapping is neutral Linear/1.0. There is no shader-authored 8-bit
@@ -686,7 +416,7 @@ Environment has selected that background mode.
 
 The scene capture is transparent and the final shared canvas shader reconstructs
 that same immutable environment snapshot behind every exact geometry texel from
-the active camera's corner rays before SMAA. This prevents native Forward+ sky
+the active camera's corner rays. This prevents native Forward+ sky
 tonemapping from becoming a second visible-background path. Background radiance
 and reflection misses therefore share panorama texels, energy, rotation, seam
 wrapping, and pole clamping.
@@ -917,49 +647,35 @@ bytes, output and internal RT resolution, and:
 - `environment_bake_source` (`flat`, `rendering_server`, or
   `panorama_source_canonical`), source-canonicalization count, peak/minimum/
   maximum radiance, and seam/north-pole/south-pole continuity measurements;
-- `post_anti_aliasing_enabled`, integer `post_smaa_quality`, and
-  `post_smaa_quality_name`;
-- `post_fsr_active`, `post_upscale_method` (`none` or `fsr1_easu_rcas`),
-  `post_fsr_input_size`, `post_fsr_output_size`, `post_easu_viewport_size`,
-  `post_fsr_sharpness`, `post_sharpen_mode` (`none`, `cas`, or `rcas`),
-  `post_cas_enabled`, and `post_cas_sharpness`. At Native the sizes are zero and
-  the method is `none`, which is how a true FSR bypass is asserted;
 - `post_panini_requested`, camera capable/enabled/eligible state,
   `post_panini_enabled`, and `post_panini_bypass_reason`; projection/filter
   identity, persistent target and source stage/size; display and conservative
   capture horizontal/vertical FOVs; mapped rect and source-UV bounds; perimeter
   sample and invalid-sample counts; `post_panini_bounds_valid`; and dedicated
   `post_panini_buffer_bytes`;
-- `rt_quality_preset`, `rt_quality_name`, `ray_tracing_requested_scale`,
-  per-axis `ray_tracing_effective_scale`, `ray_tracing_full_resolution`,
-  `ray_tracing_resolution`, `ray_tracing_resolution_method`, and rendered or
-  dispatched pixel count;
-- `post_output_size`, `post_render_size`, `post_requested_render_scale`,
-  per-axis `post_effective_render_scale`, `post_resolution_method`,
-  `post_rendered_pixels`, `post_smaa_viewport_size`, and
+- `ray_tracing_full_resolution`, `ray_tracing_resolution`, and dispatched pixel
+  count. Every stage is native output size, so these all agree;
+- `post_output_size`, `post_render_size`, `post_rendered_pixels`, and
   `post_persistent_buffer_bytes`; camera diagnostic fields report the source
   identity, active state, visual-state and resource matches, null internal
   compositor, and the intentional Panini capture-FOV override;
 - `post_native_size` (legacy output-size alias), instrumented
   `post_per_frame_allocation_count`/peak, initialization and total explicit
   post-object allocation counts, resize count/timing,
-  `post_scene_capture_frames`, `post_edge_frames`, `post_blend_frames`,
-  `post_resolve_frames`, `post_easu_frames` (zero at Native), and
+  `post_scene_capture_frames`, `post_resolve_frames`, and
   `post_panini_frames` (increments only while eligible).
   The per-frame counters measure explicit Node/Resource construction inside the
   stack's frame update, including a settings update issued earlier in the same
   manager frame. Normal unchanged frames report zero because every viewport,
   material, and pass node is reused; a revision that rebuilds the temporary
   visual-contract Resource is visible in the current/peak counter.
-  The persistent byte count is the owned color targets only: four render-size
-  targets (scene, edges, weights, resolve) at 8 bytes per pixel, since Forward+
-  honors the RGBA16F request, plus one persistent output-size Panini target and
-  one additional output-size EASU target while a reduced preset is active. It
-  excludes depth/render buffers and the SMAA LUTs.
-  `get_post_debug_contract_snapshot()` exposes the same target as
-  `panini_buffer_bytes`;
-- `post_pass_gpu_ms` names the measured `scene`, SMAA, optional `fsr_easu`,
-  `panini`, and `root_present` viewport costs while profiling is enabled;
+  The persistent byte count is the owned color targets only: two native-size
+  targets (scene capture and resolve) at 8 bytes per pixel, since Forward+ honors
+  the RGBA16F request, plus the persistent output-size Panini target. It excludes
+  depth/render buffers. `get_post_debug_contract_snapshot()` exposes the same
+  target as `panini_buffer_bytes`;
+- `post_pass_gpu_ms` names the measured `scene`, `scene_resolve`, `panini`, and
+  `root_present` viewport costs while profiling is enabled;
 - `post_scene_viewport_hdr_requested`/`post_scene_viewport_hdr`,
   `post_data_viewports_hdr_requested`/`post_data_viewports_hdr`, and
   `post_data_viewports_rgba`;
@@ -991,9 +707,8 @@ frames, camera, FOV, and quality.
 The relevant controls are:
 
 - `PERF_PROFILE=1` enables manager and named viewport timings;
-- `PERF_PANINI=0`, `PERF_SMAA=0`, and `PERF_GRADE=0` isolate post stages;
+- `PERF_PANINI=0` and `PERF_GRADE=0` isolate post stages;
 - `PERF_FOV=120|130|140` selects exact horizontal display coverage;
-- `PERF_RT_QUALITY=0|1|2|3` selects Native through Performance;
 - `PERF_RASTER=1` forces the raster fallback on a hardware-capable system, so
   both pipelines can be measured on one machine;
 - `PERF_WARMUP` and `PERF_FRAMES` override the sampling windows;
@@ -1017,7 +732,7 @@ has no `RenderingDevice`, so every headless run exercises the raster fallback;
 anything that asserts hardware RT needs a real ray-tracing adapter and says so.
 
 - `addons/retro_rt/tests/panini_projection_smoke.gd` tests 120, 130, and 140
-  degrees across 4:3, 16:9, 21:9, and 32:9 domains and all four render scales.
+  degrees across 4:3, 16:9, 21:9, and 32:9 domains.
   It checks symmetry, finite capture FOVs, aspect-derived vertical extent,
   full-perimeter containment, zero invalid pre-clamp samples, invalid-input
   rejection, agreement between the closed-form capture bounds and an exhaustive
@@ -1034,16 +749,15 @@ anything that asserts hardware RT needs a real ray-tracing adapter and says so.
 - `addons/retro_rt/tests/receiver_registry_smoke.gd` boots the terrain fixture
   against hardware RT, and skips with a clear message on a machine that has
   none: the receiver registry only exists under hardware RT. With
-  `--panini`, it asserts native resolve-to-Panini ordering, capture overscan,
+  `--panini`, it asserts resolve-to-Panini ordering, capture overscan,
   persistent native target/buffer bytes, pass/frame counters, non-perspective
   bypass, and shifted-camera-offset bypass without mutating the authored values.
-  `--panini-performance` additionally asserts EASU-to-Panini-to-RCAS ordering.
 - `game/tests/player_camera_smoke.gd`, `app_flow_smoke.gd`, and
   `app_recovery_smoke.gd` cover exact horizontal camera semantics, sprint
   clamping/return, dynamic-FOV disable, live settings application while paused,
   menu reopening, and session retention across gameplay reconstruction.
 - `game/tests/panini_capture.tscn` boots the complete application and terrain
-  level, validates every FOV/quality/SMAA endpoint plus sharpening and grade
+  level, validates every FOV endpoint plus the grade and posterization
   toggles, saves a real graphical capture, and leaves a native CanvasLayer
   status marker above the projected scene.
 
@@ -1052,7 +766,6 @@ godot --headless --path . --rendering-method forward_plus --script res://addons/
 godot --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/raster_fallback_smoke.gd
 godot --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/ground_layer_smoke.gd
 godot --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
-godot --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
 godot --path . --rendering-method forward_plus --scene res://game/tests/panini_capture.tscn
 godot --path . --rendering-method forward_plus --scene res://game/tests/panini_capture.tscn -- --force-raster
 ```

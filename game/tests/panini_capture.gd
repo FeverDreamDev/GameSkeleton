@@ -110,77 +110,14 @@ func _run() -> void:
 	_check(bool(native_profile.get("post_panini_bounds_valid", false))
 		and int(native_profile.get("post_panini_invalid_samples", -1)) == 0,
 		"capture overscan contains every Panini perimeter sample")
-	_check(not bool(native_profile.get("post_fsr_active", true))
-		and native_profile.get("post_panini_source_stage", &"invalid") == &"smaa_resolve",
-		"Native remains a true EASU bypass upstream of Panini")
+	_check(native_profile.get("post_panini_source_stage", &"invalid") == &"scene_resolve",
+		"Panini reads the scene resolve target")
 	_check(int(native_profile.get("post_panini_buffer_bytes", 0)) > 0,
 		"Panini reports its persistent native-size buffer bytes")
 	_check(native_profile.get("post_panini_sample_mode", &"invalid") == &"catmull_rom_or_box",
 		"the stack uses the portable Catmull-Rom or box Panini filter")
-	# Restore what the scene authored rather than hardcoding off, so the rest of
-	# the run keeps presenting the sharpening the application actually ships.
-	var authored_cas: bool = _app.rt_manager.post_cas_enabled
-	_app.rt_manager.post_cas_enabled = true
-	for _frame in 2:
-		await get_tree().process_frame
-	var cas_profile := _app.rt_manager.get_profile_snapshot()
-	_check(cas_profile.get("post_sharpen_mode", &"invalid") == &"cas"
-		and bool(cas_profile.get("post_panini_enabled", false)),
-		"CAS remains downstream of Native Panini when enabled")
-	_app.rt_manager.post_cas_enabled = authored_cas
-
-	for preset: int in [
-		RTSceneManager.RTQualityPreset.QUALITY,
-		RTSceneManager.RTQualityPreset.BALANCED,
-	]:
-		_app.call("_on_graphics_quality_selected", preset)
-		_check(await _wait_for(
-			func() -> bool:
-				var profile := _app.rt_manager.get_profile_snapshot()
-				return (
-					int(profile.get("rt_quality_preset", -1)) == preset
-					and bool(profile.get("post_fsr_active", false))
-					and bool(profile.get("post_panini_enabled", false))
-					and profile.get("post_panini_source_stage", &"invalid") == &"fsr_easu"),
-			60), "reduced quality %d keeps EASU before Panini" % preset)
-
-	_app.call("_on_graphics_quality_selected", RTSceneManager.RTQualityPreset.PERFORMANCE)
-	_check(await _wait_for(
-		func() -> bool:
-			var profile := _app.rt_manager.get_profile_snapshot()
-			return (
-				int(profile.get("rt_quality_preset", -1))
-					== RTSceneManager.RTQualityPreset.PERFORMANCE
-				and bool(profile.get("post_fsr_active", false))
-				and int(profile.get("post_easu_frames", 0)) > 0
-				and int(profile.get("post_panini_frames", 0)) > 0),
-		120), "Performance renders EASU followed by Panini")
-
-	# SMAA off plus all three quality levels must leave Panini active and in the
-	# same perceptual/native domain. Grade and posterization are independently
-	# toggled downstream to catch accidental pass fusion or source rebinding.
-	_app.call("_on_graphics_anti_aliasing_toggled", false)
-	for _frame in 2:
-		await get_tree().process_frame
-	var smaa_off_profile := _app.rt_manager.get_profile_snapshot()
-	_check(not bool(smaa_off_profile.get("post_anti_aliasing_enabled", true))
-		and bool(smaa_off_profile.get("post_panini_enabled", false)),
-		"SMAA bypass still feeds Panini")
-	_app.call("_on_graphics_anti_aliasing_toggled", true)
-	for quality: int in [
-		RTSceneManager.SMAAQuality.LOW,
-		RTSceneManager.SMAAQuality.MEDIUM,
-		RTSceneManager.SMAAQuality.HIGH,
-	]:
-		_app.call("_on_graphics_smaa_quality_selected", quality)
-		for _frame in 2:
-			await get_tree().process_frame
-		var smaa_profile := _app.rt_manager.get_profile_snapshot()
-		_check(bool(smaa_profile.get("post_anti_aliasing_enabled", false))
-			and int(smaa_profile.get("post_smaa_quality", -1)) == quality
-			and bool(smaa_profile.get("post_panini_enabled", false)),
-			"SMAA quality %d remains upstream of Panini" % quality)
-
+	# Grade and posterization are independently toggled downstream to catch
+	# accidental pass fusion or source rebinding.
 	_app.call("_on_graphics_retro_post_toggled", false)
 	for _frame in 2:
 		await get_tree().process_frame
@@ -198,22 +135,17 @@ func _run() -> void:
 		and bool(posterize_profile.get("post_panini_enabled", false)),
 		"grade and posterization remain downstream of Panini")
 	_app.rt_manager.post_posterize_enabled = false
-	# The quality transition intentionally creates the EASU target once. Sample a
-	# later unchanged frame for the steady-state allocation assertion.
+	# Sample a later unchanged frame for the steady-state allocation assertion.
 	for _frame in 3:
 		await get_tree().process_frame
-	var reduced_profile := _app.rt_manager.get_profile_snapshot()
-	_check(reduced_profile.get("post_panini_source_stage", &"invalid") == &"fsr_easu",
-		"reduced quality feeds native-size EASU into Panini")
-	_check(reduced_profile.get("post_sharpen_mode", &"invalid") == &"rcas",
-		"RCAS remains downstream of Panini")
-	_check(reduced_profile.get("post_panini_viewport_size", Vector2i.ZERO)
-		== reduced_profile.get("post_output_size", Vector2i.ONE),
+	var steady_profile := _app.rt_manager.get_profile_snapshot()
+	_check(steady_profile.get("post_panini_viewport_size", Vector2i.ZERO)
+		== steady_profile.get("post_output_size", Vector2i.ONE),
 		"Panini and the native UI share the output pixel domain")
-	_check(int(reduced_profile.get("post_per_frame_allocation_count", -1)) == 0,
+	_check(int(steady_profile.get("post_per_frame_allocation_count", -1)) == 0,
 		"steady-state presentation allocates no post resources")
 
-	await _finish(reduced_profile)
+	await _finish(steady_profile)
 
 
 func _finish(profile: Dictionary = {}) -> void:

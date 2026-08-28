@@ -19,7 +19,6 @@ extends SceneTree
 ##   PERF_SKY=0      hide the day/night sky dome
 ##   PERF_CLOUDS=0   keep the dome but drop the cloud layer
 ##   PERF_STARS=0    keep the dome but drop the star field
-##   PERF_SMAA=0     disable the three SMAA passes
 ##   PERF_GRADE=0    disable the RetroGrade present pass
 ##   PERF_PANINI=0  directly bypass the Panini projection target
 ##   PERF_RT=0       stop ray tracing entirely
@@ -41,8 +40,6 @@ extends SceneTree
 ##                   in this Forward+ SubViewport setup, at any density. Retained
 ##                   because it is the check that would notice a future engine
 ##                   version wiring it up.
-##   PERF_RT_QUALITY=n
-##                   RT quality preset: 0 native, 1 quality, 2 balanced, 3 performance
 ##   PERF_RASTER=1   force the raster fallback -- shadow maps and SSR -- instead
 ##                   of hardware RT, so the two can be measured on one machine
 ##   PERF_VSYNC=1    restore vsync; OFF by default because the display cap
@@ -398,8 +395,6 @@ func _apply_toggles(terrain, day_night) -> void:
 		day_night.clouds_enabled = false
 	if not _env_flag("PERF_STARS"):
 		day_night.stars_enabled = false
-	if not _env_flag("PERF_SMAA"):
-		_shell.rt_manager.post_anti_aliasing_enabled = false
 	if not _env_flag("PERF_GRADE"):
 		_shell.rt_manager.retro_post_enabled = false
 	if not _env_flag("PERF_PANINI"):
@@ -419,11 +414,6 @@ func _apply_toggles(terrain, day_night) -> void:
 	# themselves -- a reflection ray that misses then resolves to the environment.
 	if not _env_flag("PERF_GROUND"):
 		_shell.rt_manager.ground_march_steps = 0
-	# The scaled presets composite the same scene at fewer pixels, so a native
-	# optimisation has to be shown still working -- and still paying off -- there.
-	var quality_preset := OS.get_environment("PERF_RT_QUALITY")
-	if quality_preset.is_valid_int():
-		_shell.rt_manager.set_rt_quality(int(quality_preset))
 	# Retro RT suppresses every native shadow map while it runs, so stopping RT
 	# also RESTORES two 4-split directional cascades over the whole scene. An
 	# RT on/off comparison therefore measures (RT stack) minus (the shadow maps RT
@@ -454,7 +444,7 @@ func _report(terrain) -> void:
 	var toggles: PackedStringArray = []
 	for name in [
 			"PERF_GRASS", "PERF_SKY", "PERF_CLOUDS", "PERF_STARS", "PERF_GROUND", "PERF_NATIVE_SHADOWS",
-			"PERF_SMAA", "PERF_GRADE", "PERF_PANINI", "PERF_CARRIER", "PERF_RT"]:
+			"PERF_GRADE", "PERF_PANINI", "PERF_CARRIER", "PERF_RT"]:
 		if not _env_flag(name):
 			toggles.append(name.trim_prefix("PERF_").to_lower() + "=off")
 	if toggles.is_empty():
@@ -524,7 +514,7 @@ func _report(terrain) -> void:
 			int(profile.get("managed_instances", -1)),
 			int(profile.get("receiver_only_instances", -1)),
 			float(profile.get("dispatch_gpu_seconds", 0.0)) * 1000.0])
-		# Per-viewport GPU time, which is the only way to attribute the SMAA and
+		# Per-viewport GPU time, which is the only way to attribute the resolve and
 		# present passes -- they are 2D canvas draws with no render-thread hook.
 		#
 		# These are a SINGLE FRAME, not a distribution: the rendering server

@@ -7,13 +7,12 @@ extends SceneTree
 ## The receiver registry exists only under hardware RT -- the raster fallback
 ## keeps no scene representation to register anything into -- so this test needs
 ## a real ray-tracing adapter and skips itself with a clear message on a machine
-## that has none. The Panini sub-modes are pipeline-independent but ride on the
-## same live scene, so they skip with it.
+## that has none. The Panini sub-mode is pipeline-independent but rides on the
+## same live scene, so it skips with it.
 ##
 ##   godot --path . --rendering-method forward_plus --resolution 2560x1440 \
 ##     --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
 ##   ... -- --panini
-##   ... -- --panini-performance
 
 var _failures := PackedStringArray()
 
@@ -86,14 +85,8 @@ func _run() -> void:
 	manager.name = "RTSceneManager"
 	manager.auto_start = false
 	manager.ray_tracing_enabled = true
-	var panini_performance_requested := (
-		OS.get_cmdline_user_args().has("--panini-performance"))
-	var panini_requested := (
-		OS.get_cmdline_user_args().has("--panini")
-		or panini_performance_requested)
+	var panini_requested := OS.get_cmdline_user_args().has("--panini")
 	manager.post_panini_enabled = panini_requested
-	if panini_performance_requested:
-		manager.rt_quality = RTSceneManager.RTQualityPreset.PERFORMANCE
 	manager.profiling_enabled = true
 	manager.geometry_root_path = NodePath("..")
 	manager.world_environment_path = NodePath("")
@@ -251,13 +244,8 @@ func _run() -> void:
 		_check(not bool(after.get(
 			"post_internal_camera_source_visual_state_exact", true)),
 			"Panini reports its intentional private-camera capture override")
-		if panini_performance_requested:
-			_check(bool(after.get("post_fsr_active", false)),
-				"the reduced Panini probe keeps FSR active")
-			_check(after.get("post_panini_source_stage", &"invalid") == &"fsr_easu",
-				"reduced Panini reads native-output EASU")
-			_check(after.get("post_sharpen_mode", &"invalid") == &"rcas",
-				"RCAS remains downstream of reduced Panini")
+		_check(after.get("post_panini_source_stage", &"invalid") == &"scene_resolve",
+			"Panini reads the scene resolve target")
 		if camera != null:
 			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 			await process_frame
@@ -267,7 +255,7 @@ func _run() -> void:
 					== &"non_perspective_camera",
 				"a non-perspective source directly bypasses Panini")
 			_check(bypass_profile.get("post_present_source", &"invalid")
-				== (&"fsr_easu" if panini_performance_requested else &"smaa_resolve"),
+				== &"scene_resolve",
 				"the ineligible-camera bypass keeps the correct upstream source")
 			_check(int(bypass_profile.get("post_per_frame_allocation_count", -1)) == 0,
 				"camera eligibility changes allocate no post resources")
@@ -292,7 +280,7 @@ func _run() -> void:
 	else:
 		_check(not bool(after.get("post_panini_enabled", true)),
 			"the reusable manager keeps Panini directly bypassed by default")
-		_check(after.get("post_present_source", &"invalid") == &"smaa_resolve",
+		_check(after.get("post_present_source", &"invalid") == &"scene_resolve",
 			"the Native bypass presents resolve directly")
 	_check(local_light.light_cull_mask == authored_light_mask,
 		"RT renderer overrides never mutate the authored local-light mask")

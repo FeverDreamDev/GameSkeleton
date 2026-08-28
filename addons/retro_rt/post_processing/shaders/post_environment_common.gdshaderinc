@@ -77,8 +77,8 @@ vec3 rt_post_camera_world_ray(vec2 uv) {
 }
 
 vec3 rt_post_sdr_boundary(vec3 linear_radiance) {
-	// Clamp once before SMAA without adding another explicit quantization stage.
-	// The RGBA16F targets retain their native precision until the shared LDR
-	// presentation target.
+	// The single HDR-to-SDR scene boundary, applied without adding another
+	// explicit quantization stage. The RGBA16F targets retain their native
+	// precision until the shared LDR presentation target.
 	return clamp(linear_radiance, vec3(0.0), vec3(1.0));
 }

@@ -26,17 +26,6 @@ layout_mode = 2
 [node name="FPS_Counter" type="Label" parent="MarginContainer/VBoxContainer" unique_id=1184507831]
 layout_mode = 2
 
-[node name="QualityRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="QualityLabel" type="Label" parent="MarginContainer/VBoxContainer/QualityRow"]
-layout_mode = 2
-text = "RT Quality"
-
-[node name="QualitySelector" type="OptionButton" parent="MarginContainer/VBoxContainer/QualityRow"]
-layout_mode = 2
-
 [node name="RenderMetrics" type="Label" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
 text = "RT backend: initializing"

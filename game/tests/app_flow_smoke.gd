@@ -134,7 +134,6 @@ func _run() -> void:
 	# Deliberately here rather than at the menu: the toggle reinstalls the
 	# pipeline, so it is only a real test once there is one running.
 	await _assert_rt_toggle_lifecycle(app)
-	await _assert_quality_lifecycle(app)
 
 	_check(await _wait_for(
 		func() -> bool: return app.player.is_on_floor(),
@@ -365,39 +364,6 @@ func _assert_rt_receiver_contract(app: GameApp) -> void:
 		"receiver-only RT profile count matches live receiver records")
 	_check(receiver_masks_are_zero,
 		"every live receiver-only terrain record has traversal mask zero")
-
-
-func _assert_quality_lifecycle(app: GameApp) -> void:
-	var native_profile := app.rt_manager.get_profile_snapshot()
-	_check(app.rt_manager.get_rt_quality_scale() == 1.0
-		and not bool(native_profile.get("post_fsr_active", true))
-		and native_profile.get("post_upscale_method", &"invalid") == &"none",
-		"Native quality is a true FSR bypass")
-	_check(native_profile.get("post_easu_viewport_size", Vector2i.ONE) == Vector2i.ZERO,
-		"Native quality owns no EASU target")
-
-	app.call("_on_graphics_quality_selected", RTSceneManager.RTQualityPreset.QUALITY)
-	await process_frame
-	await process_frame
-	var quality_profile := app.rt_manager.get_profile_snapshot()
-	_check(is_equal_approx(app.rt_manager.get_rt_quality_scale(), 0.85),
-		"Quality preset requests the approved 0.85 RT scale")
-	_check(bool(quality_profile.get("post_fsr_active", false))
-		and quality_profile.get("post_upscale_method", &"none") == &"fsr1_easu_rcas",
-		"Quality preset activates the FSR 1 EASU/RCAS path")
-	_check(quality_profile.get("post_easu_viewport_size", Vector2i.ZERO) != Vector2i.ZERO,
-		"Quality preset allocates an EASU target")
-
-	app.call("_on_graphics_quality_selected", RTSceneManager.RTQualityPreset.NATIVE)
-	await process_frame
-	await process_frame
-	var restored_profile := app.rt_manager.get_profile_snapshot()
-	_check(not bool(restored_profile.get("post_fsr_active", true))
-		and restored_profile.get("post_upscale_method", &"invalid") == &"none",
-		"switching back to Native bypasses FSR again")
-	_check(restored_profile.get("post_easu_viewport_size", Vector2i.ONE) == Vector2i.ZERO,
-		"switching back to Native releases the EASU target")
-
 
 func _assert_fov_settings_lifecycle(app: GameApp) -> void:
 	var view := app.player.get_node_or_null("ViewRoot") as PlayerCamera

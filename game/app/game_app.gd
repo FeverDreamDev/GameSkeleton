@@ -51,15 +51,11 @@ var _suppress_pause_resume: bool = false
 var _last_rt_failure: String = ""
 var _master_recovery_requested: bool = false
 
-# Graphics settings are session-scoped by design. Native RT still exercises the shared present
-# path; reduced presets opt into FSR through RTSceneManager.
-var _rt_quality: int = RTSceneManager.RTQualityPreset.NATIVE
+# Graphics settings are session-scoped by design.
 # Whole-pipeline switch: on is hardware RT shadows and mirrors, off is the raster
 # fallback (native shadow maps plus SSR). Defaults on and is forced off on an
 # adapter that cannot ray trace, where the dialog offers no choice either.
 var _rt_enabled: bool = RTSceneManager.hardware_rt_supported()
-var _smaa_enabled: bool = true
-var _smaa_quality: int = RTSceneManager.SMAAQuality.HIGH
 var _retro_post_enabled: bool = true
 # Unlike the RT settings this one lives on the level rather than the renderer, so
 # it has to be re-applied to each newly installed world.
@@ -130,7 +126,6 @@ func _wire_systems() -> bool:
 	if rt_manager != null:
 		rt_manager.rt_ready.connect(_on_rt_ready)
 		rt_manager.rt_failed.connect(_on_rt_failed)
-		rt_manager.rt_quality_changed.connect(_on_rt_quality_changed)
 		rt_manager.distance_fog_changed.connect(_on_distance_fog_changed)
 		_apply_graphics_preferences()
 	return true
@@ -307,17 +302,11 @@ func _open_graphics_options() -> void:
 	_graphics_dialog.rendering_method = StringName(RenderingServer.get_current_rendering_method())
 	_graphics_dialog.active_backend = rt_manager.get_active_rt_backend() if rt_manager != null else &"none"
 	_graphics_dialog.rt_enabled = _rt_enabled
-	_graphics_dialog.quality_preset = _rt_quality
-	_graphics_dialog.anti_aliasing_enabled = _smaa_enabled
-	_graphics_dialog.smaa_quality = _smaa_quality
 	_graphics_dialog.retro_post_enabled = _retro_post_enabled
 	_graphics_dialog.grass_quality = _grass_quality
 	_graphics_dialog.fps_counter_enabled = _fps_counter_enabled
 	_graphics_dialog.horizontal_fov = _horizontal_fov
 	_graphics_dialog.rt_toggled.connect(_on_graphics_rt_toggled)
-	_graphics_dialog.quality_selected.connect(_on_graphics_quality_selected)
-	_graphics_dialog.anti_aliasing_toggled.connect(_on_graphics_anti_aliasing_toggled)
-	_graphics_dialog.smaa_quality_selected.connect(_on_graphics_smaa_quality_selected)
 	_graphics_dialog.retro_post_toggled.connect(_on_graphics_retro_post_toggled)
 	_graphics_dialog.grass_quality_selected.connect(_on_graphics_grass_quality_selected)
 	_graphics_dialog.fps_counter_toggled.connect(_on_graphics_fps_counter_toggled)
@@ -839,15 +828,7 @@ func _apply_graphics_preferences() -> void:
 	# before each world's RT start, where the manager is stopped and simply reads
 	# the value. Changing it on a running manager goes through the setter below.
 	rt_manager.ray_tracing_enabled = _rt_enabled
-	rt_manager.set_rt_quality(_rt_quality)
-	rt_manager.post_anti_aliasing_enabled = _smaa_enabled
-	rt_manager.post_smaa_quality = _smaa_quality as RTSceneManager.SMAAQuality
 	rt_manager.retro_post_enabled = _retro_post_enabled
-
-
-func _on_graphics_quality_selected(preset: int) -> void:
-	_rt_quality = preset
-	_apply_graphics_preferences()
 
 
 ## The RT toggle genuinely reinstalls the pipeline, so unlike every other entry
@@ -861,16 +842,6 @@ func _on_graphics_rt_toggled(enabled: bool) -> void:
 	await rt_manager.set_ray_tracing_enabled(enabled)
 	if _graphics_dialog != null and is_instance_valid(_graphics_dialog):
 		_graphics_dialog.set_active_backend(rt_manager.get_active_rt_backend())
-
-
-func _on_graphics_anti_aliasing_toggled(enabled: bool) -> void:
-	_smaa_enabled = enabled
-	_apply_graphics_preferences()
-
-
-func _on_graphics_smaa_quality_selected(quality: int) -> void:
-	_smaa_quality = quality
-	_apply_graphics_preferences()
 
 
 func _on_graphics_retro_post_toggled(enabled: bool) -> void:
@@ -934,10 +905,6 @@ func _apply_grass_quality() -> void:
 	for system in get_tree().get_nodes_in_group(&"procedural_terrain_grass_system"):
 		if system is TerrainGrass3D:
 			(system as TerrainGrass3D).grass_quality = _grass_quality as TerrainGrass3D.GrassQuality
-
-
-func _on_rt_quality_changed(preset: int, _requested_scale: float) -> void:
-	_rt_quality = preset
 
 
 func _on_rt_ready() -> void:

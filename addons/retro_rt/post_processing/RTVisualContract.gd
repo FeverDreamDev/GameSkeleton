@@ -2,40 +2,15 @@
 extends Resource
 class_name RTVisualContract
 
-## Renderer-independent visual settings shared by the hardware and software paths.
+## Renderer-independent visual settings shared by both pipelines, plus the static
+## viewport-state helpers the post stack uses to capture, normalize and restore
+## the root Viewport.
 ##
-## `enabled` controls SMAA only. Retro grading has its own switch so disabling
-## anti-aliasing is a real two-pass bypass while the final grade can stay active.
-##
-## Anti-aliasing is SMAA on every backend. MSAA is deliberately not an option
-## here: the hardware RT path packs a bit-exact visibility ID through the
-## separate-specular target, and multisample resolve averages that away. See
-## `apply_native_viewport_state`, which keeps 2D and 3D MSAA force-disabled.
-
-enum SMAAQuality {
-	LOW,
-	MEDIUM,
-	HIGH,
-}
-
-const LOW := SMAAQuality.LOW
-const MEDIUM := SMAAQuality.MEDIUM
-const HIGH := SMAAQuality.HIGH
-
-@export_category("SMAA 1x")
-@export var enabled: bool = true:
-	set(value):
-		if enabled == value:
-			return
-		enabled = value
-		emit_changed()
-
-@export var quality: SMAAQuality = SMAAQuality.HIGH:
-	set(value):
-		if quality == value:
-			return
-		quality = value
-		emit_changed()
+## There is currently no anti-aliasing. MSAA is not an option here: the hardware
+## RT path packs a bit-exact visibility ID through the separate-specular target,
+## and multisample resolve averages that away, so `apply_native_viewport_state`
+## keeps 2D and 3D MSAA force-disabled. The custom SMAA 1x that used to fill that
+## gap has been removed along with FSR and CAS; a replacement is still to come.
 
 @export_category("Retro Grade")
 @export var retro_enabled: bool = true:
@@ -108,79 +83,6 @@ const HIGH := SMAAQuality.HIGH
 		posterize_strength = value
 		emit_changed()
 
-@export_category("Upscaling and Sharpening")
-
-## FidelityFX CAS on the native-resolution presentation. This is the Native-only
-## sharpener; the reduced presets sharpen with FSR 1 RCAS instead and never
-## stack the two. Off by default so Native stays the reference image.
-@export var cas_enabled: bool = false:
-	set(value):
-		if cas_enabled == value:
-			return
-		cas_enabled = value
-		emit_changed()
-
-## Standard CAS 0..1 sharpness. The reference CasSetup maps this to
-## peak = -1/lerp(8, 5, sharpness).
-@export_range(0.0, 1.0, 0.01) var cas_sharpness: float = 0.15:
-	set(value):
-		value = clampf(value, 0.0, 1.0)
-		if is_equal_approx(cas_sharpness, value):
-			return
-		cas_sharpness = value
-		emit_changed()
-
-## FSR 1 RCAS attenuation in stops, per the reference FsrRcasCon
-## (con = exp2(-value)). Note the inverted sense: 0.0 is maximum sharpness and
-## 2.0 the minimum. The default sits mid-range because hard Blinn-Phong
-## highlights, hard RT shadows and high-contrast geometry ring easily.
-@export_range(0.0, 2.0, 0.01) var fsr_sharpness: float = 0.5:
-	set(value):
-		value = clampf(value, 0.0, 2.0)
-		if is_equal_approx(fsr_sharpness, value):
-			return
-		fsr_sharpness = value
-		emit_changed()
-
-
-## Descriptive alias for integrations which do not want the short `enabled` name.
-var anti_aliasing_enabled: bool:
-	get:
-		return enabled
-	set(value):
-		enabled = value
-
-
-func get_smaa_preset() -> Dictionary:
-	match quality:
-		SMAAQuality.LOW:
-			return {
-				"threshold": 0.15,
-				"max_search_steps": 4,
-				"max_diagonal_steps": 0,
-				"diagonal_detection_enabled": false,
-				"corner_detection_enabled": false,
-				"corner_rounding": 0.0,
-			}
-		SMAAQuality.MEDIUM:
-			return {
-				"threshold": 0.10,
-				"max_search_steps": 8,
-				"max_diagonal_steps": 0,
-				"diagonal_detection_enabled": false,
-				"corner_detection_enabled": false,
-				"corner_rounding": 0.0,
-			}
-		_:
-			return {
-				"threshold": 0.10,
-				"max_search_steps": 16,
-				"max_diagonal_steps": 8,
-				"diagonal_detection_enabled": true,
-				"corner_detection_enabled": true,
-				"corner_rounding": 0.25,
-			}
-
 
 func get_retro_settings() -> Dictionary:
 	return {
@@ -215,16 +117,6 @@ func set_retro_settings(settings: Dictionary) -> void:
 		posterize_levels = float(settings["posterize_levels"])
 	if settings.has("posterize_strength"):
 		posterize_strength = float(settings["posterize_strength"])
-
-
-static func quality_name(value: int) -> StringName:
-	match value:
-		SMAAQuality.LOW:
-			return &"LOW"
-		SMAAQuality.MEDIUM:
-			return &"MEDIUM"
-		_:
-			return &"HIGH"
 
 
 ## Captures every caller-owned viewport property changed by

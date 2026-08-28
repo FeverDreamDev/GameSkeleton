@@ -2,8 +2,8 @@ shader_type canvas_item;
 render_mode unshaded, blend_disabled;
 
 // Classic Panini projection, fixed to D=1 and squeeze S=0. The source is the
-// opaque perceptual image produced by SMAA resolve at Native or by FSR EASU at
-// a reduced preset. CAS/RCAS and RetroGrade intentionally remain downstream.
+// opaque perceptual image produced by the scene resolve pass. RetroGrade
+// intentionally remains downstream.
 uniform sampler2D source_texture : filter_linear, repeat_disable;
 uniform vec2 source_size = vec2(1.0);
 // Horizontal Panini-plane extent reached by the requested display FOV.

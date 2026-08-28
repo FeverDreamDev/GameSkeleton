@@ -1,8 +1,8 @@
 # Integrated Godot Game Skeleton
 
 This project is a runnable integration shell for the included procedural terrain/grass,
-FPS controller, Win98 UI, save/load, shader-warmup, game-flow, Blinn–Phong, Retro RT,
-SMAA, and FSR add-ons.
+FPS controller, Win98 UI, save/load, shader-warmup, game-flow, Blinn–Phong, and
+Retro RT add-ons.
 
 ## Runtime flow
 
@@ -66,11 +66,12 @@ evidence are recorded in
   the fallback the manager pushes the fog to managed materials itself, since no compositor
   is there to apply it. Terrain vertex colours are authored in scene-linear and target the
   grass canopy so the ground stays invisible under grass.
-- The default is Native (100%) plus High SMAA. Reduced RT quality presets enable the FSR1
-  EASU/RCAS path. The FPS camera then applies a native-resolution classic Panini projection
-  before CAS/RCAS and RetroGrade; the reticle and Win98 UI remain native-resolution layers
-  above presentation. The full order is `3D + RT -> environment -> SMAA -> optional EASU ->
-  Panini -> CAS/RCAS -> RetroGrade -> HUD/UI`. Only the FPS camera opts in, so cutscene and
+- Every pass runs at the native output size; there is no resolution scaling and, as of
+  2026-08-28, no anti-aliasing — the custom SMAA 1x, FSR 1 and CAS were removed and a
+  replacement has yet to be chosen. The FPS camera applies a classic Panini projection
+  before RetroGrade; the reticle and Win98 UI remain native-resolution layers above
+  presentation. The full order is `3D + RT -> scene resolve (environment + fog) ->
+  Panini -> RetroGrade -> HUD/UI`. Only the FPS camera opts in, so cutscene and
   utility cameras bypass it. Shifted camera offsets also bypass the symmetric Panini mapping.
 - **Graphics** in the main and pause menus leads with **RT shadows & mirrors**, a single
   checkbox over the whole pipeline: on is hardware RT, off is the raster fallback, and it
@@ -78,7 +79,7 @@ evidence are recorded in
   hardware RT it is disabled and the hint says which requirement is missing, rather than
   offering a switch that cannot do anything. The dialog also carries a live 120–140 degree
   horizontal FOV slider (130 by default, exact horizontal coverage at every aspect ratio),
-  render quality, SMAA, retro grading, grass detail and an FPS counter.
+  retro grading, grass detail and an FPS counter.
   Sprint adds up to 10 degrees without exceeding 140. FOV is session-only, omitted from save
   payloads, and returns to 130 when the application restarts. Grass is the one worth
   reaching for first: it is stacked shell layers,
@@ -130,7 +131,6 @@ GPU, and the fallback is a shipping path that deserves the coverage.
 # Skips with a clear message when the machine has none.
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
 ```
 
 ## Frame-time probe
@@ -143,7 +143,7 @@ at the authored resolution, because the RT stack sizes every pass from it:
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
 ```
 
-`PERF_GRASS=0`, `PERF_SKY=0`, `PERF_CLOUDS=0`, `PERF_STARS=0`, `PERF_SMAA=0`,
+`PERF_GRASS=0`, `PERF_SKY=0`, `PERF_CLOUDS=0`, `PERF_STARS=0`,
 `PERF_PANINI=0`, `PERF_GRADE=0`, `PERF_GROUND=0` and `PERF_RT=0` switch a
 subsystem off so its share of the frame can be read off the difference. `PERF_CLOUDS` and
 `PERF_STARS` keep the dome and drop one term inside the sky shader;
@@ -153,8 +153,7 @@ otherwise select hardware RT, so the two pipelines can be measured against each
 other on one machine. `PERF_PROFILE=1` adds the RT manager's main-thread cost
 and its snapshot counters.
 
-`PERF_FOV=120|130|140` selects the FPS camera's horizontal display FOV and
-`PERF_RT_QUALITY=0|1|2|3` selects Native, Quality, Balanced, or Performance.
+`PERF_FOV=120|130|140` selects the FPS camera's horizontal display FOV.
 With profiling enabled, `post_pass_gpu_ms.panini` isolates the projection target and
 `post_panini_buffer_bytes` reports its persistent native-size color buffer.
 
@@ -183,8 +182,7 @@ an exact cross-launch gate because the star layout seed is generated per run.
 ## Panini acceptance
 
 `game/tests/panini_capture.tscn` boots the real application, enters the terrain
-level, and verifies all three FOV endpoints, all four quality presets, SMAA
-off/Low/Medium/High, Native CAS, reduced-preset RCAS, and grade and posterization
+level, and verifies all three FOV endpoints plus the grade and posterization
 toggles. It also checks capture overscan and steady-state allocation contracts,
 leaves an unwarped status marker above the scene, writes
 `res://.godot/panini_capture.png`, and prints a `PANINI_CAPTURE` JSON record.
@@ -198,8 +196,8 @@ against the raster fallback on a machine that would otherwise select hardware RT
 ```
 
 A passing run displays `PANINI CHECK: PASS` and exits zero; the JSON record must
-report `renderer: "forward_plus"`, `source_stage: "fsr_easu"`, and zero invalid
-samples.
+report `renderer: "forward_plus"`, `source_stage: "scene_resolve"`, and zero
+invalid samples.
 
 ## Exporting
 

@@ -40,45 +40,40 @@ func _test_capture_contract_matrix() -> void:
 		Vector2i(3440, 1440),
 		Vector2i(3840, 1080),
 	]
-	var scales := [1.0, 0.85, 0.75, 0.5]
 	for output: Vector2i in outputs:
-		for scale: float in scales:
-			var render := Vector2i(
-				maxi(2, ceili(float(output.x) * scale)),
-				maxi(2, ceili(float(output.y) * scale)))
-			for fov in [120.0, 130.0, 140.0]:
-				var contract := RTPostProcessStack.debug_panini_capture_contract(
-					fov, output, render)
-				var label := "%s -> %s at %.1f degrees" % [output, render, fov]
-				_check(bool(contract.get("valid", false)),
-					"capture contract is valid for %s" % label)
-				_check(int(contract.get("perimeter_samples", 0))
-					== 2 * output.x + 2 * output.y,
-					"capture contract covers every border texel center and logical corner for %s" % label)
-				_check(int(contract.get("invalid_samples", -1)) == 0,
-					"capture contract has no pre-clamp invalid sample for %s" % label)
-				var uv_min: Vector2 = contract.get("source_uv_min", Vector2(-1.0, -1.0))
-				var uv_max: Vector2 = contract.get("source_uv_max", Vector2(2.0, 2.0))
-				_check(uv_min.x >= 0.0 and uv_min.y >= 0.0
-					and uv_max.x <= 1.0 and uv_max.y <= 1.0,
-					"mapped perimeter remains inside the source for %s" % label)
-				var mapped_min: Vector2 = contract.get("mapped_rect_min", Vector2.ZERO)
-				var mapped_max: Vector2 = contract.get("mapped_rect_max", Vector2.ZERO)
-				_check((mapped_min + mapped_max).length() < 0.0001,
-					"inverse mapping stays symmetric for %s" % label)
-				var capture_fov := float(contract.get("capture_vertical_fov", 0.0))
-				_check(capture_fov > 0.0 and capture_fov < 179.0,
-					"capture vertical FOV stays finite for %s" % label)
-				var capture_hfov := float(contract.get("capture_horizontal_fov", 0.0))
-				_check(capture_hfov > 0.0 and capture_hfov < 179.0,
-					"capture horizontal FOV stays finite for %s" % label)
-				var expected_center_y := tan(deg_to_rad(fov) * 0.5) \
-					/ (float(output.x) / float(output.y))
-				_check(is_equal_approx(
-					float(contract.get("panini_extent_y", 0.0)), expected_center_y),
-					"vertical center extent preserves perspective FOV for %s" % label)
+		for fov in [120.0, 130.0, 140.0]:
+			var contract := RTPostProcessStack.debug_panini_capture_contract(
+				fov, output)
+			var label := "%s at %.1f degrees" % [output, fov]
+			_check(bool(contract.get("valid", false)),
+				"capture contract is valid for %s" % label)
+			_check(int(contract.get("perimeter_samples", 0))
+				== 2 * output.x + 2 * output.y,
+				"capture contract covers every border texel center and logical corner for %s" % label)
+			_check(int(contract.get("invalid_samples", -1)) == 0,
+				"capture contract has no pre-clamp invalid sample for %s" % label)
+			var uv_min: Vector2 = contract.get("source_uv_min", Vector2(-1.0, -1.0))
+			var uv_max: Vector2 = contract.get("source_uv_max", Vector2(2.0, 2.0))
+			_check(uv_min.x >= 0.0 and uv_min.y >= 0.0
+				and uv_max.x <= 1.0 and uv_max.y <= 1.0,
+				"mapped perimeter remains inside the source for %s" % label)
+			var mapped_min: Vector2 = contract.get("mapped_rect_min", Vector2.ZERO)
+			var mapped_max: Vector2 = contract.get("mapped_rect_max", Vector2.ZERO)
+			_check((mapped_min + mapped_max).length() < 0.0001,
+				"inverse mapping stays symmetric for %s" % label)
+			var capture_fov := float(contract.get("capture_vertical_fov", 0.0))
+			_check(capture_fov > 0.0 and capture_fov < 179.0,
+				"capture vertical FOV stays finite for %s" % label)
+			var capture_hfov := float(contract.get("capture_horizontal_fov", 0.0))
+			_check(capture_hfov > 0.0 and capture_hfov < 179.0,
+				"capture horizontal FOV stays finite for %s" % label)
+			var expected_center_y := tan(deg_to_rad(fov) * 0.5) \
+				/ (float(output.x) / float(output.y))
+			_check(is_equal_approx(
+				float(contract.get("panini_extent_y", 0.0)), expected_center_y),
+				"vertical center extent preserves perspective FOV for %s" % label)
 	var wide_140 := RTPostProcessStack.debug_panini_capture_contract(
-		140.0, Vector2i(2560, 1440), Vector2i(2560, 1440))
+		140.0, Vector2i(2560, 1440))
 	var wide_center_vertical_fov := rad_to_deg(2.0 * atan(
 		float(wide_140.get("panini_extent_y", 0.0))))
 	_check(absf(wide_center_vertical_fov - 114.19) < 0.05,
@@ -95,7 +90,7 @@ func _test_analytic_bounds_match_full_scan() -> void:
 	]:
 		for fov in [120.0, 125.5, 130.0, 137.25, 140.0]:
 			var contract := RTPostProcessStack.debug_panini_capture_contract(
-				fov, output, output)
+				fov, output)
 			var extent_x := float(contract.get("panini_extent_x", 0.0))
 			var extent_y := float(contract.get("panini_extent_y", 0.0))
 			var scanned := Vector2.ZERO
@@ -114,11 +109,11 @@ func _test_analytic_bounds_match_full_scan() -> void:
 func _test_invalid_contracts() -> void:
 	for fov in [NAN, INF, 0.0, 180.0]:
 		var contract := RTPostProcessStack.debug_panini_capture_contract(
-			fov, Vector2i(2560, 1440), Vector2i(2560, 1440))
+			fov, Vector2i(2560, 1440))
 		_check(not bool(contract.get("valid", true)),
 			"invalid display FOV %.3f is rejected" % fov)
 	var empty := RTPostProcessStack.debug_panini_capture_contract(
-		130.0, Vector2i.ZERO, Vector2i(2560, 1440))
+		130.0, Vector2i.ZERO)
 	_check(not bool(empty.get("valid", true)), "an empty output is rejected")
 
 

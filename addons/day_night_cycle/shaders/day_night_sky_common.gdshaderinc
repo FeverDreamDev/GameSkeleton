@@ -279,7 +279,7 @@ vec3 star_field(vec3 direction, float pixel_angle) {
 			}
 			float distance_to_star = sqrt(distance_squared);
 			// A solid core inside a soft skirt. A true point would alias into a
-			// crawling speck under SMAA; a few pixels of skirt is what makes the
+			// crawling speck at this distance; a few pixels of skirt is what makes the
 			// field hold still while the view turns.
 			float core = smoothstep(draw_radius, draw_radius * 0.2, distance_to_star);
 

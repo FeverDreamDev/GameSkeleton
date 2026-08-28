@@ -341,7 +341,7 @@ had before the cycle existed.
   so a still midday causes no RT revision churn. During a sunrise the colours
   move every frame and the gate never trips, which is what keeps the light
   continuous.
-- Nothing in the SMAA / FSR / grade path changes.
+- Nothing in the post stack changes.
 
 ### Hard shadows and slow suns
 

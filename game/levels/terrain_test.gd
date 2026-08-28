@@ -12,8 +12,7 @@ extends FlowLevel
 ## per Viewport; a second one here would refuse to start the moment this level
 ## was installed. Previewing it here would also stay half a picture regardless:
 ## RTPostProcessStack.configure() sets disable_3d on the root and presents
-## through a CanvasLayer, which in the editor blanks the viewport and its gizmos,
-## so an editor preview is RT shadows and reflections with no SMAA, FSR or grade.
+## through a CanvasLayer, which in the editor blanks the viewport and its gizmos.
 ##
 ## The runtime is the authoritative image. GameApp._renderer_summary() reports
 ## the live backend on the boot screen and under the main-menu title, which is

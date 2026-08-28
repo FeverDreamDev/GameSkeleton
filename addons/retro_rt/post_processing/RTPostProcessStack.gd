@@ -1,18 +1,9 @@
 extends RefCounted
 class_name RTPostProcessStack
 
-const EDGE_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/smaa_edge.gdshader"
-const WEIGHTS_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/smaa_weights.gdshader"
-const RESOLVE_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/smaa_neighborhood.gdshader"
-const EASU_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/fsr_easu.gdshader"
+const RESOLVE_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/scene_resolve.gdshader"
 const PANINI_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/panini_project.gdshader"
 const PRESENT_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/retro_present.gdshader"
-# Sharpener selection for the present pass, matching retro_present.gdshader.
-const SHARPEN_NONE := 0
-const SHARPEN_CAS := 1
-const SHARPEN_RCAS := 2
-const AREA_TEXTURE_PATH := "res://addons/retro_rt/post_processing/smaa/AreaTexDX10.dds"
-const SEARCH_TEXTURE_PATH := "res://addons/retro_rt/post_processing/smaa/SearchTex.dds"
 const VIEWPORT_OWNER_META := &"__rt_post_process_owner"
 const PANINI_DISTANCE := 1.0
 const PANINI_MIN_HORIZONTAL_FOV := 1.0
@@ -27,39 +18,25 @@ var _root_state_captured := false
 var _container: Node
 var _scene_viewport: SubViewport
 var _internal_camera: Camera3D
-var _edge_viewport: SubViewport
-var _blend_viewport: SubViewport
+## Resolves the scene capture: coverage decode plus environment reconstruction.
 var _resolve_viewport: SubViewport
-# Allocated only while the render size differs from the output size. Native is a
-# true FSR bypass and owns no upscale buffer at all.
-var _easu_viewport: SubViewport
 ## Persistent native-output Panini target. It remains allocated while bypassed,
-## but stops updating and the present pass reads resolve/EASU directly.
+## but stops updating and the present pass reads the resolve target directly.
 var _panini_viewport: SubViewport
 ## Whether the rendering server's per-viewport timers are armed. See
 ## [method set_pass_profiling_enabled].
 var _pass_profiling_enabled := false
-var _edge_material: ShaderMaterial
-var _blend_material: ShaderMaterial
 var _resolve_material: ShaderMaterial
-var _easu_material: ShaderMaterial
 var _panini_material: ShaderMaterial
 var _present_material: ShaderMaterial
-# Cached so entering the FSR path never loads a resource mid-frame.
-var _easu_shader: Shader
 var _final_layer: CanvasLayer
 var _final_rect: ColorRect
 var _output_size := Vector2i.ZERO
-var _render_size := Vector2i.ZERO
-var _requested_render_scale := 1.0
 var _source_camera_instance_id := 0
 var _settings: Dictionary = {}
 var _active := false
 var _scene_capture_frames := 0
-var _edge_frames := 0
-var _blend_frames := 0
 var _resolve_frames := 0
-var _easu_frames := 0
 var _panini_frames := 0
 var _resize_count := 0
 var _resize_last_usec := 0
@@ -87,7 +64,6 @@ var _panini_source_uv_max := Vector2.ONE
 var _panini_perimeter_samples := 0
 var _panini_invalid_samples := 0
 var _panini_contract_output_size := Vector2i.ZERO
-var _panini_contract_render_size := Vector2i.ZERO
 var _panini_contract_display_fov := 0.0
 var _panini_cached_perimeter_size := Vector2i.ZERO
 var _panini_cached_perimeter := PackedVector2Array()
@@ -150,10 +126,7 @@ func configure(owner: Node, settings: Dictionary) -> String:
 		if not reservation_error.is_empty():
 			return reservation_error
 	_scene_capture_frames = 0
-	_edge_frames = 0
-	_blend_frames = 0
 	_resolve_frames = 0
-	_easu_frames = 0
 	_panini_frames = 0
 	_resize_count = 0
 	_resize_last_usec = 0
@@ -169,14 +142,9 @@ func configure(owner: Node, settings: Dictionary) -> String:
 		shutdown()
 		return "The shared post stack requires a non-empty native viewport."
 	var resources := {
-		"edge_shader": load(EDGE_SHADER_PATH) as Shader,
-		"weights_shader": load(WEIGHTS_SHADER_PATH) as Shader,
 		"resolve_shader": load(RESOLVE_SHADER_PATH) as Shader,
-		"easu_shader": load(EASU_SHADER_PATH) as Shader,
 		"panini_shader": load(PANINI_SHADER_PATH) as Shader,
 		"present_shader": load(PRESENT_SHADER_PATH) as Shader,
-		"area": load(AREA_TEXTURE_PATH) as Texture2D,
-		"search": load(SEARCH_TEXTURE_PATH) as Texture2D,
 	}
 	for key in resources:
 		if resources[key] == null:
@@ -202,9 +170,7 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_owner.add_child(_container, false, Node.INTERNAL_MODE_FRONT)
 
 	_output_size = size
-	_requested_render_scale = _get_requested_render_scale(_settings)
-	_render_size = _scaled_render_size(_output_size, _requested_render_scale)
-	_scene_viewport = _make_viewport("SceneCapture", _render_size)
+	_scene_viewport = _make_viewport("SceneCapture", _output_size)
 	# Hardware RT needs a transparent capture: managed pixels carry ID transport
 	# rather than colour, and the shared present reconstructs the environment
 	# behind every uncovered texel from the immutable snapshot.
@@ -230,33 +196,15 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_internal_camera.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	_scene_viewport.add_child(_internal_camera)
 
-	_edge_material = ShaderMaterial.new()
-	_record_explicit_allocation()
-	_edge_material.shader = resources["edge_shader"]
-	_edge_material.set_shader_parameter(&"scene_texture", _scene_viewport.get_texture())
-	_edge_viewport = _make_canvas_pass("SMAAEdges", _render_size, _edge_material)
-
-	_blend_material = ShaderMaterial.new()
-	_record_explicit_allocation()
-	_blend_material.shader = resources["weights_shader"]
-	_blend_material.set_shader_parameter(&"edges_texture", _edge_viewport.get_texture())
-	_blend_material.set_shader_parameter(&"area_texture", resources["area"])
-	_blend_material.set_shader_parameter(&"search_texture", resources["search"])
-	_blend_viewport = _make_canvas_pass("SMAABlendWeights", _render_size, _blend_material)
-
-	# SMAA now completes at the internal render size instead of being fused into
-	# the native-resolution present pass. That is what lets EASU receive a truly
-	# anti-aliased image, which FSR 1 requires, and what lets CAS/RCAS read a
-	# neighborhood of the post-SMAA result at all.
+	# One pass turns the capture into the visible image: coverage decode plus the
+	# environment reconstruction behind everything geometry did not cover.
 	_resolve_material = ShaderMaterial.new()
 	_record_explicit_allocation()
 	_resolve_material.shader = resources["resolve_shader"]
 	_resolve_material.set_shader_parameter(&"scene_texture", _scene_viewport.get_texture())
-	_resolve_material.set_shader_parameter(&"blend_texture", _blend_viewport.get_texture())
-	_resolve_viewport = _make_canvas_pass("SMAAResolve", _render_size, _resolve_material)
+	_resolve_viewport = _make_canvas_pass("SceneResolve", _output_size, _resolve_material)
 
-	# Panini works on the finished opaque perceptual image. At Native that image
-	# comes from resolve; reduced presets rebind this source to native-size EASU.
+	# Panini works on the finished opaque perceptual image from resolve.
 	_panini_material = ShaderMaterial.new()
 	_record_explicit_allocation()
 	_panini_material.shader = resources["panini_shader"]
@@ -266,12 +214,11 @@ func configure(owner: Node, settings: Dictionary) -> String:
 		"PaniniProjection", _output_size, _panini_material)
 	_panini_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
-	_easu_shader = resources["easu_shader"]
 	_present_material = ShaderMaterial.new()
 	_record_explicit_allocation()
 	_present_material.shader = resources["present_shader"]
-	# _resize() binds the real source and sharpener; at Native that stays the
-	# resolve target, and no EASU viewport is created.
+	# _apply_present_source() rebinds this to the Panini target while that pass
+	# is active; otherwise it stays the resolve target.
 	_present_material.set_shader_parameter(
 		&"source_texture", _resolve_viewport.get_texture())
 	_final_layer = CanvasLayer.new()
@@ -308,46 +255,16 @@ func update(settings: Dictionary) -> void:
 	_settings = settings.duplicate()
 	if not _active:
 		return
-	var next_scale := _get_requested_render_scale(_settings)
-	# Sample the root now so a quality change delivered in the same frame as a
+	# Sample the root now so a settings change delivered in the same frame as a
 	# window resize does not first allocate targets for the stale output size.
 	var next_output_size := _output_size
 	if _root_viewport != null and is_instance_valid(_root_viewport):
 		var visible_size := Vector2i(_root_viewport.get_visible_rect().size)
 		if visible_size.x > 0 and visible_size.y > 0:
 			next_output_size = visible_size
-	var next_render_size := _scaled_render_size(next_output_size, next_scale)
-	if (
-		next_output_size != _output_size
-		or next_scale != _requested_render_scale
-		or next_render_size != _render_size
-	):
-		_requested_render_scale = next_scale
+	if next_output_size != _output_size:
 		_resize(next_output_size)
-	var aa_enabled := bool(settings.get("post_anti_aliasing_enabled", settings.get("anti_aliasing_enabled", true)))
-	var quality := clampi(int(settings.get("post_smaa_quality", settings.get("quality", 2))), 0, 2)
-	_record_explicit_allocation()
-	var contract := RTVisualContract.new()
-	contract.quality = quality
-	var preset := contract.get_smaa_preset()
-	_edge_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if aa_enabled else SubViewport.UPDATE_DISABLED
-	_blend_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if aa_enabled else SubViewport.UPDATE_DISABLED
-	_edge_material.set_shader_parameter(&"threshold", preset["threshold"])
-	_blend_material.set_shader_parameter(&"max_search_steps", preset["max_search_steps"])
-	_blend_material.set_shader_parameter(&"max_diagonal_steps", preset["max_diagonal_steps"])
-	_blend_material.set_shader_parameter(&"diagonal_detection_enabled", preset["diagonal_detection_enabled"])
-	_blend_material.set_shader_parameter(&"corner_detection_enabled", preset["corner_detection_enabled"])
-	_blend_material.set_shader_parameter(&"corner_rounding", preset["corner_rounding"])
-	# AA is a real two-pass bypass plus a resolve-pass branch; the present pass
-	# never knows whether SMAA ran.
-	_resolve_material.set_shader_parameter(&"aa_enabled", aa_enabled)
 	_present_material.set_shader_parameter(&"grade_enabled", bool(settings.get("enabled", settings.get("retro_post_enabled", true))))
-	_present_material.set_shader_parameter(
-		&"cas_sharpness", _get_cas_sharpness(_settings))
-	_present_material.set_shader_parameter(
-		&"fsr_sharpness", _get_fsr_sharpness(_settings))
-	# CAS can be toggled without a resize, so re-resolve the sharpener here too.
-	_present_material.set_shader_parameter(&"sharpen_mode", _sharpen_mode())
 	var environment := settings.get("environment", {}) as Dictionary
 	var environment_mode := int(environment.get("mode", 0))
 	var fallback: Color = environment.get("fallback_linear", Color.BLACK)
@@ -358,20 +275,19 @@ func update(settings: Dictionary) -> void:
 	var panorama: Texture2D
 	if environment_mode == 1:
 		panorama = environment.get("panorama") as Texture2D
-	# Only the two passes that read SceneCapture reconstruct the environment and
-	# decode coverage. The present pass consumes an already-composited image.
-	for post_material in [_edge_material, _resolve_material]:
-		post_material.set_shader_parameter(&"scene_input_is_linear", scene_input_linear)
-		post_material.set_shader_parameter(
-			&"recover_opaque_coverage_from_rgb",
-			recover_opaque_coverage)
-		post_material.set_shader_parameter(&"environment_mode", environment_mode)
-		post_material.set_shader_parameter(
-			&"environment_flat_linear", Vector3(fallback.r, fallback.g, fallback.b))
-		post_material.set_shader_parameter(&"environment_panorama", panorama)
-		post_material.set_shader_parameter(&"environment_basis_x", inverse_basis.x)
-		post_material.set_shader_parameter(&"environment_basis_y", inverse_basis.y)
-		post_material.set_shader_parameter(&"environment_basis_z", inverse_basis.z)
+	# Resolve is the only pass that reads SceneCapture, so it is the only one
+	# that reconstructs the environment and decodes coverage. Panini and present
+	# consume an already-composited image.
+	_resolve_material.set_shader_parameter(&"scene_input_is_linear", scene_input_linear)
+	_resolve_material.set_shader_parameter(
+		&"recover_opaque_coverage_from_rgb", recover_opaque_coverage)
+	_resolve_material.set_shader_parameter(&"environment_mode", environment_mode)
+	_resolve_material.set_shader_parameter(
+		&"environment_flat_linear", Vector3(fallback.r, fallback.g, fallback.b))
+	_resolve_material.set_shader_parameter(&"environment_panorama", panorama)
+	_resolve_material.set_shader_parameter(&"environment_basis_x", inverse_basis.x)
+	_resolve_material.set_shader_parameter(&"environment_basis_y", inverse_basis.y)
+	_resolve_material.set_shader_parameter(&"environment_basis_z", inverse_basis.z)
 	for parameter in [&"brightness", &"contrast", &"saturation", &"black_point", &"color_balance", &"posterize_enabled", &"posterize_levels", &"posterize_strength"]:
 		var manager_name := StringName("post_" + String(parameter))
 		if settings.has(parameter) or settings.has(manager_name):
@@ -408,13 +324,7 @@ func process_frame() -> String:
 		_resize(next_size)
 	_sync_camera()
 	_scene_capture_frames += 1
-	# SMAAResolve always runs; with AA off it degrades to a 1:1 texel decode.
 	_resolve_frames += 1
-	if _edge_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-		_edge_frames += 1
-		_blend_frames += 1
-	if _easu_viewport != null:
-		_easu_frames += 1
 	if _panini_active:
 		_panini_frames += 1
 	# Include any future explicit allocations added directly to process_frame().
@@ -455,25 +365,16 @@ func shutdown() -> void:
 	_container = null
 	_scene_viewport = null
 	_internal_camera = null
-	_edge_viewport = null
-	_blend_viewport = null
 	_resolve_viewport = null
-	_easu_viewport = null
 	_panini_viewport = null
 	_final_layer = null
 	_final_rect = null
-	_edge_material = null
-	_blend_material = null
 	_resolve_material = null
-	_easu_material = null
 	_panini_material = null
-	_easu_shader = null
 	_present_material = null
 	_root_state = {}
 	_source_camera_instance_id = 0
 	_output_size = Vector2i.ZERO
-	_render_size = Vector2i.ZERO
-	_requested_render_scale = 1.0
 	_panini_active = false
 	_panini_requested = false
 	_panini_camera_enabled = false
@@ -491,7 +392,6 @@ func shutdown() -> void:
 	_panini_perimeter_samples = 0
 	_panini_invalid_samples = 0
 	_panini_contract_output_size = Vector2i.ZERO
-	_panini_contract_render_size = Vector2i.ZERO
 	_panini_contract_display_fov = 0.0
 	_panini_cached_perimeter_size = Vector2i.ZERO
 	_panini_cached_perimeter = PackedVector2Array()
@@ -501,45 +401,21 @@ func shutdown() -> void:
 
 
 func get_profile_snapshot() -> Dictionary:
-	var data_hdr_requested := (
-		_edge_viewport != null
-		and _blend_viewport != null
-		and _resolve_viewport != null
-		and _edge_viewport.use_hdr_2d
-		and _blend_viewport.use_hdr_2d
-		and _resolve_viewport.use_hdr_2d)
-	var data_rgba := (
-		_edge_viewport != null
-		and _blend_viewport != null
-		and _resolve_viewport != null
-		and _edge_viewport.transparent_bg
-		and _blend_viewport.transparent_bg
-		and _resolve_viewport.transparent_bg)
-	# Four owned render-size color targets (scene, edges, weights, resolve), one
-	# persistent native-size Panini target, plus the native-size EASU target only
-	# while the FSR path is active. Forward+ honors use_hdr_2d, so every one of
-	# them is RGBA16F.
+	var data_hdr_requested := _resolve_viewport != null and _resolve_viewport.use_hdr_2d
+	var data_rgba := _resolve_viewport != null and _resolve_viewport.transparent_bg
+	# Two owned native-size color targets (scene capture, resolve) plus the
+	# persistent native-size Panini target. Forward+ honors use_hdr_2d, so every
+	# one of them is RGBA16F.
 	var bytes_per_target_pixel := 8
 	var panini_buffer_bytes := (
 		_output_size.x * _output_size.y * bytes_per_target_pixel
 		if _panini_viewport != null else 0)
 	var persistent_bytes := (
-		_render_size.x * _render_size.y * bytes_per_target_pixel * 4)
+		_output_size.x * _output_size.y * bytes_per_target_pixel * 2)
 	persistent_bytes += panini_buffer_bytes
-	if _easu_viewport != null:
-		persistent_bytes += _output_size.x * _output_size.y * bytes_per_target_pixel
 	var pass_timings := _measured_pass_timings()
-	var sharpen_mode := _sharpen_mode() if _active else SHARPEN_NONE
-	var sharpen_name: StringName = &"none"
-	if sharpen_mode == SHARPEN_CAS:
-		sharpen_name = &"cas"
-	elif sharpen_mode == SHARPEN_RCAS:
-		sharpen_name = &"rcas"
 	return {
 		"post_pass_gpu_ms": pass_timings,
-		"post_anti_aliasing_enabled": bool(_settings.get("post_anti_aliasing_enabled", true)),
-		"post_smaa_quality": int(_settings.get("post_smaa_quality", 2)),
-		"post_smaa_quality_name": RTVisualContract.quality_name(int(_settings.get("post_smaa_quality", 2))),
 		"post_input_transfer": (
 			&"scene_linear" if (_scene_viewport != null and _scene_viewport.use_hdr_2d)
 			else &"srgb_to_scene_linear"),
@@ -551,19 +427,11 @@ func get_profile_snapshot() -> Dictionary:
 		"post_environment_composite": true,
 		"post_recovers_hardware_opaque_coverage": (
 			bool(_settings.get("recover_opaque_coverage_from_rgb", false))),
-		# Output remains root-native. All ray tracing and SMAA source sampling use
-		# the independently rounded internal render size.
+		# Every stage is root-native; nothing in the stack scales resolution.
 		"post_native_size": _output_size,
 		"post_output_size": _output_size,
-		"post_render_size": _render_size,
-		"post_requested_render_scale": _requested_render_scale,
-		"post_effective_render_scale": Vector2(
-			float(_render_size.x) / float(maxi(_output_size.x, 1)),
-			float(_render_size.y) / float(maxi(_output_size.y, 1))),
-		"post_resolution_method": (
-			&"native" if _render_size == _output_size else &"internal_subviewport"),
-		"post_rendered_pixels": _render_size.x * _render_size.y,
-		"post_smaa_viewport_size": _render_size,
+		"post_render_size": _output_size,
+		"post_rendered_pixels": _output_size.x * _output_size.y,
 		"post_final_presentation_size": (
 			Vector2i(_final_rect.size) if _final_rect != null else Vector2i.ZERO),
 		"post_internal_camera_active": (
@@ -597,21 +465,8 @@ func get_profile_snapshot() -> Dictionary:
 		"post_resize_last_usec": _resize_last_usec,
 		"post_resize_peak_usec": _resize_peak_usec,
 		"post_scene_capture_frames": _scene_capture_frames,
-		"post_edge_frames": _edge_frames,
-		"post_blend_frames": _blend_frames,
 		"post_resolve_frames": _resolve_frames,
-		"post_easu_frames": _easu_frames,
 		"post_panini_frames": _panini_frames,
-		# FSR 1 is the only upscaler; there is no bilinear reconstruction path.
-		# Native bypasses it entirely and allocates no upscale target.
-		"post_fsr_active": _active and _fsr_required(),
-		"post_upscale_method": (
-			&"fsr1_easu_rcas" if _active and _fsr_required() else &"none"),
-		"post_fsr_input_size": _render_size if _active and _fsr_required() else Vector2i.ZERO,
-		"post_fsr_output_size": _output_size if _active and _fsr_required() else Vector2i.ZERO,
-		"post_fsr_sharpness": _get_fsr_sharpness(_settings),
-		"post_easu_viewport_size": (
-			_easu_viewport.size if _easu_viewport != null else Vector2i.ZERO),
 		"post_panini_requested": _panini_requested,
 		"post_panini_camera_capable": _panini_camera_capable,
 		"post_panini_camera_enabled": _panini_camera_enabled,
@@ -628,8 +483,7 @@ func get_profile_snapshot() -> Dictionary:
 		"post_panini_viewport_size": (
 			_panini_viewport.size if _panini_viewport != null else Vector2i.ZERO),
 		"post_panini_source_size": _output_size,
-		"post_panini_source_stage": (
-			&"fsr_easu" if _easu_viewport != null else &"smaa_resolve"),
+		"post_panini_source_stage": &"scene_resolve",
 		"post_panini_display_horizontal_fov": _panini_display_horizontal_fov,
 		"post_panini_capture_horizontal_fov": _panini_capture_horizontal_fov,
 		"post_panini_capture_vertical_fov": _panini_capture_vertical_fov,
@@ -642,18 +496,14 @@ func get_profile_snapshot() -> Dictionary:
 		"post_panini_invalid_samples": _panini_invalid_samples,
 		"post_panini_bounds_valid": _panini_bounds_valid(),
 		"post_present_source": (
-			&"panini" if _panini_active
-			else (&"fsr_easu" if _easu_viewport != null else &"smaa_resolve")),
-		"post_sharpen_mode": sharpen_name,
-		"post_cas_enabled": _active and _cas_enabled(),
-		"post_cas_sharpness": _get_cas_sharpness(_settings),
+			&"panini" if _panini_active else &"scene_resolve"),
 	}
 
 
 ## Turns on the rendering server's own per-viewport GPU/CPU timers for every pass
 ## this stack owns, plus the root that presents them.
 ##
-## The SMAA and present passes are 2D canvas draws inside SubViewports, so a
+## The resolve, Panini and present passes are 2D canvas draws inside SubViewports, so a
 ## CompositorEffect cannot bracket them with [method RenderingDevice.capture_timestamp]
 ## the way the ray dispatch is bracketed -- there is no render-thread hook to hang
 ## the markers on. This is the only mechanism that can attribute their cost, and
@@ -691,12 +541,8 @@ func _measured_pass_timings() -> Dictionary:
 func _profiled_viewports() -> Array:
 	var entries: Array = [
 		[&"scene", _scene_viewport],
-		[&"smaa_edges", _edge_viewport],
-		[&"smaa_weights", _blend_viewport],
-		[&"smaa_resolve", _resolve_viewport],
+		[&"scene_resolve", _resolve_viewport],
 	]
-	if _easu_viewport != null:
-		entries.append([&"fsr_easu", _easu_viewport])
 	entries.append([&"panini", _panini_viewport])
 	entries.append([&"root_present", _root_viewport])
 	return entries
@@ -708,19 +554,9 @@ func get_debug_stage_images() -> Dictionary:
 		"scene": (
 			_scene_viewport.get_texture().get_image()
 			if _scene_viewport != null else null),
-		"edges": (
-			_edge_viewport.get_texture().get_image()
-			if _edge_viewport != null else null),
-		"weights": (
-			_blend_viewport.get_texture().get_image()
-			if _blend_viewport != null else null),
 		"resolve": (
 			_resolve_viewport.get_texture().get_image()
 			if _resolve_viewport != null else null),
-		# Null at Native, where no EASU target exists.
-		"easu": (
-			_easu_viewport.get_texture().get_image()
-			if _easu_viewport != null else null),
 		# Null while directly bypassed; the persistent target may never have drawn.
 		"panini": (
 			_panini_viewport.get_texture().get_image()
@@ -733,7 +569,7 @@ func get_output_size() -> Vector2i:
 
 
 func get_render_size() -> Vector2i:
-	return _render_size
+	return _output_size
 
 
 ## The SubViewport every 3D pass actually renders into.
@@ -748,33 +584,23 @@ func get_scene_viewport() -> SubViewport:
 
 
 func get_debug_contract_snapshot() -> Dictionary:
-	# Validation-only seam for confirming that presentation and every SMAA source
-	# texture stay in their intended pixel domains after a quality switch.
+	# Validation-only seam for confirming that presentation and every source
+	# texture stay in their intended pixel domains after a resize.
 	return {
 		"output_size": _output_size,
-		"render_size": _render_size,
+		"render_size": _output_size,
 		"scene_viewport_size": _scene_viewport.size if _scene_viewport else Vector2i.ZERO,
-		"edge_viewport_size": _edge_viewport.size if _edge_viewport else Vector2i.ZERO,
-		"blend_viewport_size": _blend_viewport.size if _blend_viewport else Vector2i.ZERO,
 		"resolve_viewport_size": (
 			_resolve_viewport.size if _resolve_viewport else Vector2i.ZERO),
-		# Zero at Native: the upscale target is not allocated there at all.
-		"easu_viewport_size": _easu_viewport.size if _easu_viewport else Vector2i.ZERO,
 		"panini_viewport_size": (
 			_panini_viewport.size if _panini_viewport else Vector2i.ZERO),
 		"panini_buffer_bytes": (
 			_output_size.x * _output_size.y * 8 if _panini_viewport else 0),
 		"final_presentation_size": (
 			Vector2i(_final_rect.size) if _final_rect else Vector2i.ZERO),
-		"edge_uniform_size": _shader_viewport_size(_edge_material),
-		"blend_uniform_size": _shader_viewport_size(_blend_material),
-		"resolve_uniform_size": _shader_viewport_size(_resolve_material),
 		# The present pass has no source-texel-domain uniform; its source is
-		# always 1:1 with the rect. These two are the FSR reconstruction domain.
-		"easu_uniform_input_size": _shader_vector2i_parameter(
-			_easu_material, &"easu_input_size"),
-		"easu_uniform_output_size": _shader_vector2i_parameter(
-			_easu_material, &"easu_output_size"),
+		# always 1:1 with the rect it covers.
+		"resolve_uniform_size": _shader_viewport_size(_resolve_material),
 		"panini_uniform_source_size": _shader_vector2i_parameter(
 			_panini_material, &"source_size"),
 		"panini_active": _panini_active,
@@ -793,8 +619,6 @@ func get_debug_contract_snapshot() -> Dictionary:
 		"panini_sample_taps_min": 4,
 		"panini_sample_taps_max": 6,
 		"panini_bounds_valid": _panini_bounds_valid(),
-		"fsr_active": _active and _fsr_required(),
-		"sharpen_mode": _sharpen_mode() if _active else SHARPEN_NONE,
 		"internal_camera_current": (
 			_internal_camera != null and _internal_camera.is_current()),
 		"internal_camera_source_instance_id": _source_camera_instance_id,
@@ -830,11 +654,9 @@ func _make_canvas_pass(pass_name: String, size: Vector2i, material: Material) ->
 	# The scene capture keeps its clear: it is a real 3D render into a transparent
 	# target, where uncovered pixels are the point.
 	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_NEVER
-	# The SMAA blend pass stores a real directional weight in alpha, so the
-	# target has to be RGBA rather than RGB-only.
+	# Canvas passes carry scene radiance, so they stay RGBA16F rather than being
+	# quantized to 8 bits partway through the chain.
 	viewport.transparent_bg = true
-	# Edge/blend textures are numerical data, and Forward+ honors this as
-	# RGBA16F. Quantizing them to 8 bits would quantize the weights.
 	viewport.use_hdr_2d = true
 	var rect := ColorRect.new()
 	_record_explicit_allocation()
@@ -855,136 +677,36 @@ func _record_explicit_allocation() -> void:
 func _resize(output_size: Vector2i) -> void:
 	var resize_started := Time.get_ticks_usec()
 	_output_size = output_size
-	_render_size = _scaled_render_size(_output_size, _requested_render_scale)
-	var aa_enabled := bool(_settings.get("post_anti_aliasing_enabled", true))
-	for viewport in [
-		_scene_viewport, _edge_viewport, _blend_viewport, _resolve_viewport
-	]:
-		RTVisualContract.apply_native_viewport_state(viewport, _render_size)
-	# Root/final presentation is deliberately LDR, but SMAA intermediate values
-	# are numerical data and use HDR 2D wherever the renderer supports it.
+	for viewport in [_scene_viewport, _resolve_viewport]:
+		RTVisualContract.apply_native_viewport_state(viewport, _output_size)
+	# Root/final presentation is deliberately LDR, but the intermediate targets
+	# carry scene radiance and use HDR 2D.
 	_scene_viewport.use_hdr_2d = true
-	_edge_viewport.use_hdr_2d = true
-	_blend_viewport.use_hdr_2d = true
 	_resolve_viewport.use_hdr_2d = true
 	RTVisualContract.apply_native_viewport_state(_panini_viewport, _output_size)
 	_panini_viewport.use_hdr_2d = true
 	_panini_viewport.render_target_update_mode = (
 		SubViewport.UPDATE_ALWAYS if _panini_active else SubViewport.UPDATE_DISABLED)
-	# Applying native state sizes a SubViewport and defaults it to UPDATE_ALWAYS.
-	# Restore the two real AA bypass states after every resize. SMAAResolve keeps
-	# updating either way: with AA off it becomes an exact 1:1 texel decode, and
-	# it is still the FSR/present source.
-	_edge_viewport.render_target_update_mode = (
-		SubViewport.UPDATE_ALWAYS if aa_enabled else SubViewport.UPDATE_DISABLED)
-	_blend_viewport.render_target_update_mode = (
-		SubViewport.UPDATE_ALWAYS if aa_enabled else SubViewport.UPDATE_DISABLED)
-	# These three uniforms describe the SMAA source texture texel domain, which
-	# is the internal render size on every preset. The present pass deliberately
+	# Describes the resolve source texel domain. The present pass deliberately
 	# has no such uniform: its source is always 1:1 with the rect it covers.
-	_edge_material.set_shader_parameter(&"viewport_size", Vector2(_render_size))
-	_blend_material.set_shader_parameter(&"viewport_size", Vector2(_render_size))
-	_resolve_material.set_shader_parameter(&"viewport_size", Vector2(_render_size))
+	_resolve_material.set_shader_parameter(&"viewport_size", Vector2(_output_size))
 	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
-	# Owns the whole FSR lifecycle, because this is the single place both sizes
-	# are recomputed.
-	_update_fsr_targets()
+	_apply_present_source()
 	_resize_last_usec = Time.get_ticks_usec() - resize_started
 	_resize_peak_usec = maxi(_resize_peak_usec, _resize_last_usec)
 	_resize_count += 1
 
 
-## FSR 1 runs if and only if the internal render size differs from the native
-## output size. Native is therefore a true bypass: no EASU, no RCAS, and no
-## upscale buffer allocated at all.
-func _fsr_required() -> bool:
-	return _render_size != _output_size
-
-
-func _get_cas_sharpness(settings: Dictionary) -> float:
-	var value := float(settings.get(
-		"post_cas_sharpness", settings.get("cas_sharpness", 0.15)))
-	if value != value:
-		return 0.0
-	return clampf(value, 0.0, 1.0)
-
-
-## RCAS attenuation in stops, per the reference FsrRcasCon: 0.0 is maximum
-## sharpness and 2.0 the minimum. The shader applies exp2(-value).
-func _get_fsr_sharpness(settings: Dictionary) -> float:
-	var value := float(settings.get(
-		"post_fsr_sharpness", settings.get("fsr_sharpness", 0.5)))
-	if value != value:
-		return 0.5
-	return clampf(value, 0.0, 2.0)
-
-
-func _cas_enabled() -> bool:
-	return (
-		bool(_settings.get("post_cas_enabled", _settings.get("cas_enabled", false)))
-		and _get_cas_sharpness(_settings) > 0.0)
-
-
-func _sharpen_mode() -> int:
-	# RCAS is part of FSR and never runs at Native. CAS is the Native-only
-	# optional sharpener and is never stacked on top of RCAS.
-	if _fsr_required():
-		return SHARPEN_RCAS
-	return SHARPEN_CAS if _cas_enabled() else SHARPEN_NONE
-
-
-func _update_fsr_targets() -> void:
-	if _fsr_required():
-		if _easu_viewport == null:
-			_easu_material = ShaderMaterial.new()
-			_record_explicit_allocation()
-			_easu_material.shader = _easu_shader
-			_easu_material.set_shader_parameter(
-				&"source_texture", _resolve_viewport.get_texture())
-			_easu_viewport = _make_canvas_pass(
-				"FSREASU", _output_size, _easu_material)
-		else:
-			# Already on the FSR path; resize in place rather than reallocating.
-			RTVisualContract.apply_native_viewport_state(_easu_viewport, _output_size)
-			_easu_viewport.use_hdr_2d = true
-		# Both EASU constants are refreshed whenever either dimension moves, so a
-		# window resize and a quality switch are equally safe.
-		_easu_material.set_shader_parameter(&"easu_input_size", Vector2(_render_size))
-		_easu_material.set_shader_parameter(&"easu_output_size", Vector2(_output_size))
-		_apply_present_source()
-		return
-
-	if _easu_viewport == null:
-		_apply_present_source()
-		return
-
-	# Leaving the FSR path. Rebind the present pass before the upscale target
-	# leaves the tree, so no ViewportTexture is left dangling and no frame is
-	# presented from a freed target.
-	var retired := _easu_viewport
-	_easu_viewport = null
-	_easu_material = null
-	_apply_present_source()
-	var retired_parent := retired.get_parent()
-	if retired_parent != null:
-		retired_parent.remove_child(retired)
-	retired.queue_free()
-
-
 func _apply_present_source() -> void:
-	# Every branch entering Panini is already native-size and perceptual: resolve
-	# at Native, EASU at a reduced preset. Bypass binds that source straight to
+	# Resolve is always native-size and perceptual. Bypass binds it straight to
 	# present; the active path inserts the persistent native-size projection.
-	var pre_panini_source: Texture2D = (
-		_easu_viewport.get_texture() if _easu_viewport != null
-		else _resolve_viewport.get_texture())
+	var pre_panini_source: Texture2D = _resolve_viewport.get_texture()
 	_panini_material.set_shader_parameter(&"source_texture", pre_panini_source)
 	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
 	var present_source: Texture2D = (
 		_panini_viewport.get_texture() if _panini_active
 		else pre_panini_source)
 	_present_material.set_shader_parameter(&"source_texture", present_source)
-	_present_material.set_shader_parameter(&"sharpen_mode", _sharpen_mode())
 
 
 func _sync_camera() -> void:
@@ -1019,17 +741,16 @@ func _sync_camera() -> void:
 	if not _internal_camera.is_current():
 		_internal_camera.make_current()
 
-	var width := float(maxi(_render_size.x, 1))
-	var height := float(maxi(_render_size.y, 1))
-	var top_left := _camera_ray(_internal_camera, Vector2.ZERO)
-	var top_right := _camera_ray(_internal_camera, Vector2(width, 0.0))
-	var bottom_left := _camera_ray(_internal_camera, Vector2(0.0, height))
-	var bottom_right := _camera_ray(_internal_camera, Vector2(width, height))
-	for post_material in [_edge_material, _resolve_material]:
-		post_material.set_shader_parameter(&"camera_ray_top_left", top_left)
-		post_material.set_shader_parameter(&"camera_ray_top_right", top_right)
-		post_material.set_shader_parameter(&"camera_ray_bottom_left", bottom_left)
-		post_material.set_shader_parameter(&"camera_ray_bottom_right", bottom_right)
+	var width := float(maxi(_output_size.x, 1))
+	var height := float(maxi(_output_size.y, 1))
+	_resolve_material.set_shader_parameter(
+		&"camera_ray_top_left", _camera_ray(_internal_camera, Vector2.ZERO))
+	_resolve_material.set_shader_parameter(
+		&"camera_ray_top_right", _camera_ray(_internal_camera, Vector2(width, 0.0)))
+	_resolve_material.set_shader_parameter(
+		&"camera_ray_bottom_left", _camera_ray(_internal_camera, Vector2(0.0, height)))
+	_resolve_material.set_shader_parameter(
+		&"camera_ray_bottom_right", _camera_ray(_internal_camera, Vector2(width, height)))
 
 
 func _resolve_panini_state(source_camera: Camera3D) -> void:
@@ -1098,7 +819,6 @@ func _resolve_panini_state(source_camera: Camera3D) -> void:
 
 	if (
 		_panini_contract_output_size != _output_size
-		or _panini_contract_render_size != _render_size
 		or not is_equal_approx(_panini_contract_display_fov, display_fov)
 	):
 		_apply_panini_capture_contract(display_fov)
@@ -1155,10 +875,8 @@ func _apply_panini_capture_contract(display_horizontal_fov: float) -> void:
 	var contract := _debug_panini_capture_contract_with_perimeter(
 		display_horizontal_fov,
 		_output_size,
-		_render_size,
 		_panini_cached_perimeter)
 	_panini_contract_output_size = _output_size
-	_panini_contract_render_size = _render_size
 	_panini_contract_display_fov = display_horizontal_fov
 	_panini_display_horizontal_fov = display_horizontal_fov
 	_panini_capture_horizontal_fov = float(contract.get("capture_horizontal_fov", 0.0))
@@ -1185,25 +903,20 @@ func _apply_panini_capture_contract(display_horizontal_fov: float) -> void:
 ## boundaries without constructing a renderer or reading back a framebuffer.
 static func debug_panini_capture_contract(
 		display_horizontal_fov: float,
-		output_size: Vector2i,
-		render_size: Vector2i) -> Dictionary:
+		output_size: Vector2i) -> Dictionary:
 	return _debug_panini_capture_contract_with_perimeter(
 		display_horizontal_fov,
 		output_size,
-		render_size,
 		_panini_perimeter_points(output_size))
 
 
 static func _debug_panini_capture_contract_with_perimeter(
 		display_horizontal_fov: float,
 		output_size: Vector2i,
-		render_size: Vector2i,
 		perimeter: PackedVector2Array) -> Dictionary:
 	if (
 		output_size.x < 1
 		or output_size.y < 1
-		or render_size.x < 1
-		or render_size.y < 1
 		or perimeter.is_empty()
 		or not is_finite(display_horizontal_fov)
 		or display_horizontal_fov < PANINI_MIN_HORIZONTAL_FOV
@@ -1240,17 +953,14 @@ static func _debug_panini_capture_contract_with_perimeter(
 	var mapped_abs_x := absf(mapped_corner.x)
 	var mapped_abs_y := absf(mapped_corner.y)
 	# Keep the mapped perimeter at least half a source texel inside the capture.
-	# EASU preserves normalized coordinates, so the source projection's aspect is
-	# the internal render aspect even though Panini itself runs at native output.
 	var horizontal_margin := maxf(
-		1.0 - 1.0 / float(maxi(render_size.x, 2)), 0.5)
+		1.0 - 1.0 / float(maxi(output_size.x, 2)), 0.5)
 	var vertical_margin := maxf(
-		1.0 - 1.0 / float(maxi(render_size.y, 2)), 0.5)
-	var render_aspect := float(render_size.x) / float(render_size.y)
+		1.0 - 1.0 / float(maxi(output_size.y, 2)), 0.5)
 	var required_tan_x := mapped_abs_x / horizontal_margin
 	var required_tan_y := mapped_abs_y / vertical_margin
-	var capture_tan_y := maxf(required_tan_y, required_tan_x / render_aspect)
-	var capture_tan_x := capture_tan_y * render_aspect
+	var capture_tan_y := maxf(required_tan_y, required_tan_x / output_aspect)
+	var capture_tan_x := capture_tan_y * output_aspect
 	var capture_tangent := Vector2(capture_tan_x, capture_tan_y)
 	var capture_horizontal_fov := rad_to_deg(2.0 * atan(capture_tan_x))
 	var capture_vertical_fov := rad_to_deg(2.0 * atan(capture_tan_y))
@@ -1265,7 +975,7 @@ static func _debug_panini_capture_contract_with_perimeter(
 	# range is inset by half an internal capture texel so a valid contract cannot
 	# expose an unrendered border even after reduced-resolution reconstruction.
 	var safe_uv_min := Vector2(
-		0.5 / float(render_size.x), 0.5 / float(render_size.y))
+		0.5 / float(output_size.x), 0.5 / float(output_size.y))
 	var safe_uv_max := Vector2.ONE - safe_uv_min
 	var bounds_inside_safe := (
 		source_uv_min.x >= safe_uv_min.x - 0.000001
@@ -1309,7 +1019,6 @@ static func _debug_panini_capture_contract_with_perimeter(
 		"valid": valid,
 		"display_horizontal_fov": display_horizontal_fov,
 		"output_aspect": output_aspect,
-		"render_aspect": render_aspect,
 		"panini_extent_x": panini_extent_x,
 		"panini_extent_y": panini_extent_y,
 		"capture_horizontal_fov": capture_horizontal_fov,
@@ -1397,22 +1106,6 @@ func _camera_ray(camera: Camera3D, screen_point: Vector2) -> Vector3:
 	# depth plane remain correct under asymmetric/frustum projection when the
 	# shader interpolates them across the screen.
 	return camera.project_position(screen_point, 1.0) - camera.global_position
-
-
-func _get_requested_render_scale(settings: Dictionary) -> float:
-	var requested := float(settings.get(
-		"rt_render_scale", settings.get("render_scale", 1.0)))
-	# Treat malformed/NaN input as Native. The public manager rejects invalid
-	# presets, but this keeps the post stack safe as a standalone component.
-	if requested != requested or requested <= 0.0:
-		return 1.0
-	return clampf(requested, 0.01, 1.0)
-
-
-func _scaled_render_size(output_size: Vector2i, scale: float) -> Vector2i:
-	return Vector2i(
-		maxi(2, ceili(float(output_size.x) * scale)),
-		maxi(2, ceili(float(output_size.y) * scale)))
 
 
 func _source_camera() -> Camera3D:

@@ -2,9 +2,11 @@
 
 > **Historical record.** On 2026-08-28 the project became Forward+ only: the
 > software ray-tracing backend and the OpenGL Compatibility path were removed and
-> replaced by a raster fallback (shadow maps plus SSR). Measurements below that
-> involve the software tracer or Compatibility describe a pipeline the project no
-> longer ships. They were true when taken and are left unedited; see
+> replaced by a raster fallback (shadow maps plus SSR), and the custom SMAA 1x,
+> FSR 1, CAS and the RT quality presets were removed with them. Measurements
+> below that involve the software tracer, Compatibility, SMAA, FSR or a reduced
+> quality preset describe a pipeline the project no longer ships. They were true
+> when taken and are left unedited; see
 > `addons/retro_rt/docs/RT_PIPELINE.md` for what runs now.
 
 Removes redundant per-frame CPU work from `RTSceneManager`, redundant per-pixel
