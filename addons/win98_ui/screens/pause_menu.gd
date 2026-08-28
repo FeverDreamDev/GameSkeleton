@@ -53,10 +53,10 @@ const ID_SAVE_AND_QUIT := &"save_and_quit"
 @export var load_text: String = "Load"
 @export var main_menu_text: String = "Return to Main Menu"
 @export var save_and_quit_text: String = "Save and Quit"
-## Whether Save and Quit is offered. Defaults from [method UISystem.can_quit], so on Web it starts
-## off -- Save is already on the menu, and the "and Quit" half would do nothing there. Return to
-## Main Menu is unaffected, since leaving a level is not leaving the game.
-@export var show_save_and_quit: bool = UISystem.can_quit()
+## Whether Save and Quit is offered. Turn it off for a build with nowhere to quit to -- Save is
+## already on the menu, and the "and Quit" half would do nothing. Return to Main Menu is
+## unaffected, since leaving a level is not leaving the game.
+@export var show_save_and_quit: bool = true
 
 #endregion
 

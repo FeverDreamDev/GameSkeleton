@@ -835,7 +835,7 @@ func _make_canvas_pass(pass_name: String, size: Vector2i, material: Material) ->
 	# an RGBA (rather than RGB-only) data surface.
 	viewport.transparent_bg = true
 	# Edge/blend textures are numerical data. RD honors this as RGBA16F;
-	# Compatibility/Web keep the transparent RGBA8 fallback described above.
+	# Compatibility keeps the transparent RGBA8 fallback described above.
 	viewport.use_hdr_2d = true
 	var rect := ColorRect.new()
 	_record_explicit_allocation()

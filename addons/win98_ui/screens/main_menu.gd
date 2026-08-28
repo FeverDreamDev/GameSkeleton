@@ -46,9 +46,9 @@ signal quit_confirmed()
 ## save; the two buttons disappear rather than sitting there permanently greyed out.
 @export var show_save_buttons: bool = true
 ## Whether the menu offers a way out of the game, as both the Exit button and the title bar X.
-## Defaults from [method UISystem.can_quit], so on Web it starts off -- a button that visibly
-## does nothing is worse than no button. Set it true to put them back.
-@export var show_exit_button: bool = UISystem.can_quit()
+## Turn it off for a build with nowhere to quit to -- a button that visibly does nothing is
+## worse than no button.
+@export var show_exit_button: bool = true
 
 @export_group("Popups")
 @export var credits_title: String = "About"
@@ -80,7 +80,7 @@ func _build() -> void:
 	window = UIWindow.new()
 	window.window_title = window_title
 	# The X is the same action as the Exit button, so it goes when that goes -- otherwise closing
-	# the window on Web opens a "quit the game?" question with no answer that does anything.
+	# the window opens a "quit the game?" question the build has no answer for.
 	window.show_close_button = show_exit_button
 	window.show_help_button = true
 	window.custom_minimum_size.x = window_width

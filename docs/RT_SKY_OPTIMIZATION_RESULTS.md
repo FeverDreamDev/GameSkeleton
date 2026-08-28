@@ -826,7 +826,7 @@ throughput than the special-function unit — the fetch being otherwise free
 (this shader samples nothing) only cancels that out rather than winning. It also
 brought a 16 KB texture, a precision cliff where `pow(x, 0.42)` has unbounded
 derivative as x approaches zero (exactly the blade base, where blades are
-widest), and a float-filtering portability question on Compatibility and Web.
+widest), and a float-filtering portability question on Compatibility.
 None of that is worth 0.003 ms.
 
 The AA-band norm is the only one that *did* produce a gain, and it was declined

@@ -19,11 +19,11 @@ extends RefCounted
 ## are refused in both directions, so a hand edited save file can never instantiate anything.
 ##
 ## Nothing here touches a rendering API, which is what makes it behave identically under
-## Forward+, Compatibility and Web. See [method is_persistent] for the one thing Web changes.
+## Forward+ and Compatibility.
 
 #region Configuration
 
-## Where slot files live. Anything under [code]user://[/code] works; on Web that is IndexedDB.
+## Where slot files live. Anything under [code]user://[/code] works.
 static var directory: String = "user://saves"
 static var extension: String = ".save"
 ## How many numbered slots [method list_slots] reports, named [code]slot_1[/code] upwards.
@@ -129,12 +129,6 @@ static func newest_slot() -> StringName:
 
 static func has_any() -> bool:
 	return not String(newest_slot()).is_empty()
-
-## False on Web when the browser refuses to keep site data -- a private window, or storage
-## blocked for the site. Writing still appears to succeed there but nothing survives a reload,
-## so a game is better off saying so than saving into a void.
-static func is_persistent() -> bool:
-	return OS.is_userfs_persistent()
 
 ## Why the last save, load or delete failed. Empty after a successful one.
 static func last_error() -> String:

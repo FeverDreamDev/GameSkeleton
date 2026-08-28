@@ -7,13 +7,13 @@ the way it is.
 
 The validation commands in this document use the fixtures that are checked into
 this project: `receiver_registry_smoke.gd`, `panini_projection_smoke.gd`,
-`perf_probe.gd`, and `panini_web_capture.tscn`.
+`perf_probe.gd`, and `panini_capture.tscn`.
 
 This Godot 4.7.1 project targets visual equivalence between Forward+ and
 Compatibility through one scene, material, lighting, ray, texture, environment,
 anti-aliasing, and output contract. Forward+ hardware RT, Forward+ forced
-software RT, desktop Compatibility software RT, and Web Compatibility all feed
-the same fullscreen post stack.
+software RT, and desktop Compatibility software RT all feed the same fullscreen
+post stack.
 
 Visual equivalence is the target, not cross-API bit identity. Godot still owns
 different rasterizers, depth formats, render-target formats, shader compilers,
@@ -25,13 +25,13 @@ behind an exact cross-renderer hash.
 
 `RTSceneManager.rt_backend` accepts `AUTO`, `HARDWARE`, or `SOFTWARE`.
 
-- `AUTO` selects hardware RT only for a non-Web Forward+ Vulkan run whose
+- `AUTO` selects hardware RT only for a Forward+ Vulkan run whose
   RenderingDevice exposes buffer-device-address and ray-tracing-pipeline
   support. All other supported runs select software RT.
 - Explicit `HARDWARE` or `SOFTWARE` selection is used by validation. An
   unavailable forced backend fails visibly instead of silently changing paths.
-- Compatibility, Web, and non-Vulkan Forward+ use software RT. Web never
-  creates a compute pipeline or an acceleration-structure RID.
+- Compatibility and non-Vulkan Forward+ use software RT, and never create a
+  compute pipeline or an acceleration-structure RID.
 - `get_active_rt_backend()` reports `hardware`, `software`, or `none`.
 
 The editor scene viewport previews real ray tracing, and it always previews it
@@ -81,8 +81,8 @@ material/instance carriers in `BlinnPhong.gdshader`. It relies on the Godot
 
 Software RT never creates ray-tracing pipelines. It rasterizes primary
 visibility with `BlinnPhongSoftware.gdshader` and traverses the project BVH from
-the spatial fragment shader. The same path runs under Forward+, Compatibility,
-and Web.
+the spatial fragment shader. The same path runs under Forward+ and
+Compatibility.
 
 ## Central visual contract
 
@@ -208,16 +208,14 @@ requires updating the Graphics menu labels and their application smoke tests.
 The root viewport, gameplay UI, final CanvasLayer, and final ColorRect always
 remain at the visible output size. `Viewport.scaling_3d_scale` remains `1.0`;
 quality selection never invokes Godot's root renderer scaler or a separate
-compute upscaler. This is especially important on Web, where reducing the root
-3D scale is affected by Godot issue
-[#119317](https://github.com/godotengine/godot/issues/119317).
+compute upscaler.
 
 Only the private scene-capture, SMAA, and SMAA-resolve SubViewports are resized;
 they share the internal render size. Each internal dimension is
 `max(2, ceil(output_dimension * scale))`. Hardware dispatch and software primary
 raster/BVH work therefore follow the same internal pixel count. Native is the
 default on every platform; there is no automatic quality controller,
-persistence, or Web-only default.
+persistence, or per-platform default.
 
 Reduced presets reconstruct back to the native output size with FSR 1 EASU
 followed by RCAS. The FSR EASU SubViewport is the one target sized to the output
@@ -352,7 +350,7 @@ a half-texel margin, and chooses the smallest symmetric perspective capture that
 contains it. That conservative private-camera overscan prevents black borders,
 clamped corners, and culling holes without altering the authored camera.
 
-The WebGL2-safe canvas shader uses one bilinear sample where the warp does not
+The GLES3-safe canvas shader uses one bilinear sample where the warp does not
 minify and exactly four bilinear samples at the positive/negative derivative
 corners where it does. The diagnostic contract names this `adaptive_1_or_4`.
 It uses no compute, history, `textureGather`, dynamic allocation, or
@@ -395,7 +393,7 @@ or one ray per coverage sample, and the RT ray count is deliberately tied to
 internal pixel dimensions rather than sample count.
 
 SMAA 1x remains a sharp, spatial, non-temporal solution that runs as the same
-canvas shader pipeline on Forward+, desktop Compatibility and Web. It handles
+canvas shader pipeline on Forward+ and desktop Compatibility. It handles
 long diagonals and corner patterns more deliberately than a single-pass FXAA
 approximation without requiring history or motion vectors.
 
@@ -463,8 +461,7 @@ switchable.
 ### FSR 1
 
 `fsr_common.gdshaderinc` ports EASU, RCAS and CAS from AMD's reference
-`ffx_fsr1.h` and `ffx_cas.h`. Constraints that keep Compatibility and Web
-first-class:
+`ffx_fsr1.h` and `ffx_cas.h`. Constraints that keep Compatibility first-class:
 
 - no compute shaders, no RenderingDevice-only APIs, no Vulkan-only or
   Forward+-only functionality;
@@ -543,13 +540,13 @@ Scene, edge, blend and resolve SubViewports all request `use_hdr_2d = true`, and
 so do the persistent Panini target and the EASU target while it exists, but this
 is not the same physical format on every renderer. Forward+ honors the request
 and the profile reports an HDR scene capture plus HDR data targets. Godot
-Compatibility/Web ignores HDR 2D; the supported fallback is a transparent RGBA8
+Compatibility ignores HDR 2D; the supported fallback is a transparent RGBA8
 target. Transparency guarantees all four directional weight channels remain
 present, but the fallback has lower precision. The `post_*_hdr_requested`,
 `post_*_hdr`, and `post_data_viewports_rgba` profile fields distinguish requested
 state from the format the active renderer can actually supply.
 
-On Compatibility/Web the resolve target is RGBA8, so SMAA's sub-8-bit edge blend
+On Compatibility the resolve target is RGBA8, so SMAA's sub-8-bit edge blend
 is re-quantized once before the grade. That is the same precision the scene
 capture already carries on that renderer, and the final output is 8-bit sRGB
 regardless, but it is a real difference from the previous fused pass and is why
@@ -590,14 +587,14 @@ The final scene is presented on CanvasLayer `-100`. Gameplay UI should remain on
 the default canvas or a higher CanvasLayer, so it is not graded, posterized,
 anti-aliased, upscaled, or Panini-projected as part of the 3D image. EASU and
 Panini operate only on the private rendered 3D scene; fonts, reticles, HUD
-elements, and menus stay at native resolution. `panini_web_capture.tscn` leaves a
+elements, and menus stay at native resolution. `panini_capture.tscn` leaves a
 known status marker above the scene to make that ordering visible.
 
 ## Color, exposure, and texture sampling
 
 Forward+ honors the HDR 2D scene-capture request. Its capture is sampled as
 scene-linear data and can carry radiance above `1.0` until the common
-pre-SMAA/display-range boundary. Compatibility/Web cannot honor that target:
+pre-SMAA/display-range boundary. Compatibility cannot honor that target:
 its scene capture is renderer-produced sRGB RGBA8, and the edge/resolve shaders
 decode the straight (un-premultiplied) captured color once back to
 scene-linear. Radiance already clipped or rounded by that Compatibility target
@@ -610,7 +607,7 @@ RetroGrade math. The resolve pass encodes to perceptual color for FSR/CAS, and
 the present shader decodes once, performs the post-grade display clamp, and
 emits one explicit scene-linear-to-sRGB transfer into the deliberately LDR root
 canvas. Environment tonemapping is neutral Linear/1.0. There is no
-shader-authored 8-bit quantization; Compatibility/Web's RGBA8 capture/data
+shader-authored 8-bit quantization; Compatibility's RGBA8 capture/data
 targets and the final PNG are unavoidable storage boundaries, while explicit
 posterization remains an artist control.
 
@@ -673,9 +670,9 @@ texels, energy, rotation, seam wrapping, and pole clamping.
   decode; Environment and Panorama material energy multipliers are then
   applied. Profiles identify this path as `panorama_source_canonical`.
   Runtime producers may retain their original float CPU `Image` on the texture
-  as `rt_linear_panorama_image`; this avoids Web texture readback normalizing an
-  otherwise valid HDR source. The canonicalizer copies the retained image and
-  never mutates producer-owned pixels.
+  as `rt_linear_panorama_image`; this avoids a runtime texture readback from
+  normalizing an otherwise valid HDR source. The canonicalizer copies the
+  retained image and never mutates producer-owned pixels.
 - The immutable panorama is bounded at 512x256 and capped further by Sky
   radiance size. Its descriptor includes dimensions, byte size, source,
   inverse sky basis, bake duration, rebake count, and its own environment
@@ -932,7 +929,7 @@ bytes, output and internal RT resolution, and:
   visual-contract Resource is visible in the current/peak counter.
   The persistent byte count is the owned color targets only: four render-size
   targets (scene, edges, weights, resolve) at 8 bytes per pixel when Forward+
-  honors RGBA16F or 4 bytes for Compatibility/Web RGBA8, plus one persistent
+  honors RGBA16F or 4 bytes for Compatibility RGBA8, plus one persistent
   output-size Panini target and one additional output-size EASU target while a
   reduced preset is active. It excludes depth/render buffers and the SMAA LUTs.
   `get_post_debug_contract_snapshot()` exposes the same target as
@@ -943,7 +940,7 @@ bytes, output and internal RT resolution, and:
   `post_data_viewports_hdr_requested`/`post_data_viewports_hdr`, and
   `post_data_viewports_rgba`;
 - `post_input_transfer` (`scene_linear` for Forward+ or
-  `srgb_to_scene_linear` for Compatibility/Web), `post_output_transfer`, the
+  `srgb_to_scene_linear` for Compatibility), `post_output_transfer`, the
   post environment revision/composite state, and hardware opaque-coverage
   recovery state.
 
@@ -994,7 +991,7 @@ The checked-in tests divide the contract at useful boundaries:
   degrees across 4:3, 16:9, 21:9, and 32:9 domains and all four render scales.
   It checks symmetry, finite capture FOVs, aspect-derived vertical extent,
   full-perimeter containment, zero invalid pre-clamp samples, invalid-input
-  rejection, and the exact one-or-four-tap derivative/WebGL2 shader contract.
+  rejection, and the exact one-or-four-tap derivative/GLES3 shader contract.
 - `addons/retro_rt/tests/receiver_registry_smoke.gd` boots the terrain fixture
   against software RT by default or hardware RT with `--hardware`. With
   `--panini`, it asserts native resolve-to-Panini ordering, capture overscan,
@@ -1005,76 +1002,24 @@ The checked-in tests divide the contract at useful boundaries:
   `app_recovery_smoke.gd` cover exact horizontal camera semantics, sprint
   clamping/return, dynamic-FOV disable, live settings application while paused,
   menu reopening, and session retention across gameplay reconstruction.
-- `game/tests/panini_web_capture.tscn` boots the complete application and terrain
+- `game/tests/panini_capture.tscn` boots the complete application and terrain
   level, validates every FOV/quality/SMAA endpoint plus sharpening and grade
   toggles, saves a real graphical capture, and leaves a native CanvasLayer
-  status marker above the projected scene. It is the validation-Web export
-  entrypoint, never the production one.
+  status marker above the projected scene.
 
 ```text
 godot --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/panini_projection_smoke.gd
 godot --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
 godot --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
 godot --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --hardware --panini-performance
-godot --path . --rendering-method gl_compatibility --scene res://game/tests/panini_web_capture.tscn -- --force-software
+godot --path . --rendering-method gl_compatibility --scene res://game/tests/panini_capture.tscn -- --force-software
 ```
 
 Use the same output size and FOV for graphical comparisons. The capture harness
 and `PERF_SHOT`/`PERF_REF` provide the current image evidence; these checked-in
-harnesses are the source of truth. Hardware RT, forced Forward+ software RT,
-desktop Compatibility, and Web Compatibility must all report zero invalid
-Panini samples, no black borders or culling holes, the correct upstream source
-stage, and native UI ordering. Small raster/format differences between APIs
-remain acceptable under the visual-equivalence contract described above;
-missing geometry, displaced aim, or a renderer-specific post branch is a failure.
-
-## Web target
-
-The post stack uses canvas shaders, ordinary SubViewports, and lookup
-textures; it does not require compute, storage buffers, compositor APIs, motion
-vectors, or history for AA/color/upscaling processing. FSR 1 is included in
-that: EASU, RCAS and CAS are ordinary fragment kernels with no loops, no 16-bit
-packed path, and no `textureGather`. Panini is likewise an ordinary canvas
-fragment shader with no compute, history, gather, or renderer-specific path.
-This keeps Web Compatibility a first-class runtime path. Both checked-in Web
-presets are single-threaded.
-
-The production `Web` preset retains `res://game/app/main.tscn` and exports to
-`builds/web/index.html`. Validation is deliberately separate: the `Web Panini
-Validation` preset supplies the custom `panini_web_capture` feature, which selects
-`run/main_scene.panini_web_capture` and exports the 1152x648 harness to
-`builds/web-panini/index.html`. Shipping Web builds therefore never boot a test
-scene.
-
-```text
-godot --headless --path . --export-release Web builds/web/index.html
-godot --headless --path . --export-release "Web Panini Validation" builds/web-panini/index.html
-```
-
-Serve the chosen output directory over HTTP; Web exports cannot be validated by
-opening the HTML file directly. `panini_web_capture.tscn` boots the real app,
-enters the terrain level, and asserts that Web selected the Compatibility
-renderer and software RT backend. It scans 120, 130, and 140 degrees with fresh
-containment contracts, then exercises Native, Quality, Balanced, and Performance.
-Native must remain `SMAA resolve -> Panini -> CAS` with no EASU target; every
-reduced preset must remain `SMAA resolve -> EASU -> Panini -> RCAS`.
-
-The same run verifies SMAA disabled and Low/Medium/High, then toggles RetroGrade
-off and grade-plus-posterization on. Every combination must leave Panini in the
-same native perceptual domain and on the correct side of sharpening and grade.
-It also asserts the `adaptive_1_or_4` filter, dedicated persistent buffer bytes,
-valid perimeter bounds, zero invalid samples, and zero steady-frame explicit
-allocations.
-
-The Web harness encodes the read-back frame as an in-memory PNG while the browser
-driver captures the visible canvas; the equivalent desktop run writes
-`res://.godot/panini_web_capture.png`. It leaves a native CanvasLayer marker
-reading `PANINI WEB CHECK: PASS` or `FAIL`, and prints a structured
-`PANINI_WEB_CAPTURE` JSON record to the browser console. Acceptance requires
-`runtime_web = true`, `renderer = gl_compatibility`, `rt_backend = software`,
-`display_horizontal_fov = 140`, `source_stage = fsr_easu`,
-`invalid_samples = 0`, and an empty `failures` array.
-The visible marker and reticle must remain unwarped and there must be no black
-border, NaN artifact, culling hole, or browser console shader/framebuffer error.
-A hidden browser tab may pause `requestAnimationFrame`, so automated acceptance
-must keep the harness visible until it reports completion.
+harnesses are the source of truth. Hardware RT, forced Forward+ software RT, and
+desktop Compatibility must all report zero invalid Panini samples, no black
+borders or culling holes, the correct upstream source stage, and native UI
+ordering. Small raster/format differences between APIs remain acceptable under
+the visual-equivalence contract described above; missing geometry, displaced
+aim, or a renderer-specific post branch is a failure.

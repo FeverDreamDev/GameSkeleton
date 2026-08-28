@@ -293,9 +293,9 @@ frame because distant chunks cover so little of the screen.
   rejected with a configuration error.
 - The grass shader supports at most 8 simultaneous interactors and only loops
   over the compact active upload, not unused slots.
-- Threads are used when the export target has them; single-threaded targets fall
-  back to an incremental main-thread builder bounded by
-  **Incremental Generation Budget Usec**.
+- Threads are used when the target has them; without them the build falls back to
+  an incremental main-thread builder bounded by **Incremental Generation Budget
+  Usec**. `--force-nothreads` exercises that path on a threaded build.
 - The canopy is drawn through `MultiMesh`, so a target without instancing support
   cannot render it. Both Godot renderers have it; the headless dummy driver does
   not store instance data at all, which is only relevant to tests.

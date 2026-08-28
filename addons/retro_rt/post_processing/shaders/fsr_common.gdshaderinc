@@ -1,8 +1,8 @@
 // AMD FidelityFX kernels, ported from the reference `ffx_fsr1.h` and
 // `ffx_cas.h` into Godot's shader language.
 //
-// Portability rules this file must keep obeying, because Compatibility/Web is a
-// first-class target here:
+// Portability rules this file must keep obeying, because the OpenGL
+// Compatibility renderer is a first-class target here:
 //   - no textureGather (the reference EASU gathers; this port fetches the same
 //     12 texels with texelFetch instead, which is core in GLSL ES 3.0);
 //   - no compute, no RenderingDevice, no 16-bit packed path, no loops;

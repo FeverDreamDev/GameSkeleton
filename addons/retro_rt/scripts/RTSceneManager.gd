@@ -1281,8 +1281,6 @@ func _detach_compositor(restore_renderer_state: bool = true) -> void:
 
 func _hardware_rt_failures() -> PackedStringArray:
 	var failures := PackedStringArray()
-	if OS.has_feature("web"):
-		failures.append("Web exports do not expose Vulkan ray-tracing pipelines.")
 	if RenderingServer.get_current_rendering_driver_name() != "vulkan":
 		failures.append("Vulkan is required (actual driver: %s)." % RenderingServer.get_current_rendering_driver_name())
 	if RenderingServer.get_current_rendering_method() != "forward_plus":
@@ -1317,7 +1315,7 @@ func _select_backend() -> int:
 		RTBackend.SOFTWARE:
 			return RTBackend.SOFTWARE
 		_:
-			if not OS.has_feature("web") and _hardware_rt_failures().is_empty():
+			if _hardware_rt_failures().is_empty():
 				return RTBackend.HARDWARE
 			return RTBackend.SOFTWARE
 
@@ -1792,7 +1790,7 @@ func _canonicalize_panorama_material(
 	var source_texture := material.panorama
 	if source_texture == null:
 		return {"error": "The effective PanoramaSkyMaterial has no panorama texture."}
-	# Runtime-created float textures can be read back as normalized RGB on Web.
+	# Runtime-created float textures can be read back as normalized RGB.
 	# A producer that already owns the linear CPU image may attach it here; the
 	# copy keeps canonicalization immutable. Imported HDR panoramas continue to
 	# use their CPU-readable texture image.
@@ -1812,7 +1810,7 @@ func _canonicalize_panorama_material(
 		return {
 			"error": (
 				"The effective panorama has no CPU-readable image. Import it with CPU "
-				+ "access enabled so Forward+, Compatibility, and Web can share one bake."),
+				+ "access enabled so Forward+ and Compatibility can share one bake."),
 		}
 	if source_image.is_compressed() and source_image.decompress() != OK:
 		return {"error": "The effective panorama texture could not be decompressed."}
@@ -1947,9 +1945,9 @@ func _make_environment_snapshot(
 			% [bake_size.x, bake_size.y])
 		return {}
 	# Godot 4.7 returns renderer-dependent results for runtime-created Panorama
-	# skies (and Web may return a nonempty black bake). The public API above is
-	# still mandatory; after it succeeds, normalize the CPU-readable linear source
-	# identically for Forward+, Compatibility, and Web.
+	# skies, up to a nonempty black bake. The public API above is still mandatory;
+	# after it succeeds, normalize the CPU-readable linear source identically for
+	# Forward+ and Compatibility.
 	if sky.sky_material is PanoramaSkyMaterial:
 		var canonical := _canonicalize_panorama_material(
 			sky.sky_material as PanoramaSkyMaterial, bake_size, energy)

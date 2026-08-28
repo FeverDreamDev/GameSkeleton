@@ -100,6 +100,8 @@ It knows nothing about your game — the payload is a plain `Dictionary` you bui
 Built-in math types survive the trip (`Vector3`, `Transform3D` and friends are encoded by
 `JSON.from_native`), so nothing has to be flattened into float arrays by hand. Objects are refused
 in both directions, which means a hand-edited save file can never instantiate anything.
+Note JSON has no integer type, so header numbers come back as floats (`format` reads `1.0`);
+everything that compares them casts first.
 
 | Call | For |
 | --- | --- |
@@ -109,7 +111,6 @@ in both directions, which means a hand-edited save file can never instantiate an
 | `newest_slot()` / `has_any()` | For a Continue button. Empty name when there is nothing to continue. |
 | `slot_ids()` | The slot names the list reports: `autosave`, then `slot_1`…`slot_N`. |
 | `delete_slot(slot)` / `has_slot(slot)` | Housekeeping. Deleting nothing is not an error. |
-| `is_persistent()` | **Web:** false when the browser refuses to keep site data. See below. |
 
 Configure it by assigning to the static vars — `UISave.directory`, `extension`, `slot_count`,
 `autosave_id`. Writes go through a temporary file and swap into place with the previous one kept
@@ -138,32 +139,6 @@ mode it asks before overwriting an occupied slot and then hands you the name.
 something; call `menu.refresh_saves()` if a save is written while the menu is up. `PauseMenu`
 grows a **Load** entry, which — like Settings and Save — leaves the popup standing, so whoever
 handles it closes the popup with `dialog.dismiss()` once a save has actually been chosen.
-
-### On the web
-
-`user://` is IndexedDB there (`/userfs/godot/app_userdata/<project>`), with two consequences worth
-handling:
-
-- `UISave.is_persistent()` is false in a private window or when site storage is blocked. Writes
-  still appear to succeed and none of them survive a reload, so say so rather than saving into a
-  void.
-- The flush to IndexedDB happens after the file closes and is asynchronous. Do not quit in the
-  same frame as a save — show the confirmation first and let it double as the window it needs.
-
-Checked in a real browser on a Godot 4.7.2 single-threaded Web export: a save written in one page
-load reads back intact after a reload, `Vector3` included, and `newest_slot()` still finds it —
-so Continue lights up on a fresh visit. The temp-file swap works on the emscripten filesystem too,
-leaving no `.tmp` or `.bak` behind. Note JSON has no integer type, so header numbers come back as
-floats (`format` reads `1.0`); everything that compares them casts first.
-
-Nothing in `UISave` touches a rendering API, so it behaves identically under Forward+,
-Compatibility and Web.
-
-There is also nothing to quit *to* in a browser tab, so `UISystem.can_quit()` is false there and
-the screens drop their exits by default: `MainMenu` loses its Exit button **and** the title bar X
-that asks the same question, and `PauseMenu` loses Save and Quit. Return to Main Menu stays —
-leaving a level is not leaving the game. Override with `menu.show_exit_button` and
-`pause.show_save_and_quit` if your build has somewhere to go.
 
 ## Sounds
 

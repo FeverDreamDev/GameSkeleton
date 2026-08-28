@@ -1,13 +1,12 @@
 extends Node
 
-## Browser/export acceptance harness for the complete FPS Panini path. It boots
-## the real application, enters the terrain level, validates Native and reduced
+## Acceptance harness for the complete FPS Panini path. It boots the real
+## application, enters the terrain level, validates Native and reduced
 ## presentation contracts, writes a capture, and leaves a native CanvasLayer
 ## status marker visible above the projected scene.
 
 const APP_SCENE := preload("res://game/app/main.tscn")
-const WEB_CAPTURE_PATH := "memory://panini_web_capture.png"
-const DESKTOP_CAPTURE_PATH := "res://.godot/panini_web_capture.png"
+const CAPTURE_PATH := "res://.godot/panini_capture.png"
 
 var _app: GameApp
 var _failures := PackedStringArray()
@@ -29,7 +28,7 @@ func _build_status_overlay() -> void:
 	panel.custom_minimum_size = Vector2(310.0, 34.0)
 	layer.add_child(panel)
 	_status_label = Label.new()
-	_status_label.text = "PANINI WEB CHECK: RUNNING"
+	_status_label.text = "PANINI CHECK: RUNNING"
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	panel.add_child(_status_label)
@@ -49,12 +48,9 @@ func _check(condition: bool, message: String) -> void:
 
 
 func _run() -> void:
-	# Browser storage is writable through user://. The local acceptance run stays
-	# inside the project cache so sandboxed CI never depends on the host profile.
-	UISave.directory = (
-		"user://panini_web_capture_saves"
-		if OS.has_feature("web")
-		else "res://.godot/panini_web_capture_saves")
+	# The acceptance run stays inside the project cache so sandboxed CI never
+	# depends on the host profile.
+	UISave.directory = "res://.godot/panini_capture_saves"
 	_app = APP_SCENE.instantiate() as GameApp
 	if OS.get_cmdline_user_args().has("--force-software"):
 		(_app.get_node("RTSceneManager") as RTSceneManager).rt_backend = (
@@ -78,13 +74,12 @@ func _run() -> void:
 		await _finish()
 		return
 
-	if OS.has_feature("web"):
-		_check(RenderingServer.get_current_rendering_method() == "gl_compatibility",
-			"Web export uses the Compatibility renderer")
-		_check(_app.rt_manager.get_active_rt_backend() == &"software",
-			"Web export uses the software RT backend")
+	_check(RenderingServer.get_current_rendering_method() == "gl_compatibility",
+		"the run uses the Compatibility renderer")
+	_check(_app.rt_manager.get_active_rt_backend() == &"software",
+		"the run uses the software RT backend")
 
-	# Exercise every player-facing endpoint in the exported renderer, including
+	# Exercise every player-facing endpoint in the active renderer, including
 	# a fresh full-perimeter containment contract at each angle.
 	for fov: float in [120.0, 130.0, 140.0]:
 		_app.call("_on_graphics_horizontal_fov_changed", fov)
@@ -96,7 +91,7 @@ func _run() -> void:
 						"post_panini_display_horizontal_fov", 0.0)), fov)
 					and bool(profile.get("post_panini_bounds_valid", false))
 					and int(profile.get("post_panini_invalid_samples", -1)) == 0),
-			30), "%d degree FOV is contained in the Web capture" % roundi(fov))
+			30), "%d degree FOV is contained in the capture" % roundi(fov))
 
 	var native_profile := _app.rt_manager.get_profile_snapshot()
 	_check(bool(native_profile.get("post_panini_enabled", false)),
@@ -115,7 +110,7 @@ func _run() -> void:
 	_check(int(native_profile.get("post_panini_buffer_bytes", 0)) > 0,
 		"Panini reports its persistent native-size buffer bytes")
 	_check(native_profile.get("post_panini_sample_mode", &"invalid") == &"adaptive_1_or_4",
-		"Web uses the portable one-or-four-tap Panini filter")
+		"the stack uses the portable one-or-four-tap Panini filter")
 	_app.rt_manager.post_cas_enabled = true
 	for _frame in 2:
 		await get_tree().process_frame
@@ -213,9 +208,8 @@ func _run() -> void:
 
 
 func _finish(profile: Dictionary = {}) -> void:
-	var capture_path := WEB_CAPTURE_PATH if OS.has_feature("web") else DESKTOP_CAPTURE_PATH
 	var passed := _failures.is_empty()
-	_status_label.text = "PANINI WEB CHECK: %s" % ("PASS" if passed else "FAIL")
+	_status_label.text = "PANINI CHECK: %s" % ("PASS" if passed else "FAIL")
 	_status_label.modulate = Color("006000") if passed else Color("c02020")
 	await get_tree().process_frame
 	await RenderingServer.frame_post_draw
@@ -223,27 +217,20 @@ func _finish(profile: Dictionary = {}) -> void:
 	var capture_bytes := 0
 	var capture_error := ERR_CANT_CREATE
 	if image != null:
-		if OS.has_feature("web"):
-			# IndexedDB persistence can emit a Chromium-internal UnknownError even
-			# after a successful write. Encoding in memory still validates the exact
-			# GPU readback; the browser acceptance driver captures the visible canvas.
-			capture_bytes = image.save_png_to_buffer().size()
-			capture_error = OK if capture_bytes > 0 else ERR_CANT_CREATE
-		else:
-			capture_error = image.save_png(capture_path)
-	_check(capture_error == OK, "capture encodes at %s" % capture_path)
+		capture_bytes = image.save_png_to_buffer().size()
+		capture_error = image.save_png(CAPTURE_PATH)
+	_check(capture_error == OK, "capture encodes at %s" % CAPTURE_PATH)
 	passed = _failures.is_empty()
-	# Persistence can fail after the provisional label was drawn. Reassert the
-	# authoritative result so the visible browser overlay and JSON never disagree.
-	_status_label.text = "PANINI WEB CHECK: %s" % ("PASS" if passed else "FAIL")
+	# The write can fail after the provisional label was drawn. Reassert the
+	# authoritative result so the visible overlay and JSON never disagree.
+	_status_label.text = "PANINI CHECK: %s" % ("PASS" if passed else "FAIL")
 	_status_label.modulate = Color("006000") if passed else Color("c02020")
 	await get_tree().process_frame
 
 	var output_size: Vector2i = profile.get("post_output_size", Vector2i.ZERO)
 	var report := {
-		"event": "PANINI_WEB_CAPTURE",
+		"event": "PANINI_CAPTURE",
 		"ok": passed,
-		"runtime_web": OS.has_feature("web"),
 		"renderer": RenderingServer.get_current_rendering_method(),
 		"rt_backend": String(_app.rt_manager.get_active_rt_backend()),
 		"display_horizontal_fov": float(profile.get(
@@ -253,13 +240,12 @@ func _finish(profile: Dictionary = {}) -> void:
 		"invalid_samples": int(profile.get("post_panini_invalid_samples", -1)),
 		"output_size": [output_size.x, output_size.y],
 		"source_stage": String(profile.get("post_panini_source_stage", &"invalid")),
-		"capture_path": capture_path,
+		"capture_path": CAPTURE_PATH,
 		"capture_bytes": capture_bytes,
 		"failures": Array(_failures),
 	}
-	print("PANINI_WEB_CAPTURE %s" % JSON.stringify(report))
+	print("PANINI_CAPTURE %s" % JSON.stringify(report))
 	if not passed:
 		for failure in _failures:
-			push_error("panini_web_capture: %s" % failure)
-	if not OS.has_feature("web"):
-		get_tree().quit(0 if passed else 1)
+			push_error("panini_capture: %s" % failure)
+	get_tree().quit(0 if passed else 1)

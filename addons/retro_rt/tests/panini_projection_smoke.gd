@@ -107,7 +107,7 @@ func _test_shader_contract() -> void:
 	_check(code.contains("panini_extent_y"),
 		"the shader receives a distinct vertical center extent")
 	_check(not code.contains("textureGather") and not code.contains("compute"),
-		"the projection shader stays inside the WebGL2 canvas contract")
+		"the projection shader stays inside the GLES3 canvas contract")
 
 
 func _check(condition: bool, message: String) -> void:

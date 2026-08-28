@@ -2,7 +2,7 @@
 extends RefCounted
 class_name RTSoftwareTracer
 
-## Main-thread owner for the Compatibility/Web fragment-shader RT backend.
+## Main-thread owner for the Compatibility fragment-shader RT backend.
 ##
 ## The manager supplies the same immutable snapshots used by the hardware
 ## compositor. This class builds CPU BVHs, publishes them through ordinary
@@ -718,7 +718,7 @@ func _rebuild_tlas(snapshot: Dictionary) -> String:
 		return String(_tlas.get("error", "Software TLAS construction failed."))
 	var node_count := (_tlas.get("nodes", []) as Array).size()
 	if node_count > 4096:
-		return "Software TLAS has %d nodes; the Compatibility/Web limit is 4096." % node_count
+		return "Software TLAS has %d nodes; the Compatibility limit is 4096." % node_count
 	_profile["tlas_builds"] = int(_profile["tlas_builds"]) + 1
 	_profile["tlas_build_usec"] = int(round(float(_tlas.get("build_seconds", 0.0)) * 1000000.0))
 	_profile["tlas_nodes"] = node_count
@@ -1035,7 +1035,7 @@ func _upload_atlas(kind: StringName, texels: Array[Vector4]) -> String:
 	while height < required_height:
 		height <<= 1
 	if height > MAX_ATLAS_HEIGHT:
-		return "%s atlas requires %d rows; the Compatibility/Web limit is %d (%d x %d RGBAF)." % [
+		return "%s atlas requires %d rows; the Compatibility limit is %d (%d x %d RGBAF)." % [
 			String(kind).capitalize(), required_height, MAX_ATLAS_HEIGHT, ATLAS_WIDTH, MAX_ATLAS_HEIGHT]
 	# Written through the member rather than a local: a packed array is
 	# copy-on-write, so a second reference would clone the whole buffer on the
@@ -1100,7 +1100,7 @@ func _upload_atlas(kind: StringName, texels: Array[Vector4]) -> String:
 
 
 func _atlas_capacity_error(kind: StringName, texel_count: int) -> String:
-	return "%s atlas requires %d texels; the Compatibility/Web limit is %d (%d x %d RGBAF)." % [
+	return "%s atlas requires %d texels; the Compatibility limit is %d (%d x %d RGBAF)." % [
 		String(kind).capitalize(), texel_count, MAX_ATLAS_TEXELS, ATLAS_WIDTH, MAX_ATLAS_HEIGHT]
 
 

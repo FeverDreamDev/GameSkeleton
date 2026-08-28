@@ -45,7 +45,7 @@ vec2 clamp_source_uv(vec2 uv) {
 void fragment() {
 	vec2 source_uv = panini_source_uv(UV);
 
-	// The derivative decision and fixed upper bound are portable to WebGL2. The
+	// The derivative decision and fixed upper bound are portable to GLES3. The
 	// common magnified/1:1 path performs exactly one bilinear lookup; only
 	// minified regions take the bounded four-tap branch.
 	vec2 derivative_x = dFdx(source_uv);

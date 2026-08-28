@@ -203,8 +203,8 @@ func _ready() -> void:
 	_snapshot.make_read_only()
 	_height_noise = TerrainGenerator.create_noise(_snapshot)
 	_grass_shell_buffers = TerrainGenerator.grass_shell_instance_buffers(_snapshot)
-	# Single-threaded exports fall back to the incremental main-thread builder.
-	# `--force-nothreads` exercises that path on a threaded build.
+	# Targets without thread support fall back to the incremental main-thread
+	# builder. `--force-nothreads` exercises that path on a threaded build.
 	_use_workers = OS.has_feature("threads") and not OS.get_cmdline_user_args().has("--force-nothreads")
 	_cell_query.shape = _cell_query_shape
 	_cell_query.collision_mask = settings.blocker_query_mask

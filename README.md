@@ -157,29 +157,29 @@ get an exactly reproducible frame. Capture runs also freeze the parked player
 hierarchy after applying the requested camera transform. Use `PERF_STARS=0` for
 an exact cross-launch gate because the star layout seed is generated per run.
 
-## WebGL2 Panini acceptance
+## Panini acceptance
 
-The production `Web` preset continues to start the game. The separate
-single-threaded `Web Panini Validation` preset starts
-`res://game/tests/panini_web_capture.tscn` at 1152x648 through a custom export
-feature, without changing the desktop or production-Web main scene. The harness
-enters the real terrain level, verifies all three FOV endpoints, all four quality
-presets, SMAA off/Low/Medium/High, Native CAS, reduced-preset RCAS, and grade and
-posterization toggles. It also checks Compatibility/software selection, capture
-overscan and steady-state allocation contracts, leaves an unwarped status marker
-above the scene, and prints a `PANINI_WEB_CAPTURE` JSON record to the browser console.
+`game/tests/panini_capture.tscn` boots the real application, enters the terrain
+level, and verifies all three FOV endpoints, all four quality presets, SMAA
+off/Low/Medium/High, Native CAS, reduced-preset RCAS, and grade and posterization
+toggles. It also checks Compatibility/software selection, capture overscan and
+steady-state allocation contracts, leaves an unwarped status marker above the
+scene, writes `res://.godot/panini_capture.png`, and prints a `PANINI_CAPTURE`
+JSON record.
 
 ```powershell
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --export-release Web builds/web/index.html
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --export-release "Web Panini Validation" builds/web-panini/index.html
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --scene res://game/tests/panini_capture.tscn -- --force-software
 ```
 
-Serve `builds/web-panini` over HTTP and open `index.html` in a WebGL2 browser. A
-passing run displays `PANINI WEB CHECK: PASS`; the JSON record must report
-`runtime_web: true`, `renderer: "gl_compatibility"`, `rt_backend: "software"`,
-`source_stage: "fsr_easu"`, and zero invalid samples. The equivalent desktop
-Compatibility check is:
+A passing run displays `PANINI CHECK: PASS` and exits zero; the JSON record must
+report `renderer: "gl_compatibility"`, `rt_backend: "software"`,
+`source_stage: "fsr_easu"`, and zero invalid samples.
+
+## Exporting
+
+The output directory must already exist; Godot will not create it.
 
 ```powershell
-& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --scene res://game/tests/panini_web_capture.tscn -- --force-software
+New-Item -ItemType Directory -Force builds/windows | Out-Null
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --export-release "Windows Desktop" builds/windows/GameSkeleton.exe
 ```

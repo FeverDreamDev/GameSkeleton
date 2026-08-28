@@ -203,14 +203,6 @@ static func set_cursor_visible(value: bool) -> void:
 static func is_cursor_visible() -> bool:
 	return Input.mouse_mode != Input.MOUSE_MODE_CAPTURED
 
-## Whether leaving the game means anything on this platform.
-##
-## False on Web, where the game runs in a tab it cannot close and [method SceneTree.quit] does
-## nothing at all. The screens default their quit buttons from this rather than each one asking
-## [method OS.has_feature] again, so there is one answer to change if that ever stops being true.
-static func can_quit() -> bool:
-	return not OS.has_feature("web")
-
 ## Plays one of the [UIAudio] sounds. Silent until that slot has a stream in it.
 static func play_sound(id: StringName) -> void:
 	if instance and instance.audio:

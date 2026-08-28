@@ -1,11 +1,10 @@
 # Retro RT
 
 Ray-traced shadows and reflections for Blinn-Phong materials in Godot 4.7+,
-with one visual contract shared by four runtime configurations: Forward+
-hardware RT, Forward+ forced software RT, desktop Compatibility software RT, and
-Web Compatibility. All four feed the same fullscreen SMAA 1x + FSR 1 post stack,
-so the image is the same picture at four performance points rather than four
-different looks.
+with one visual contract shared by three runtime configurations: Forward+
+hardware RT, Forward+ forced software RT, and Compatibility software RT. All
+three feed the same fullscreen SMAA 1x + FSR 1 post stack, so the image is the
+same picture at three performance points rather than three different looks.
 
 No textures to import, no `.gdextension`, no autoloads, no input actions. The
 add-on is one folder and six global classes.
@@ -32,11 +31,12 @@ survive a rename; the script consts would not.)
   `RTLightingEffect` fails at `extends CompositorEffect` parse time.
 - **Hardware RT** additionally needs Forward+ on Vulkan, with the
   `RenderingDevice` exposing buffer-device-address and ray-tracing-pipeline
-  support, and a non-CPU adapter. Everything else — Compatibility, Web,
+  support, and a non-CPU adapter. Everything else — Compatibility and
   non-Vulkan Forward+ — selects the software backend automatically.
 - The software backend needs no compute, no storage buffers, no compositor and
   no ray-tracing pipeline. It rasterizes primary visibility and traverses a CPU
-  BVH from the fragment shader, which is why Web stays a first-class target.
+  BVH from the fragment shader, which is why Compatibility stays a first-class
+  target.
 
 ## Quick start
 

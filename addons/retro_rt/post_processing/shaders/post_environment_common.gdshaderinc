@@ -78,7 +78,7 @@ vec3 rt_post_camera_world_ray(vec2 uv) {
 
 vec3 rt_post_sdr_boundary(vec3 linear_radiance) {
 	// Clamp once before SMAA without adding another explicit quantization stage.
-	// Compatibility/Web already use RGBA8 here; Forward+ retains its native
+	// Compatibility already uses RGBA8 here; Forward+ retains its native
 	// precision until the shared LDR presentation target.
 	return clamp(linear_radiance, vec3(0.0), vec3(1.0));
 }
