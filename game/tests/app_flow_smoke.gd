@@ -75,6 +75,7 @@ func _run() -> void:
 		"the simplified application database and master graph validate cleanly")
 	_check(app.flow_system.get_node_or_null("FlowGraphRunner") == app.flow_system.graph_runner,
 		"FlowGraphRunner is the high-level flow executor")
+	await _assert_fov_settings_lifecycle(app)
 
 	app.call("_on_new_game_pressed")
 	_check(await _wait_for(
@@ -136,6 +137,8 @@ func _run() -> void:
 	var view := app.player.get_node_or_null("ViewRoot") as PlayerCamera
 	var reflector := level.get_node_or_null("TestReflector") as SaveableTransform3D
 	_check(view != null, "persistent player exposes PlayerCamera for save/load")
+	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 137.0),
+		"New Game retains the session horizontal FOV chosen from the main menu")
 	_check(reflector != null, "terrain_test exposes its authored TestReflector saveable")
 	if view == null or reflector == null:
 		app.queue_free()
@@ -200,6 +203,8 @@ func _run() -> void:
 	view = app.player.get_node_or_null("ViewRoot") as PlayerCamera
 	_check(view != null and is_equal_approx(view.target_pitch, saved_view_pitch),
 		"load restores the saved first-person view pitch")
+	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 137.0),
+		"save/load leaves the session horizontal FOV unchanged")
 	_check(await _wait_for(
 		func() -> bool: return app.player.is_on_floor(),
 		600), "restored player settles grounded after terrain collision is ready")
@@ -276,6 +281,9 @@ func _run() -> void:
 	_check(returned_view != null and returned_view.camera != null
 		and not returned_view.camera.current,
 		"return to menu releases the gameplay camera")
+	_check(returned_view != null and returned_view.camera != null
+		and is_equal_approx(returned_view.camera.fov, 137.0),
+		"return to menu reset retains the session horizontal FOV")
 	_check(UISystem.is_cursor_visible(), "return to menu restores the visible UI cursor")
 	_check(UISystem.get_current_screen() is MainMenu,
 		"return to menu presents the main menu screen")
@@ -375,6 +383,59 @@ func _assert_quality_lifecycle(app: GameApp) -> void:
 		"switching back to Native bypasses FSR again")
 	_check(restored_profile.get("post_easu_viewport_size", Vector2i.ONE) == Vector2i.ZERO,
 		"switching back to Native releases the EASU target")
+
+
+func _assert_fov_settings_lifecycle(app: GameApp) -> void:
+	var view := app.player.get_node_or_null("ViewRoot") as PlayerCamera
+	_check(is_equal_approx(float(app.get("_horizontal_fov")), 130.0),
+		"horizontal FOV session state defaults to 130 degrees")
+	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 130.0),
+		"default horizontal FOV reaches the persistent player independently of RT startup")
+
+	app.call("_open_graphics_options")
+	await process_frame
+	var dialog := app.get("_graphics_dialog") as GraphicsOptionsDialog
+	var slider := dialog.get("_fov_slider") as HSlider if dialog != null else null
+	var value_label := dialog.get("_fov_value") as Label if dialog != null else null
+	_check(dialog != null and slider != null and value_label != null,
+		"Graphics options builds the horizontal FOV slider and value label")
+	_check(slider != null
+		and is_equal_approx(slider.min_value, 120.0)
+		and is_equal_approx(slider.max_value, 140.0)
+		and is_equal_approx(slider.step, 1.0)
+		and is_equal_approx(slider.value, 130.0),
+		"horizontal FOV slider exposes the 120-140 range in one-degree steps")
+	_check(slider != null and slider.focus_mode == Control.FOCUS_ALL,
+		"horizontal FOV slider participates in keyboard and gamepad focus")
+	var grabber := slider.get_theme_icon(&"grabber") if slider != null else null
+	var focus_grabber := slider.get_theme_icon(&"grabber_highlight") if slider != null else null
+	_check(grabber != null and grabber.get_size() == Vector2(11.0, 18.0)
+		and focus_grabber != null and focus_grabber.get_size() == Vector2(11.0, 18.0),
+		"horizontal FOV slider uses the Win98 grabber and focused-grabber artwork")
+	_check(value_label != null and value_label.text == "130°",
+		"horizontal FOV slider shows its degree value")
+
+	if slider != null:
+		slider.value = 137.0
+	_check(is_equal_approx(float(app.get("_horizontal_fov")), 137.0),
+		"moving the horizontal FOV slider updates session state immediately")
+	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 137.0),
+		"moving the horizontal FOV slider updates the player camera immediately")
+	_check(value_label != null and value_label.text == "137°",
+		"horizontal FOV value label follows live slider changes")
+
+	if dialog != null:
+		dialog.dismiss()
+	await process_frame
+	app.call("_open_graphics_options")
+	await process_frame
+	dialog = app.get("_graphics_dialog") as GraphicsOptionsDialog
+	slider = dialog.get("_fov_slider") as HSlider if dialog != null else null
+	_check(dialog != null and slider != null and is_equal_approx(slider.value, 137.0),
+		"reopening Graphics options retains the session horizontal FOV")
+	if dialog != null:
+		dialog.dismiss()
+	await process_frame
 
 
 func _clear_test_saves() -> void:

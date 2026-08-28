@@ -54,9 +54,17 @@ evidence are recorded in
   shell-grass paths. Terrain vertex colours are authored in scene-linear and target the
   grass canopy so the ground stays invisible under grass.
 - The default is Native (100%) plus High SMAA. Reduced RT quality presets enable the FSR1
-  EASU/RCAS path; the reticle and Win98 UI remain native-resolution layers above presentation.
-- **Graphics** in the pause menu carries RT render quality, SMAA, retro grading, grass detail
-  and an FPS counter. Grass is the one worth reaching for first: it is stacked shell layers,
+  EASU/RCAS path. The FPS camera then applies a native-resolution classic Panini projection
+  before CAS/RCAS and RetroGrade; the reticle and Win98 UI remain native-resolution layers
+  above presentation. The full order is `3D + RT -> environment -> SMAA -> optional EASU ->
+  Panini -> CAS/RCAS -> RetroGrade -> HUD/UI`. Only the FPS camera opts in, so cutscene and
+  utility cameras bypass it. Shifted camera offsets also bypass the symmetric Panini mapping.
+- **Graphics** in the main and pause menus carries a live 120–140 degree horizontal FOV
+  slider (130 by default). It is exact horizontal coverage at every aspect ratio. The dialog
+  also carries RT render quality, SMAA, retro grading, grass detail and an FPS counter.
+  Sprint adds up to 10 degrees without exceeding 140. FOV is session-only, omitted from save
+  payloads, and returns to 130 when the application restarts. Grass is the one worth
+  reaching for first: it is stacked shell layers,
   so it costs its shell count in overdraw over whatever share of the screen it covers. At
   2560x1440 the tiers measure 188 / 220 / 241 FPS for High / Medium / Low, against a 241 FPS
   floor with grass hidden entirely — Low is already at that floor, which is why the menu does
@@ -90,10 +98,14 @@ The generator writes the exact runtime terrain/grass vertex-format proxies and
 
 ```powershell
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/terrain_player_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/player_camera_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/panini_projection_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/procedural_terrain_grass/tests/phase1_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_flow_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://game/tests/app_recovery_smoke.gd
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/ground_layer_smoke.gd
 # Optional hardware variant; exercises carrier-layer camera and local-light contracts.
 & "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method forward_plus --resolution 2560x1440 --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --hardware
@@ -110,13 +122,18 @@ at the authored resolution, because the RT stack sizes every pass from it:
 ```
 
 `PERF_GRASS=0`, `PERF_SKY=0`, `PERF_CLOUDS=0`, `PERF_STARS=0`, `PERF_SMAA=0`,
-`PERF_GRADE=0`, `PERF_GROUND=0` and `PERF_RT=0` switch a subsystem off so its
-share of the frame can be read off the difference. `PERF_CLOUDS` and
+`PERF_PANINI=0`, `PERF_GRADE=0`, `PERF_GROUND=0` and `PERF_RT=0` switch a
+subsystem off so its share of the frame can be read off the difference. `PERF_CLOUDS` and
 `PERF_STARS` keep the dome and drop one term inside the sky shader;
 `PERF_GROUND` keeps ray tracing and drops only the analytic reflection-ground
 trace. `PERF_BACKEND=software` forces the Compatibility tracer on a machine that
 would otherwise select hardware RT. `PERF_PROFILE=1` adds the RT manager's
 main-thread cost and its snapshot counters.
+
+`PERF_FOV=120|130|140` selects the FPS camera's horizontal display FOV and
+`PERF_RT_QUALITY=0|1|2|3` selects Native, Quality, Balanced, or Performance.
+With profiling enabled, `post_pass_gpu_ms.panini` isolates the projection target and
+`post_panini_buffer_bytes` reports its persistent native-size color buffer.
 
 `PERF_CARRIER=0` is an attribution toggle only. It hides the hardware material-ID
 carrier, deliberately makes managed pixels lose RT lighting, and prints a warning;
@@ -139,3 +156,30 @@ between launches; roughly 1000 pixels at 1/255 is the floor. Hide the grass to
 get an exactly reproducible frame. Capture runs also freeze the parked player
 hierarchy after applying the requested camera transform. Use `PERF_STARS=0` for
 an exact cross-launch gate because the star layout seed is generated per run.
+
+## WebGL2 Panini acceptance
+
+The production `Web` preset continues to start the game. The separate
+single-threaded `Web Panini Validation` preset starts
+`res://game/tests/panini_web_capture.tscn` at 1152x648 through a custom export
+feature, without changing the desktop or production-Web main scene. The harness
+enters the real terrain level, verifies all three FOV endpoints, all four quality
+presets, SMAA off/Low/Medium/High, Native CAS, reduced-preset RCAS, and grade and
+posterization toggles. It also checks Compatibility/software selection, capture
+overscan and steady-state allocation contracts, leaves an unwarped status marker
+above the scene, and prints a `PANINI_WEB_CAPTURE` JSON record to the browser console.
+
+```powershell
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --export-release Web builds/web/index.html
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --headless --path . --export-release "Web Panini Validation" builds/web-panini/index.html
+```
+
+Serve `builds/web-panini` over HTTP and open `index.html` in a WebGL2 browser. A
+passing run displays `PANINI WEB CHECK: PASS`; the JSON record must report
+`runtime_web: true`, `renderer: "gl_compatibility"`, `rt_backend: "software"`,
+`source_stage: "fsr_easu"`, and zero invalid samples. The equivalent desktop
+Compatibility check is:
+
+```powershell
+& "C:\Program Files (x86)\Steam\steamapps\common\Godot Engine\godot.windows.opt.tools.64.exe" --path . --rendering-method gl_compatibility --scene res://game/tests/panini_web_capture.tscn -- --force-software
+```

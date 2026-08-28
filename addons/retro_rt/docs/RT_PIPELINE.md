@@ -5,10 +5,9 @@ installation, the scene contract and the public API, read `../README.md` first �
 this document assumes you already have RT running and explains why it is built
 the way it is.
 
-Command lines below that reference `res://scenes/…`, `res://tools/…` and
-`res://builds/…` belong to the benchmark, feature-validation and renderer-parity
-harnesses, which ship with the add-on's development repository rather than with
-the add-on itself.
+The validation commands in this document use the fixtures that are checked into
+this project: `receiver_registry_smoke.gd`, `panini_projection_smoke.gd`,
+`perf_probe.gd`, and `panini_web_capture.tscn`.
 
 This Godot 4.7.1 project targets visual equivalence between Forward+ and
 Compatibility through one scene, material, lighting, ray, texture, environment,
@@ -98,7 +97,8 @@ project defaults and the active runtime stack agree on:
   denoising, or dynamic resolution;
 - texture mip bias `0.0`, 4x anisotropic filtering, and debanding disabled;
 - the custom SMAA 1x stack enabled at High quality by default;
-- shared RetroGrade enabled after SMAA by default.
+- classic Panini projection available after SMAA/EASU and before sharpening;
+- shared RetroGrade enabled after Panini and sharpening by default.
 
 The root Viewport state touched by the stack is captured before activation,
 normalized before validation, and restored on normal teardown or failure. If a
@@ -201,11 +201,9 @@ reduced scales; other output sizes round up per axis with
 `max(2, ceil(output_dimension * scale))`, so odd dimensions are expected and
 validated (1151x647 at Quality gives 979x550, not 978x549).
 
-These four values are duplicated on purpose in the validation and benchmark
-harnesses (`FeatureValidation._quality_scale()`,
-`RTBenchmark._quality_scale()`) so that changing `RT_QUALITY_SCALES` alone makes
-those harnesses fail rather than silently follow. `TestUi` bakes the
-percentages into its dropdown labels and would need updating by hand.
+The fixed scale contract is exercised through the runtime profile by
+`receiver_registry_smoke.gd` and `game/tests/perf_probe.gd`; changing it also
+requires updating the Graphics menu labels and their application smoke tests.
 
 The root viewport, gameplay UI, final CanvasLayer, and final ColorRect always
 remain at the visible output size. `Viewport.scaling_3d_scale` remains `1.0`;
@@ -225,7 +223,7 @@ Reduced presets reconstruct back to the native output size with FSR 1 EASU
 followed by RCAS. The FSR EASU SubViewport is the one target sized to the output
 rather than the render size, and it exists only while a reduced preset is
 active. Expected relative internal pixel workloads are 100%, 72.25%, 56.25% and
-25%; the upscale and present passes always run at 100%.
+25%; EASU, Panini, sharpening, grade, and final presentation always run at 100%.
 
 Runtime callers select a tier with `set_rt_quality()` and can query
 `get_rt_quality_scale()`, `get_rt_quality_name()`, and
@@ -236,10 +234,20 @@ consumer reads `rt_quality` once in `_ready()` before listening for changes.
 
 The authored gameplay camera remains attached to and current in its original
 viewport. A private Camera3D is current only in the scene-capture SubViewport
-and mirrors the authored camera's transform, projection parameters, offsets,
-near/far planes, aspect policy, cull mask, Environment, and CameraAttributes.
-It never copies the authored camera's `compositor`. Hardware RT continues to
-use the compositor installed on the World3D scenario by RTSceneManager.
+and normally mirrors the authored camera's transform, projection parameters,
+offsets, near/far planes, aspect policy, cull mask, Environment, and
+CameraAttributes. It never copies the authored camera's `compositor`. Hardware
+RT continues to use the compositor installed on the World3D scenario by
+RTSceneManager.
+
+Panini is the only intentional camera-parity exception. The authored
+`RTPaniniCamera3D` remains perspective, `KEEP_WIDTH`, and at the selected exact
+horizontal display FOV. When the pass is eligible, the private camera alone is
+switched to the conservative symmetric rectilinear capture frustum derived from
+the complete output perimeter. Transform, near/far, cull mask, Environment and
+CameraAttributes remain unchanged. Profiling reports this as
+`post_internal_camera_capture_override = true`, while preserving the ordinary
+camera-resource parity fields.
 
 Hardware RT reserves render layer 20 for the material-ID carrier. While the
 carrier is active, each managed renderer instance is placed on that layer alone
@@ -255,24 +263,26 @@ camera mask, a hardware camera must include layer 20. Startup and runtime camera
 switches validate that bit and fail with the camera path and reserved layer when
 it is missing; the add-on never silently edits the authored mask.
 
-## Shared post-processing: SMAA 1x and FSR 1
+## Shared post-processing: SMAA 1x, FSR 1, and Panini
 
 Every runtime backend uses `RTPostProcessStack`. Anti-aliasing is SMAA 1x on
-every backend and every preset. Resolution reconstruction is AMD FidelityFX
-Super Resolution 1. The order is deliberate: SMAA finishes completely before FSR
-starts, because FSR 1 requires an anti-aliased input.
+every backend and every preset. Reduced presets reconstruct with AMD FidelityFX
+Super Resolution 1. An eligible FPS camera then applies classic Panini at native
+output size. SMAA finishes completely before EASU, and Panini finishes before
+CAS/RCAS and the artistic grade.
 
 Native (`rt_render_scale == 1.0`):
 
 ```text
 internal-resolution 3D scene / RT result  (internal size == output size)
     -> transparent internal scene capture
-    -> per-texel scene-linear visible reconstruction (geometry + environment)
+    -> per-texel scene-linear visible reconstruction (geometry + environment + fog)
     -> one normalized HDR-to-SDR clamp
     -> SMAA color edge detection
     -> SMAA blend-weight calculation
     -> SMAA neighborhood blending
     -> scene-linear-to-sRGB into the resolve target
+    -> classic Panini D=1, S=0                       (native output size)
     -> optional FidelityFX CAS (off by default)
     -> sRGB-to-scene-linear, RetroGrade, display-range clamp
     -> explicit scene-linear-to-sRGB transfer
@@ -280,13 +290,14 @@ internal-resolution 3D scene / RT result  (internal size == output size)
     -> normal gameplay Canvas/UI
 ```
 
-Quality, Balanced and Performance (`rt_render_scale < 1.0`) insert exactly two
-passes into that chain and change nothing else:
+Quality, Balanced and Performance (`rt_render_scale < 1.0`) insert EASU before
+Panini and select RCAS after it:
 
 ```text
     ... SMAA neighborhood blending                   (internal render size)
     -> scene-linear-to-sRGB into the resolve target  (internal render size)
     -> FSR 1 EASU                                    (native output size)
+    -> classic Panini D=1, S=0                       (native output size)
     -> FSR 1 RCAS
     -> sRGB-to-scene-linear, RetroGrade, display-range clamp
     ...
@@ -294,6 +305,63 @@ passes into that chain and change nothing else:
 
 There is no bilinear reconstruction path. FSR 1 is the only upscaler, and it is
 never bypassed at a reduced preset.
+
+All depth, camera-matrix, lighting, RT, shadow, reflection, fog, terrain, grass,
+and environment work is rectilinear and upstream. Panini warps that completed
+opaque perceptual image as one coherent layer. The reticle, FPS counter, status
+overlays, and menus are ordinary root/UI canvases downstream of the scene
+CanvasLayer, so aim and text are never projected.
+
+### Panini projection and horizontal FOV
+
+`RTPaniniCamera3D` is the reusable opt-in capability. It forces perspective and
+`Camera3D.KEEP_WIDTH`; `display_horizontal_fov` therefore means exact horizontal
+coverage at every aspect ratio. Valid values are 120–140 degrees, default 130.
+`set_display_horizontal_fov()` clamps finite values and rejects NaN/infinity
+without replacing the last valid value. The game FPS camera enables
+`panini_enabled`; reusable add-on and utility cameras default it off.
+
+`PlayerCamera.set_base_horizontal_fov()` owns the same 120/130/140 constants and
+smooths in horizontal-degree space. Sprint requests a 10-degree boost capped at
+140, and disabling dynamic FOV always returns to the selected base. `GameApp`
+owns the session preference independently of RT initialization; the Graphics
+slider applies synchronously while paused, and reset, respawn, load, menu return,
+and new game reuse that session baseline. FOV is intentionally absent from save
+payloads and returns to 130 only after an application restart.
+
+The pass runs only when both `RTSceneManager.post_panini_enabled` and the current
+perspective camera capability are enabled. Missing, unsupported, disabled,
+orthographic, and frustum cameras bind the SMAA-resolve or EASU source directly
+to presentation. Cutscenes, warmup, examples, reflection-bake, and other utility
+cameras therefore retain the ordinary rectilinear path unless they explicitly
+opt in.
+
+The inverse mapping and capture bounds are symmetric, so a perspective camera
+with nonzero `h_offset` or `v_offset` bypasses with
+`camera_offset_unsupported` instead of sampling rays around the wrong projection
+center. The stack never edits authored offsets; the supported zero offsets are
+copied unchanged to the private camera.
+
+The projection is fixed classic Panini with distance `D=1` and squeeze `S=0`.
+Its native-output horizontal extent makes the left and right center rays exactly
+minus/plus half the selected display FOV; the vertical center extent follows
+from output aspect. The CPU caches every output-border texel center plus the four
+logical corners whenever output size changes. Each FOV or size-domain change
+then performs exactly one nonlinear mapping scan over that cached perimeter, adds
+a half-texel margin, and chooses the smallest symmetric perspective capture that
+contains it. That conservative private-camera overscan prevents black borders,
+clamped corners, and culling holes without altering the authored camera.
+
+The WebGL2-safe canvas shader uses one bilinear sample where the warp does not
+minify and exactly four bilinear samples at the positive/negative derivative
+corners where it does. The diagnostic contract names this `adaptive_1_or_4`.
+It uses no compute, history, `textureGather`, dynamic allocation, or
+renderer-specific branch. The native-size Panini SubViewport is persistent,
+resized in place, rebound across quality changes, and set to `UPDATE_DISABLED`
+while bypassed.
+`generated/shader_warmup_manifest.tres` includes `panini_project.gdshader`; rerun
+the normal warmup generator whenever this shader or its material parameters
+change.
 
 Which branch a preset takes, and what the profile reports for it:
 
@@ -429,9 +497,8 @@ outside its four neighbors, which is exactly the lone-bright-or-dark-pixel case
 that rings. Solving the filter for `result >= 0` gives `w >= -e/(4*mx4)`, so the
 numerator has to see `e`; a ring-only limiter authorizes a lobe that overshoots.
 A black pixel on a uniform `0.5` ring resolves to about `-0.56` without the
-clamp and is correctly left untouched with it. On the parity fixture the clamp
-changes 11 pixels out of 746,496 by more than `4/255`, peaking at `10/255`, and
-is bit-identical everywhere else.
+clamp and is correctly left untouched with it; ordinary neighborhoods remain
+unchanged.
 
 ### Native is a true bypass
 
@@ -440,8 +507,9 @@ work, RCAS does zero work, no bilinear upscale runs, and no upscale buffer is
 allocated. `get_debug_contract_snapshot()` reports `easu_viewport_size`,
 `easu_uniform_input_size` and `easu_uniform_output_size` as zero and `fsr_active`
 as false; the profile reports `post_upscale_method` as `none`. The present pass
-simply samples the native resolve target. Native is therefore the clean
-reference-quality mode.
+reads the native resolve through Panini when the current camera is eligible, or
+reads resolve directly when it is not. Native is therefore a true *FSR* bypass;
+Panini eligibility is independent of quality.
 
 `_resize()` owns the whole FSR lifecycle, because it is the single place both
 sizes are recomputed. Entering the FSR path allocates the EASU material and
@@ -472,14 +540,14 @@ is bypassed along with it.
 ### Targets and precision
 
 Scene, edge, blend and resolve SubViewports all request `use_hdr_2d = true`, and
-so does the EASU target while it exists, but this is not the same physical
-format on every renderer. Forward+ honors the request and the profile reports an
-HDR scene capture plus HDR data targets. Godot Compatibility/Web ignores HDR 2D;
-the supported fallback is a transparent RGBA8 target. Transparency guarantees
-all four directional weight channels remain present, but the fallback has lower
-precision. The `post_*_hdr_requested`, `post_*_hdr`, and
-`post_data_viewports_rgba` profile fields distinguish requested state from the
-format the active renderer can actually supply.
+so do the persistent Panini target and the EASU target while it exists, but this
+is not the same physical format on every renderer. Forward+ honors the request
+and the profile reports an HDR scene capture plus HDR data targets. Godot
+Compatibility/Web ignores HDR 2D; the supported fallback is a transparent RGBA8
+target. Transparency guarantees all four directional weight channels remain
+present, but the fallback has lower precision. The `post_*_hdr_requested`,
+`post_*_hdr`, and `post_data_viewports_rgba` profile fields distinguish requested
+state from the format the active renderer can actually supply.
 
 On Compatibility/Web the resolve target is RGBA8, so SMAA's sub-8-bit edge blend
 is re-quantized once before the grade. That is the same precision the scene
@@ -490,9 +558,10 @@ the Native reference SHA was re-baselined.
 Intermediate SubViewports are persistent and resize only when the output size or
 quality preset changes; they are not reallocated per frame. Every SMAA
 `viewport_size` uniform receives the internal render size, because its texel
-offsets address the scaled source textures. The present pass deliberately has no
-such uniform: its source is always 1:1 with the rect it covers — the resolve
-target at Native, the EASU target at every reduced preset.
+offsets address the scaled source textures. The Panini target is always allocated
+at native output size and is disabled rather than freed while bypassed. Its input
+is always 1:1 — resolve at Native or EASU at a reduced preset — and the final
+present source is Panini when active or that same upstream image when bypassed.
 
 Posterization happens after AA and remains intentionally crisp. There is no
 separate compute grade for hardware and no Compatibility-only grade path.
@@ -503,6 +572,7 @@ separate compute grade for hardware and no Compatibility-only grade path.
 - `post_smaa_quality` (`LOW`, `MEDIUM`, or `HIGH`);
 - `post_fsr_sharpness` (RCAS attenuation in stops; reduced presets only);
 - `post_cas_enabled` and `post_cas_sharpness` (Native only);
+- `post_panini_enabled` (manager-wide request; camera capability still gates it);
 - `retro_post_enabled`;
 - brightness, contrast, saturation, black point, and color balance;
 - posterization enable, levels, and strength.
@@ -518,10 +588,10 @@ quality overrides:
 
 The final scene is presented on CanvasLayer `-100`. Gameplay UI should remain on
 the default canvas or a higher CanvasLayer, so it is not graded, posterized,
-anti-aliased, or upscaled as part of the 3D image. FSR reconstructs only the
-private rendered 3D scene; fonts, HUD elements and other game UI stay at native
-resolution. The parity fixture samples a known UI marker from the final
-screenshot to enforce that ordering.
+anti-aliased, upscaled, or Panini-projected as part of the 3D image. EASU and
+Panini operate only on the private rendered 3D scene; fonts, reticles, HUD
+elements, and menus stay at native resolution. `panini_web_capture.tscn` leaves a
+known status marker above the scene to make that ordering visible.
 
 ## Color, exposure, and texture sampling
 
@@ -558,7 +628,7 @@ recovers zero-alpha managed coverage before environment reconstruction. A
 translucent raster surface directly over managed hardware geometry still has no
 separate engine-exposed opaque coverage mask; overlapping mixed coverage is an
 explicit Forward+ limitation, while ordinary transparency against the visible
-environment remains in the parity fixture.
+environment remains supported.
 
 The software data/atlas representation remains bounded and deterministic:
 
@@ -833,6 +903,12 @@ bytes, output and internal RT resolution, and:
   `post_fsr_sharpness`, `post_sharpen_mode` (`none`, `cas`, or `rcas`),
   `post_cas_enabled`, and `post_cas_sharpness`. At Native the sizes are zero and
   the method is `none`, which is how a true FSR bypass is asserted;
+- `post_panini_requested`, camera capable/enabled/eligible state,
+  `post_panini_enabled`, and `post_panini_bypass_reason`; projection/filter
+  identity, persistent target and source stage/size; display and conservative
+  capture horizontal/vertical FOVs; mapped rect and source-UV bounds; perimeter
+  sample and invalid-sample counts; `post_panini_bounds_valid`; and dedicated
+  `post_panini_buffer_bytes`;
 - `rt_quality_preset`, `rt_quality_name`, `ray_tracing_requested_scale`,
   per-axis `ray_tracing_effective_scale`, `ray_tracing_full_resolution`,
   `ray_tracing_resolution`, `ray_tracing_resolution_method`, and rendered or
@@ -841,13 +917,14 @@ bytes, output and internal RT resolution, and:
   per-axis `post_effective_render_scale`, `post_resolution_method`,
   `post_rendered_pixels`, `post_smaa_viewport_size`, and
   `post_persistent_buffer_bytes`; camera diagnostic fields report the source
-  identity, active state, visual-state and resource matches, and null internal
-  compositor;
+  identity, active state, visual-state and resource matches, null internal
+  compositor, and the intentional Panini capture-FOV override;
 - `post_native_size` (legacy output-size alias), instrumented
   `post_per_frame_allocation_count`/peak, initialization and total explicit
   post-object allocation counts, resize count/timing,
   `post_scene_capture_frames`, `post_edge_frames`, `post_blend_frames`,
-  `post_resolve_frames`, and `post_easu_frames` (zero at Native).
+  `post_resolve_frames`, `post_easu_frames` (zero at Native), and
+  `post_panini_frames` (increments only while eligible).
   The per-frame counters measure explicit Node/Resource construction inside the
   stack's frame update, including a settings update issued earlier in the same
   manager frame. Normal unchanged frames report zero because every viewport,
@@ -855,9 +932,13 @@ bytes, output and internal RT resolution, and:
   visual-contract Resource is visible in the current/peak counter.
   The persistent byte count is the owned color targets only: four render-size
   targets (scene, edges, weights, resolve) at 8 bytes per pixel when Forward+
-  honors RGBA16F or 4 bytes for Compatibility/Web RGBA8, plus one output-size
-  EASU target at the same per-pixel cost while a reduced preset is active. It
-  excludes depth/render buffers and the SMAA LUTs.
+  honors RGBA16F or 4 bytes for Compatibility/Web RGBA8, plus one persistent
+  output-size Panini target and one additional output-size EASU target while a
+  reduced preset is active. It excludes depth/render buffers and the SMAA LUTs.
+  `get_post_debug_contract_snapshot()` exposes the same target as
+  `panini_buffer_bytes`;
+- `post_pass_gpu_ms` names the measured `scene`, SMAA, optional `fsr_easu`,
+  `panini`, and `root_present` viewport costs while profiling is enabled;
 - `post_scene_viewport_hdr_requested`/`post_scene_viewport_hdr`,
   `post_data_viewports_hdr_requested`/`post_data_viewports_hdr`, and
   `post_data_viewports_rgba`;
@@ -866,6 +947,10 @@ bytes, output and internal RT resolution, and:
   post environment revision/composite state, and hardware opaque-coverage
   recovery state.
 
+`get_post_debug_stage_images()` exposes the active Panini target as `panini` for
+validation readback and returns null while the pass is bypassed. Runtime does not
+perform this readback automatically.
+
 Hardware additionally reports acceleration-structure builds, uploads, uniform
 sets, dispatch pixels, and available CPU/GPU timings. Software reports BVH and
 atlas counts/bytes/build timings. Hardware render-thread facts may lag
@@ -873,229 +958,75 @@ main-thread changes by one rendered frame.
 
 ## Repeatable frame-time benchmark
 
-The benchmark scene lives in the development repository, not in the add-on
-folder.
+`res://game/tests/perf_probe.gd` boots the real application shell, enters the
+terrain level, parks the FPS camera at a fixed viewpoint, warms up for 300 frames
+by default, and reports median and p95 frame intervals over 1,200 frames. It can
+also emit the complete RT/profile snapshot, including named per-pass GPU time.
+Run comparisons at the same renderer, driver, output size, warmup, measured
+frames, camera, FOV, and quality.
 
-`res://scenes/Benchmark/RTBenchmark.tscn` waits for `rt_ready`, warms up 300
-rendered frames, records 1,200 `frame_post_draw` intervals, and repeats five
-times. It emits median/p95/p99 JSON and writes desktop results beneath
-`res://builds/benchmarks/`; Web emits stdout only.
+The relevant controls are:
 
-Existing ray, load, light, map, and revision cases remain available. Dedicated
-post cases isolate the shared fullscreen cost:
-
-- `post_baseline`: shared presentation with SMAA and RetroGrade disabled;
-- `post_smaa_low`, `post_smaa_medium`, and `post_smaa_high`: the three SMAA
-  presets with grade disabled;
-- `post_retro`: High SMAA plus RetroGrade and 16-level posterization.
-- `post_fsr`: High SMAA with grade disabled, isolating the FSR 1 upscale cost.
-  Pair it with `--benchmark-quality` to choose the internal resolution; at
-  `native` it degenerates to `post_smaa_high` because FSR is bypassed. Compare
-  `performance` against `native` here specifically, since EASU and RCAS both run
-  at full output resolution and are the largest share of the frame at 50%;
-- `post_cas`: High SMAA with grade disabled plus CAS at 0.15. Only meaningful at
-  `--benchmark-quality=native`, because reduced presets sharpen with RCAS and
-  ignore CAS;
-- `post_resize`: measures one native buffer resize and records its microseconds;
-- `environment_rebake`: proves a flat revision-1 snapshot becomes panorama
-  revision 2 after one runtime resource edit, then records the single rebake,
-  bake time, and same-frame post allocation event.
-
-Each result records the active post features and complete RT profile. Use the
-same renderer, driver, viewport, case, warmup, measured frames, and run count
-when comparing costs.
-
-Use `--benchmark-quality=native|quality|balanced|performance` to select the
-fixed internal scale. Before sampling, the harness validates root/output size,
-internal target size, SMAA source-texel size, compositor isolation, resolution
-method, and rendered/dispatch pixel count. Hardware validation waits for and
-checks the RTLightingEffect's raw `ray_tracing_width`, `ray_tracing_height`, and
-`ray_tracing_dispatch_pixels` facts as well as the manager's canonical fields;
-canonical normalization therefore cannot hide a stale hardware dispatch. The
-quality name is included in the result filename.
+- `PERF_PROFILE=1` enables manager and named viewport timings;
+- `PERF_PANINI=0`, `PERF_SMAA=0`, and `PERF_GRADE=0` isolate post stages;
+- `PERF_FOV=120|130|140` selects exact horizontal display coverage;
+- `PERF_RT_QUALITY=0|1|2|3` selects Native through Performance;
+- `PERF_BACKEND=software` forces software RT on a hardware-capable system;
+- `PERF_WARMUP` and `PERF_FRAMES` override the sampling windows;
+- `PERF_SHOT` writes a fixed capture and `PERF_REF` compares it with a previous
+  image, subject to the deterministic-capture notes in the project README.
 
 ```text
-godot --path . --rendering-method forward_plus --scene res://scenes/Benchmark/RTBenchmark.tscn -- --force-hardware --benchmark-case=shadows_reflections --benchmark-quality=performance
-godot --path . --rendering-method forward_plus --scene res://scenes/Benchmark/RTBenchmark.tscn -- --force-software --benchmark-case=post_baseline --benchmark-quality=balanced
-godot --path . --rendering-method gl_compatibility --scene res://scenes/Benchmark/RTBenchmark.tscn -- --force-software --benchmark-case=post_retro --benchmark-quality=quality
+godot --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
+PERF_PROFILE=1 PERF_FOV=140 PERF_RT_QUALITY=3 godot --path . --rendering-method forward_plus --resolution 2560x1440 --script res://game/tests/perf_probe.gd
+PERF_PROFILE=1 PERF_PANINI=0 PERF_BACKEND=software godot --path . --rendering-method gl_compatibility --resolution 2560x1440 --script res://game/tests/perf_probe.gd
 ```
 
-### Recorded SMAA + bilinear vs SMAA + FSR 1 comparison
-
-`shadows_reflections`, 300 warmup frames, 1,200 measured frames, 5 runs, 1152x648
-output, RTX 4060, Godot 4.7.2. Aggregate median frame interval in milliseconds,
-old (SMAA plus the four-tap bilinear upscale) against new (SMAA plus FSR 1):
-
-| Preset | Forward+ hardware old | new | Compatibility software old | new |
-| --- | ---: | ---: | ---: | ---: |
-| Native | 0.864 | 0.883 | 0.988 | 1.009 |
-| Quality | 0.709 | 0.782 | 0.884 | 1.020 |
-| Balanced | 0.615 | 0.679 | 0.809 | 0.874 |
-| Performance | 0.499 | 0.509 | 0.753 | 0.828 |
-
-FSR 1 costs roughly 2-10% of frame time on hardware and 2-15% on Compatibility
-software here. Native pays about 0.02 ms for the extra resolve pass alone.
-
-Two results are worth understanding rather than just reading. Performance is the
-*smallest* hardware regression (+0.01 ms) even though EASU and RCAS both run at
-full output resolution, because the pass they replaced was expensive in exactly
-the opposite direction: the old bilinear upscale ran four `decode_scene_texel()`
-calls per output pixel, and each one reconstructed the environment with its own
-four-tap panorama fetch. FSR reads twelve cheap texels from an
-already-composited image instead. And every median here is under 1.1 ms, so this
-scene is nowhere near GPU-bound on this hardware and the percentages are
-inflated by fixed per-frame overhead. Re-measure on representative target
-hardware before drawing conclusions about a real workload.
-
-The Compatibility Quality run reported a 56.7 ms p95 against a 1.02 ms median.
-The previous baseline had the same pathology at that exact configuration, which
-is why a `-rerun` log exists; treat the median as the signal and the tail as
-unrelated desktop-GL hitching.
-
-Override the defaults with `--benchmark-warmup=<frames>`,
-`--benchmark-frames=<frames>`, and `--benchmark-runs=<runs>`.
+`post_pass_gpu_ms.panini` is the projection cost; the steady-state explicit
+allocation count must remain zero. Quality and FOV transitions resize/rebind
+persistent targets and should be measured separately from unchanged frames.
 
 ## Feature and renderer-parity validation
 
-The fixtures and harnesses in this section live in the development repository,
-not in the add-on folder.
+The checked-in tests divide the contract at useful boundaries:
 
-`FeatureValidation.tscn` remains the deterministic material/light/ray fixture.
-It covers UV/triplanar maps, UV-less geometry, multi-surface overrides,
-non-uniform transforms, reflection variants, all supported lights, caster
-modes, and layers. Its AA teardown diagnostic verifies built-in AA is disabled,
-custom High SMAA is reported, and the exact caller-owned viewport state is
-restored after manager teardown.
-
-`--exercise-quality-switch-diagnostic` freezes the fixture, removes temporal
-CameraAttributes, and captures `Native -> Quality -> Balanced -> Performance ->
-Native`. Every tier must produce two bit-identical consecutive frames, and the
-returned Native SHA must equal the original Native SHA. The diagnostic verifies
-that the root remains native, internal/SMAA/resolve sizes and pixel counts
-follow the preset, the EASU target and its two size constants exist with the
-right dimensions at every reduced preset and are absent at Native, the reported
-upscale method and sharpener match the preset, every transition causes exactly
-one logical post resize, and topology, TLAS, instance, material, light,
-environment, and receiver-list revisions do not change.
-
-After those hashes complete, a separate resource-copy check assigns authored
-camera-local Environment, neutral CameraAttributes, and a compositor, then
-swaps both resource references. Post-stack diagnostics must show that
-Environment and CameraAttributes identity are preserved, both source resources
-remain unmodified, the source camera is neither replaced nor mutated, and the
-internal camera compositor remains null. This resource check intentionally
-makes no image-equality claim.
-
-The same structural phase temporarily resizes the logical output to odd
-dimensions and verifies the exact ceil-rounded Quality target. It then exercises
-orthographic and asymmetric frustum projections with offsets/aspect policies,
-switches to a second active authored camera, and requires the full internal
-camera visual-state diagnostic after every change. The original camera, active
-selection, Native quality, and output dimensions are restored before reporting.
-
-`RendererParityCapture.tscn` adds capture-only high-contrast diagonals, thin and
-subpixel geometry, near/far edges, highlights, mirrors, hard shadows, saturated
-surfaces, a deterministic optional HDR panorama, and a UI marker above scene
-post. It requires a graphical render loop; a headless run is rejected. All
-ready and `frame_post_draw` waits are bounded.
-
-A capture:
-
-- requires an explicit hardware/software backend on desktop; Web selects
-  software explicitly for its entrypoint;
-- freezes scene motion and uses custom High SMAA plus the normal RetroGrade;
-- can add `--parity-retro-stress` for 16-level posterization;
-- can use `--parity-aa-off` or `--parity-grade-off` to isolate the raw shared
-  presentation/color boundary while diagnosing a failed comparison;
-- can add `--parity-sky` for the deterministic RGBAF/HDR sky-reflection case;
-- can add `--parity-sky-rotate-90` to capture the same fixture after one
-  90-degree environment rotation (it implies `--parity-sky`);
-- requires two same-path frames to match exactly before saving;
-- asserts native resolution, built-in AA state, post profile/counters,
-  environment upload/radiance/seam/pole facts, a visible reflection miss,
-  and UI ordering;
-- writes `<label>.png` and `<label>.json` beneath `builds/parity` by default.
-
-Capture the three useful comparisons with identical window size and flags:
+- `addons/retro_rt/tests/panini_projection_smoke.gd` tests 120, 130, and 140
+  degrees across 4:3, 16:9, 21:9, and 32:9 domains and all four render scales.
+  It checks symmetry, finite capture FOVs, aspect-derived vertical extent,
+  full-perimeter containment, zero invalid pre-clamp samples, invalid-input
+  rejection, and the exact one-or-four-tap derivative/WebGL2 shader contract.
+- `addons/retro_rt/tests/receiver_registry_smoke.gd` boots the terrain fixture
+  against software RT by default or hardware RT with `--hardware`. With
+  `--panini`, it asserts native resolve-to-Panini ordering, capture overscan,
+  persistent native target/buffer bytes, pass/frame counters, non-perspective
+  bypass, and shifted-camera-offset bypass without mutating the authored values.
+  `--panini-performance` additionally asserts EASU-to-Panini-to-RCAS ordering.
+- `game/tests/player_camera_smoke.gd`, `app_flow_smoke.gd`, and
+  `app_recovery_smoke.gd` cover exact horizontal camera semantics, sprint
+  clamping/return, dynamic-FOV disable, live settings application while paused,
+  menu reopening, and session retention across gameplay reconstruction.
+- `game/tests/panini_web_capture.tscn` boots the complete application and terrain
+  level, validates every FOV/quality/SMAA endpoint plus sharpening and grade
+  toggles, saves a real graphical capture, and leaves a native CanvasLayer
+  status marker above the projected scene. It is the validation-Web export
+  entrypoint, never the production one.
 
 ```text
-# Test A: renderer-only difference (the strict primary gate)
-godot --path . --rendering-method forward_plus --scene res://scenes/Validation/RendererParityCapture.tscn -- --force-software --parity-sky --parity-label=forward_software
-godot --path . --rendering-method gl_compatibility --scene res://scenes/Validation/RendererParityCapture.tscn -- --force-software --parity-sky --parity-label=compatibility_software
-
-# Test B: RT backend difference
-godot --path . --rendering-method forward_plus --scene res://scenes/Validation/RendererParityCapture.tscn -- --force-hardware --parity-sky --parity-label=forward_hardware
+godot --headless --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/panini_projection_smoke.gd
+godot --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini
+godot --path . --rendering-method gl_compatibility --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --panini-performance
+godot --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/receiver_registry_smoke.gd -- --hardware --panini-performance
+godot --path . --rendering-method gl_compatibility --scene res://game/tests/panini_web_capture.tscn -- --force-software
 ```
 
-`tools/compare_parity.gd` compares decoded PNG RGB values offline and writes
-`comparison.json` plus an amplified `difference.png`. It reports mean absolute
-RGB difference, maximum channel difference, RGB MSE/PSNR, and the number and
-percentage of pixels whose largest RGB-channel error exceeds the profile's
-channel tolerance. Maximum error is diagnostic only because isolated raster
-edge pixels are expected across APIs.
-
-```text
-# Test A: Forward+ software vs Compatibility software
-godot --headless --path . --script res://tools/compare_parity.gd -- --reference=res://builds/parity/forward_software.png --candidate=res://builds/parity/compatibility_software.png --output-dir=res://builds/parity/test_a --profile=strict
-
-# Test B: Forward+ hardware vs Forward+ software
-godot --headless --path . --script res://tools/compare_parity.gd -- --reference=res://builds/parity/forward_hardware.png --candidate=res://builds/parity/forward_software.png --output-dir=res://builds/parity/test_b --profile=balanced
-
-# Test C: Forward+ hardware vs Compatibility software
-godot --headless --path . --script res://tools/compare_parity.gd -- --reference=res://builds/parity/forward_hardware.png --candidate=res://builds/parity/compatibility_software.png --output-dir=res://builds/parity/test_c --profile=balanced
-```
-
-Threshold profiles are intentionally fixed:
-
-| Profile | Max MAE | Channel tolerance | Max pixels over | Min PSNR |
-| --- | ---: | ---: | ---: | ---: |
-| Strict | 0.005 | 0.02 | 0.5% | 40 dB |
-| Balanced | 0.01 | 0.04 | 1.0% | 35 dB |
-| Report-only | not gated | 4/255 | not gated | not gated |
-
-Strict is the fail-safe default when `--profile` is omitted.
-
-These thresholds are acceptance targets. The latest complete High-SMAA,
-grade-on, deterministic-panorama Native artifacts (`fsr_*`, generated
-2026-08-20 after the FSR 1 change) report, with the previous `current_*`
-baselines in brackets for comparison:
-
-| Comparison | Profile | MAE | Pixels over tolerance | PSNR | Result |
-| --- | --- | ---: | ---: | ---: | --- |
-| Forward+ software vs Compatibility software | Strict | 0.001790 (0.001742) | 1.591% (1.593%) | 34.03 dB (34.04) | fail |
-| Forward+ hardware vs Forward+ software | Balanced | 0.000880 (0.000879) | 0.327% (0.327%) | 35.20 dB (35.20) | pass |
-| Forward+ hardware vs Compatibility software | Balanced | 0.002433 (0.002390) | 1.737% (1.737%) | 31.60 dB (31.60) | fail |
-
-Native did not regress. Comparing the new Native capture directly against the
-previous fused-shader Native gives MAE 0.000100, maximum channel difference
-exactly 1/255, zero pixels over tolerance, and PSNR 64.05 dB — that is the
-single sRGB round trip through the resolve target described under "Targets and
-precision", and nothing else. The two open cross-renderer gates fail for the
-same pre-existing reasons and by the same margins.
-
-The FSR path was captured separately with `--parity-quality=`. Against the new
-Native reference, Quality reports MAE 0.00259 / 32.34 dB, Balanced 0.00301 /
-31.44 dB, and Performance 0.00487 / 28.07 dB: monotonic with scale, with
-differences confined to one- and two-pixel edge lines and flat regions
-bit-identical. Forward+ hardware and Compatibility software agree at Performance
-to MAE 0.00280 / 31.57 dB, matching the Native cross-renderer margin, so EASU and
-RCAS reconstruct consistently on both renderers. A half-texel offset, a flipped
-Y axis, or a stale resolution constant would all raise these by an order of
-magnitude and break the monotonicity, so this is the regression signal to watch.
-
-All three individual captures passed their internal same-path stability and
-fixture checks. The same-renderer hardware/software gate now passes; the two
-cross-renderer gates remain open on raster coverage, direct texture filtering,
-and Compatibility target-precision differences. Diagnostic grade-off/AA-off
-comparisons do not substitute for these default-path gates.
-The rotation capture verifies the requested 90-degree environment basis and
-reflection visibility; proving identical region displacement still requires
-paired baseline/rotated captures and cross-renderer comparison.
-
-Both tools return `0` for a passing run, `1` for failed assertions/thresholds,
-and `2` for configuration or runtime errors. Cross-renderer exact SHA is never
-a gate; the exact SHA pair in each capture only proves deterministic same-path
-frames.
+Use the same output size and FOV for graphical comparisons. The capture harness
+and `PERF_SHOT`/`PERF_REF` provide the current image evidence; these checked-in
+harnesses are the source of truth. Hardware RT, forced Forward+ software RT,
+desktop Compatibility, and Web Compatibility must all report zero invalid
+Panini samples, no black borders or culling holes, the correct upstream source
+stage, and native UI ordering. Small raster/format differences between APIs
+remain acceptable under the visual-equivalence contract described above;
+missing geometry, displaced aim, or a renderer-specific post branch is a failure.
 
 ## Web target
 
@@ -1103,54 +1034,47 @@ The post stack uses canvas shaders, ordinary SubViewports, and lookup
 textures; it does not require compute, storage buffers, compositor APIs, motion
 vectors, or history for AA/color/upscaling processing. FSR 1 is included in
 that: EASU, RCAS and CAS are ordinary fragment kernels with no loops, no 16-bit
-packed path, and no `textureGather`, so they compile under WebGL 2. This keeps
-Web Compatibility a first-class runtime path. The checked-in Web export preset
-remains single-threaded.
+packed path, and no `textureGather`. Panini is likewise an ordinary canvas
+fragment shader with no compute, history, gather, or renderer-specific path.
+This keeps Web Compatibility a first-class runtime path. Both checked-in Web
+presets are single-threaded.
 
-`project.godot` keeps the authored desktop main scene but sets
-`run/main_scene.web` to `RendererParityCapture.tscn`. The runnable `Web` export
-preset exports all resources to `builds/web/index.html` with thread support
-disabled, so launching that export enters the parity harness without changing
-normal desktop play. With no injected browser arguments it selects software RT,
-High SMAA, normal RetroGrade, and the asymmetric HDR panorama fixture. The
-90-degree rotation case still requires the corresponding parity argument in a
-browser launch that supplies user arguments. The export canvas resize policy is
-engine-controlled (`1`), keeping the harness at its native 1152x648 canvas
-instead of browser-stretching it.
+The production `Web` preset retains `res://game/app/main.tscn` and exports to
+`builds/web/index.html`. Validation is deliberately separate: the `Web Panini
+Validation` preset supplies the custom `panini_web_capture` feature, which selects
+`run/main_scene.panini_web_capture` and exports the 1152x648 harness to
+`builds/web-panini/index.html`. Shipping Web builds therefore never boot a test
+scene.
 
-The Web harness writes its PNG/JSON pair beneath `user://parity` and prints the
-structured `RT_PARITY_CAPTURE` record to the browser console. Collect the files
-from browser persistent storage, then run the offline comparator.
+```text
+godot --headless --path . --export-release Web builds/web/index.html
+godot --headless --path . --export-release "Web Panini Validation" builds/web-panini/index.html
+```
 
-A current in-app Chromium/WebGL2 run completed with `runtime.web = true`, no
-browser console errors, native 1152x648 output, exact consecutive-frame SHA,
-active High SMAA, ungraded UI ordering, one 512x256 RGBAF sky bake, and HDR peak
-radiance `2.8223`; every harness check passed. It reported
-`post_upscale_method = none`, `post_sharpen_mode = none` and
-`post_easu_frames = 0`, confirming the Native FSR bypass on Web.
+Serve the chosen output directory over HTTP; Web exports cannot be validated by
+opening the HTML file directly. `panini_web_capture.tscn` boots the real app,
+enters the terrain level, and asserts that Web selected the Compatibility
+renderer and software RT backend. It scans 120, 130, and 140 degrees with fresh
+containment contracts, then exercises Native, Quality, Balanced, and Performance.
+Native must remain `SMAA resolve -> Panini -> CAS` with no EASU target; every
+reduced preset must remain `SMAA resolve -> EASU -> Panini -> RCAS`.
 
-A second WebGL2 run forced the Performance preset through the engine `args` to
-prove the FSR path itself compiles and runs there. It also passed every check,
-with `post_fsr_active = true`, `post_easu_frames = 18`,
-`post_fsr_input_size = (576, 324)`, `post_fsr_output_size = (1152, 648)`,
-`post_upscale_method = fsr1_easu_rcas`, `post_sharpen_mode = rcas`, a native
-1152x648 capture, a correct UI marker, and two matching consecutive frames — so
-EASU and RCAS produce a real, stable, non-black image under WebGL 2 with no
-unsupported shader instructions and no framebuffer errors. Note that a hidden
-browser tab pauses `requestAnimationFrame` and stalls the Godot main loop; an
-automated WebGL run needs either a visible tab or a shim that drives the loop
-from `setTimeout`.
+The same run verifies SMAA disabled and Low/Medium/High, then toggles RetroGrade
+off and grade-plus-posterization on. Every combination must leave Panini in the
+same native perceptual domain and on the correct side of sharpening and grade.
+It also asserts the `adaptive_1_or_4` filter, dedicated persistent buffer bytes,
+valid perimeter bounds, zero invalid samples, and zero steady-frame explicit
+allocations.
 
-Firefox was not available in the current browser-control environment and remains
-a required manual acceptance run. Mobile browsers and Safari are not current
-validation targets.
-
-A separate in-browser quality benchmark kept the root/output canvas at
-1152x648 while Performance rendered the private RT/SMAA targets at 576x324.
-Native and Performance both measured a 4.20 ms aggregate median frame interval
-on the high-refresh test system (p95 4.4 ms and 4.5 ms respectively), so the
-reduced internal target did not reproduce the root-scaling FPS collapse. Every
-resolution, SMAA-source-domain, compositor-isolation, and root-scale contract
-check passed. This refresh-cadence-limited result is a regression check, not a
-claim of a Web speedup on every GPU; Chromium and Firefox should still be
-benchmarked on representative target hardware before changing the default.
+The Web harness encodes the read-back frame as an in-memory PNG while the browser
+driver captures the visible canvas; the equivalent desktop run writes
+`res://.godot/panini_web_capture.png`. It leaves a native CanvasLayer marker
+reading `PANINI WEB CHECK: PASS` or `FAIL`, and prints a structured
+`PANINI_WEB_CAPTURE` JSON record to the browser console. Acceptance requires
+`runtime_web = true`, `renderer = gl_compatibility`, `rt_backend = software`,
+`display_horizontal_fov = 140`, `source_stage = fsr_easu`,
+`invalid_samples = 0`, and an empty `failures` array.
+The visible marker and reticle must remain unwarped and there must be no black
+border, NaN artifact, culling hole, or browser console shader/framebuffer error.
+A hidden browser tab may pause `requestAnimationFrame`, so automated acceptance
+must keep the harness visible until it reports completion.

@@ -11,6 +11,11 @@ signal smaa_quality_selected(quality: int)
 signal retro_post_toggled(enabled: bool)
 signal grass_quality_selected(quality: int)
 signal fps_counter_toggled(enabled: bool)
+signal horizontal_fov_changed(fov: float)
+
+const MIN_HORIZONTAL_FOV := 120.0
+const MAX_HORIZONTAL_FOV := 140.0
+const DEFAULT_HORIZONTAL_FOV := 130.0
 
 var rendering_method: StringName = &"unknown"
 var active_backend: StringName = &"none"
@@ -20,9 +25,12 @@ var smaa_quality: int = RTSceneManager.SMAAQuality.HIGH
 var retro_post_enabled: bool = true
 var grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
 var fps_counter_enabled: bool = false
+var horizontal_fov: float = DEFAULT_HORIZONTAL_FOV
 
 var _quality_selector: OptionButton
 var _backend_value: Label
+var _fov_slider: HSlider
+var _fov_value: Label
 
 
 func _init() -> void:
@@ -63,6 +71,37 @@ func _build_body() -> Control:
 	_add_status_row(status_grid, "Renderer", _display_name(rendering_method))
 	_backend_value = _add_status_row(status_grid, "Ray tracing", _backend_text())
 	_add_status_row(status_grid, "Fallback", "Hardware RT -> Software RT")
+
+	var fov_row := HBoxContainer.new()
+	fov_row.add_theme_constant_override("separation", 12)
+	column.add_child(fov_row)
+
+	var fov_label := Label.new()
+	fov_label.text = "Horizontal FOV"
+	fov_label.custom_minimum_size.x = 132.0
+	fov_row.add_child(fov_label)
+
+	_fov_slider = HSlider.new()
+	_fov_slider.name = "HorizontalFovSlider"
+	_fov_slider.min_value = MIN_HORIZONTAL_FOV
+	_fov_slider.max_value = MAX_HORIZONTAL_FOV
+	_fov_slider.step = 1.0
+	_fov_slider.allow_lesser = false
+	_fov_slider.allow_greater = false
+	_fov_slider.focus_mode = Control.FOCUS_ALL
+	_fov_slider.custom_minimum_size.x = 160.0
+	_fov_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Initialize before connecting so merely opening the dialog never reapplies or emits a setting.
+	_fov_slider.value = clampf(roundf(horizontal_fov), MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV)
+	fov_row.add_child(_fov_slider)
+
+	_fov_value = Label.new()
+	_fov_value.name = "HorizontalFovValue"
+	_fov_value.custom_minimum_size.x = 42.0
+	_fov_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_fov_value.text = _fov_text(_fov_slider.value)
+	fov_row.add_child(_fov_value)
+	_fov_slider.value_changed.connect(_on_horizontal_fov_value_changed)
 
 	var quality_row := HBoxContainer.new()
 	quality_row.add_theme_constant_override("separation", 12)
@@ -194,6 +233,17 @@ func _display_name(value: StringName) -> String:
 	if text.is_empty():
 		return "Unknown"
 	return text.replace("_", " ").capitalize()
+
+
+func _fov_text(value: float) -> String:
+	return "%d°" % roundi(value)
+
+
+func _on_horizontal_fov_value_changed(value: float) -> void:
+	horizontal_fov = clampf(roundf(value), MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV)
+	if _fov_value != null:
+		_fov_value.text = _fov_text(horizontal_fov)
+	horizontal_fov_changed.emit(horizontal_fov)
 
 
 func _on_quality_item_selected(index: int) -> void:

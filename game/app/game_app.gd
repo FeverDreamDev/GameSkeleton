@@ -61,6 +61,7 @@ var _retro_post_enabled: bool = true
 # it has to be re-applied to each newly installed world.
 var _grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
 var _fps_counter_enabled: bool = false
+var _horizontal_fov: float = 130.0
 var _fps_layer: CanvasLayer
 
 
@@ -118,6 +119,9 @@ func _wire_systems() -> bool:
 	flow_system.gameplay_input_changed.connect(_on_gameplay_input_changed)
 	flow_system.save_requested.connect(_on_flow_save_requested)
 	flow_system.load_progress_changed.connect(_on_level_load_progress)
+	# Player view preferences are independent of RT availability and must still apply on the
+	# Compatibility fallback or in a shell with no RTSceneManager at all.
+	_apply_player_fov()
 
 	if rt_manager != null:
 		rt_manager.rt_ready.connect(_on_rt_ready)
@@ -302,12 +306,14 @@ func _open_graphics_options() -> void:
 	_graphics_dialog.retro_post_enabled = _retro_post_enabled
 	_graphics_dialog.grass_quality = _grass_quality
 	_graphics_dialog.fps_counter_enabled = _fps_counter_enabled
+	_graphics_dialog.horizontal_fov = _horizontal_fov
 	_graphics_dialog.quality_selected.connect(_on_graphics_quality_selected)
 	_graphics_dialog.anti_aliasing_toggled.connect(_on_graphics_anti_aliasing_toggled)
 	_graphics_dialog.smaa_quality_selected.connect(_on_graphics_smaa_quality_selected)
 	_graphics_dialog.retro_post_toggled.connect(_on_graphics_retro_post_toggled)
 	_graphics_dialog.grass_quality_selected.connect(_on_graphics_grass_quality_selected)
 	_graphics_dialog.fps_counter_toggled.connect(_on_graphics_fps_counter_toggled)
+	_graphics_dialog.horizontal_fov_changed.connect(_on_graphics_horizontal_fov_changed)
 	_graphics_dialog.finished.connect(_on_graphics_dialog_finished.unbind(1))
 	UISystem.show_modal(_graphics_dialog)
 
@@ -737,6 +743,7 @@ func _restore_player_state(state: Dictionary) -> void:
 	var crouching := bool(state.get("crouching", false))
 	var height := float(state.get("height", player.crouch_height if crouching else player.standing_height))
 	player.apply_stance(crouching, height)
+	_apply_player_fov()
 	var view := _player_view()
 	if view != null:
 		view.apply_view(float(state.get("view_pitch", 0.0)))
@@ -854,6 +861,22 @@ func _on_graphics_grass_quality_selected(quality: int) -> void:
 func _on_graphics_fps_counter_toggled(enabled: bool) -> void:
 	_fps_counter_enabled = enabled
 	_apply_fps_counter()
+
+
+func _on_graphics_horizontal_fov_changed(fov: float) -> void:
+	if not is_finite(fov):
+		return
+	_horizontal_fov = clampf(
+		fov,
+		RTPaniniCamera3D.MIN_HORIZONTAL_FOV,
+		RTPaniniCamera3D.MAX_HORIZONTAL_FOV)
+	_apply_player_fov()
+
+
+func _apply_player_fov() -> void:
+	var view := _player_view()
+	if view != null:
+		view.set_base_horizontal_fov(_horizontal_fov, true)
 
 
 ## The counter is created on first use and then kept, so toggling it twice does
@@ -977,6 +1000,7 @@ func _reset_player_for_new_run() -> void:
 	player.global_transform = Transform3D.IDENTITY
 	player.apply_stance(false, player.standing_height)
 	player.set_input_enabled(false)
+	_apply_player_fov()
 	var view := _player_view()
 	if view != null:
 		view.reset_view()

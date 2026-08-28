@@ -5,6 +5,7 @@
 [ext_resource type="Script" uid="uid://chupltx3cj73h" path="res://player/player_camera.gd" id="3_camera"]
 [ext_resource type="Shader" path="res://addons/retro_rt/shaders/BlinnPhong.gdshader" id="4_blinn"]
 [ext_resource type="Script" path="res://addons/procedural_terrain_grass/terrain_grass_interactor_3d.gd" id="5_interactor"]
+[ext_resource type="Script" path="res://addons/retro_rt/post_processing/RTPaniniCamera3D.gd" id="6_panini_camera"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
@@ -76,6 +77,9 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.7, 0)
 [node name="TiltPivot" type="Node3D" parent="ViewRoot/Head/BobPivot/LandingPivot" unique_id=1021939963]
 
 [node name="Camera3D" type="Camera3D" parent="ViewRoot/Head/BobPivot/LandingPivot/TiltPivot" unique_id=1675410025]
+script = ExtResource("6_panini_camera")
+panini_enabled = true
+display_horizontal_fov = 130.0
 
 [node name="ReticleUI" type="CanvasLayer" parent="." unique_id=1533967813]
 

@@ -25,8 +25,8 @@ extends Node3D
 
 @export_group("Dynamic FOV")
 @export var dynamic_fov_enabled: bool = true
-@export var base_fov: float = 75.0
-@export var sprint_fov: float = 85.0
+@export_range(120.0, 140.0, 0.1, "degrees") var base_horizontal_fov: float = (
+		RTPaniniCamera3D.DEFAULT_HORIZONTAL_FOV)
 @export var fov_transition_speed: float = 8.0
 
 @export_group("Head Bobbing")
@@ -61,7 +61,7 @@ extends Node3D
 @onready var bob_pivot: Node3D = $Head/BobPivot
 @onready var landing_pivot: Node3D = $Head/BobPivot/LandingPivot
 @onready var tilt_pivot: Node3D = $Head/BobPivot/LandingPivot/TiltPivot
-@onready var camera: Camera3D = $Head/BobPivot/LandingPivot/TiltPivot/Camera3D
+@onready var camera: RTPaniniCamera3D = $Head/BobPivot/LandingPivot/TiltPivot/Camera3D
 
 #endregion
 
@@ -73,6 +73,8 @@ var smoothed_yaw: float = 0.0
 var bob_timer: float = 0.0
 var landing_offset: float = 0.0
 var step_offset: float = 0.0
+
+const SPRINT_HORIZONTAL_FOV_BOOST: float = 10.0
 
 #endregion
 
@@ -86,7 +88,7 @@ func _ready() -> void:
 		return
 
 	if camera:
-		camera.fov = base_fov
+		camera.set_display_horizontal_fov(base_horizontal_fov)
 		target_pitch = camera.rotation.x
 
 	target_yaw = player.rotation.y
@@ -126,7 +128,7 @@ func reset_view() -> void:
 
 	if camera:
 		camera.rotation.x = 0.0
-		camera.fov = base_fov
+		camera.set_display_horizontal_fov(base_horizontal_fov)
 	if bob_pivot:
 		bob_pivot.position = Vector3.ZERO
 	if landing_pivot:
@@ -248,17 +250,46 @@ func _apply_eye_height() -> void:
 
 #region Dynamic FOV
 
+## Sets the session's normal horizontal FOV. The camera capability owns range
+## validation, while this controller owns whether the change snaps or eases in.
+func set_base_horizontal_fov(value: float, immediate: bool = true) -> void:
+	if not is_finite(value):
+		return
+	base_horizontal_fov = clampf(
+		value,
+		RTPaniniCamera3D.MIN_HORIZONTAL_FOV,
+		RTPaniniCamera3D.MAX_HORIZONTAL_FOV)
+	if immediate and camera:
+		camera.set_display_horizontal_fov(base_horizontal_fov)
+
+
+## Returns the angle actually used for rendering, including a partially blended
+## sprint transition. Before the child camera is ready, the session base is the
+## effective value.
+func get_effective_horizontal_fov() -> float:
+	return camera.display_horizontal_fov if camera else base_horizontal_fov
+
+
 func _handle_dynamic_fov(delta: float) -> void:
-	if not dynamic_fov_enabled or not camera:
+	if not camera:
 		return
 
-	var target_fov: float = base_fov
+	var target_fov: float = base_horizontal_fov
 	# Reads is_sprinting rather than the movement state, so the FOV holds through a sprint
 	# jump instead of snapping back the instant the state flips to AIRBORNE.
-	if player.is_sprinting and player.horizontal_speed > player.walk_speed + 0.5:
-		target_fov = sprint_fov
+	if (
+			dynamic_fov_enabled
+			and player.is_sprinting
+			and player.horizontal_speed > player.walk_speed + 0.5
+	):
+		target_fov = minf(
+			base_horizontal_fov + SPRINT_HORIZONTAL_FOV_BOOST,
+			RTPaniniCamera3D.MAX_HORIZONTAL_FOV)
 
-	camera.fov = _exp_decay(camera.fov, target_fov, fov_transition_speed, delta)
+	# Smooth the player-facing angle itself. Camera3D uses the same horizontal
+	# degree value because RTPaniniCamera3D enforces KEEP_WIDTH.
+	camera.set_display_horizontal_fov(_exp_decay(
+		get_effective_horizontal_fov(), target_fov, fov_transition_speed, delta))
 
 #endregion
 

@@ -234,6 +234,14 @@ var _rt_quality_preset: RTQualityPreset = RTQualityPreset.NATIVE
 
 @export_group("Post Processing")
 
+## Master gate for the shared Panini projection pass. Cameras must additionally
+## expose and enable the RTPaniniCamera3D capability; ordinary/add-on cameras
+## bypass directly even when this is true.
+@export var post_panini_enabled: bool = false:
+	set(value):
+		post_panini_enabled = value
+		_update_post_settings()
+
 @export var post_anti_aliasing_enabled: bool = true:
 	set(value):
 		post_anti_aliasing_enabled = value
@@ -4360,6 +4368,7 @@ func _get_post_settings() -> Dictionary:
 		"rt_render_scale": get_rt_quality_scale(),
 		"rt_quality_preset": int(rt_quality),
 		"rt_quality_name": get_rt_quality_name(),
+		"post_panini_enabled": post_panini_enabled,
 		"post_anti_aliasing_enabled": post_anti_aliasing_enabled,
 		"post_smaa_quality": post_smaa_quality,
 		"post_fsr_sharpness": post_fsr_sharpness,

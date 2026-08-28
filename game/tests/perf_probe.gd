@@ -21,6 +21,7 @@ extends SceneTree
 ##   PERF_STARS=0    keep the dome but drop the star field
 ##   PERF_SMAA=0     disable the three SMAA passes
 ##   PERF_GRADE=0    disable the RetroGrade present pass
+##   PERF_PANINI=0  directly bypass the Panini projection target
 ##   PERF_RT=0       stop ray tracing entirely
 ##   PERF_CARRIER=0  hide the hardware material-ID carrier; MEASUREMENT ONLY,
 ##                   deliberately breaks managed-pixel lighting
@@ -55,6 +56,7 @@ extends SceneTree
 ##   PERF_LOD=a,b     grass LOD band distances in metres (near->medium, medium->far)
 ##   PERF_PITCH=deg   camera pitch override, for framing a distant LOD seam
 ##   PERF_YAW=deg     camera yaw override, for sweeping the area around spawn
+##   PERF_FOV=deg     horizontal display FOV override, clamped by the FPS camera
 ##
 ## Run at the project's authored resolution, which is what the RT stack sizes
 ## itself from:
@@ -193,6 +195,9 @@ func _run() -> void:
 	var yaw := OS.get_environment("PERF_YAW")
 	player.rotation.y = deg_to_rad(float(yaw) if yaw.is_valid_float() else VIEW_YAW_DEGREES)
 	var view = player.get_node("ViewRoot")
+	var display_fov := OS.get_environment("PERF_FOV")
+	if display_fov.is_valid_float() and view.has_method(&"set_base_horizontal_fov"):
+		view.call(&"set_base_horizontal_fov", float(display_fov), true)
 	var pitch := OS.get_environment("PERF_PITCH")
 	view.apply_view(deg_to_rad(float(pitch) if pitch.is_valid_float() else VIEW_PITCH_DEGREES))
 	# A capture compares separate launches, so even sub-pixel physics settling of
@@ -394,6 +399,8 @@ func _apply_toggles(terrain, day_night) -> void:
 		_shell.rt_manager.post_anti_aliasing_enabled = false
 	if not _env_flag("PERF_GRADE"):
 		_shell.rt_manager.retro_post_enabled = false
+	if not _env_flag("PERF_PANINI"):
+		_shell.rt_manager.post_panini_enabled = false
 	# The carrier is a deliberately overbright directional light whose only job is
 	# to transport material/instance IDs through separate specular. Hiding it
 	# measures that raster light pass, but decode_visibility_id then rejects every
@@ -444,7 +451,7 @@ func _report(terrain) -> void:
 	var toggles: PackedStringArray = []
 	for name in [
 			"PERF_GRASS", "PERF_SKY", "PERF_CLOUDS", "PERF_STARS", "PERF_GROUND", "PERF_NATIVE_SHADOWS",
-			"PERF_SMAA", "PERF_GRADE", "PERF_CARRIER", "PERF_RT"]:
+			"PERF_SMAA", "PERF_GRADE", "PERF_PANINI", "PERF_CARRIER", "PERF_RT"]:
 		if not _env_flag(name):
 			toggles.append(name.trim_prefix("PERF_").to_lower() + "=off")
 	if toggles.is_empty():

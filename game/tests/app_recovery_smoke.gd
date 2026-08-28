@@ -82,6 +82,25 @@ func _run() -> void:
 		"PauseMenu changes flow mode to PAUSED")
 	_check(UISystem.is_cursor_visible(), "PauseMenu releases the mouse cursor")
 	if pause_menu != null:
+		pause_menu.settings_requested.emit()
+	await process_frame
+	var graphics_dialog := app.get("_graphics_dialog") as GraphicsOptionsDialog
+	var fov_slider := (
+		graphics_dialog.get("_fov_slider") as HSlider if graphics_dialog != null else null)
+	_check(graphics_dialog != null and fov_slider != null,
+		"Pause Settings opens Graphics options with the horizontal FOV slider")
+	if fov_slider != null:
+		fov_slider.value = 139.0
+	var player_view := app.player.get_node_or_null("ViewRoot") as PlayerCamera
+	_check(paused and player_view != null and player_view.camera != null
+		and is_equal_approx(player_view.camera.fov, 139.0),
+		"horizontal FOV applies immediately while gameplay processing is paused")
+	if graphics_dialog != null:
+		graphics_dialog.dismiss()
+	await process_frame
+	_check(paused and app.get("_pause_menu") == pause_menu,
+		"closing Graphics options leaves its owning PauseMenu and freeze intact")
+	if pause_menu != null:
 		pause_menu.save_requested.emit()
 	await process_frame
 	var save_browser := _find_modal(SaveBrowser) as SaveBrowser

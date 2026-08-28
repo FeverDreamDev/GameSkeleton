@@ -74,6 +74,14 @@ func _run() -> void:
 	manager.rt_backend = (
 		RTSceneManager.RTBackend.HARDWARE
 		if hardware_requested else RTSceneManager.RTBackend.SOFTWARE)
+	var panini_performance_requested := (
+		OS.get_cmdline_user_args().has("--panini-performance"))
+	var panini_requested := (
+		OS.get_cmdline_user_args().has("--panini")
+		or panini_performance_requested)
+	manager.post_panini_enabled = panini_requested
+	if panini_performance_requested:
+		manager.rt_quality = RTSceneManager.RTQualityPreset.PERFORMANCE
 	manager.profiling_enabled = true
 	manager.geometry_root_path = NodePath("..")
 	manager.world_environment_path = NodePath("")
@@ -185,7 +193,7 @@ func _run() -> void:
 		"tombstoned receiver slots are reused")
 	print("receiver_registry_smoke profile: %s" % after)
 
-	# The post camera mirrors the authored camera mask exactly. Hardware requires
+	# The post camera preserves the authored camera mask exactly. Hardware requires
 	# its reserved carrier bit; software has no carrier and must not inherit that
 	# contract. Call the validator directly so the negative case does not install
 	# an expected failure overlay or emit an expected push_error in routine CI.
@@ -206,7 +214,79 @@ func _run() -> void:
 				"software RT does not require the hardware carrier layer")
 		camera.cull_mask = camera_mask
 	_check(bool(after.get("post_internal_camera_visual_state_matches", false)),
-		"the internal post camera mirrors the authored camera state")
+		"the internal post camera satisfies the authored/capture camera contract")
+	if panini_requested:
+		_check(bool(after.get("post_panini_enabled", false)),
+			"the eligible FPS camera activates the requested Panini pass")
+		_check(bool(after.get("post_panini_bounds_valid", false)),
+			"the Panini perimeter maps inside the conservative capture")
+		_check(int(after.get("post_panini_invalid_samples", -1)) == 0,
+			"the exact Panini perimeter has no pre-clamp invalid sample")
+		var post_output_size: Vector2i = after.get("post_output_size", Vector2i.ZERO)
+		_check(int(after.get("post_panini_perimeter_samples", 0))
+			== 2 * post_output_size.x + 2 * post_output_size.y,
+			"Panini scans every output border texel center plus logical corners")
+		_check(float(after.get("post_panini_capture_horizontal_fov", 0.0))
+			> float(after.get("post_panini_display_horizontal_fov", 180.0)),
+			"Panini reports the conservative horizontal capture overscan")
+		_check(after.get("post_panini_sample_mode", &"invalid")
+			== &"adaptive_1_or_4",
+			"Panini reports its one-or-four-tap adaptive sampling contract")
+		_check(after.get("post_present_source", &"invalid") == &"panini",
+			"presentation reads the projected native-output target")
+		_check(after.get("post_panini_viewport_size", Vector2i.ZERO)
+			== after.get("post_output_size", Vector2i.ONE),
+			"the Panini target remains in the native output domain")
+		_check(int(after.get("post_panini_frames", 0)) > 0,
+			"the active Panini target renders frames")
+		_check(int(after.get("post_panini_buffer_bytes", 0)) > 0,
+			"Panini reports its persistent target memory independently")
+		_check(not bool(after.get(
+			"post_internal_camera_source_visual_state_exact", true)),
+			"Panini reports its intentional private-camera capture override")
+		if panini_performance_requested:
+			_check(bool(after.get("post_fsr_active", false)),
+				"the reduced Panini probe keeps FSR active")
+			_check(after.get("post_panini_source_stage", &"invalid") == &"fsr_easu",
+				"reduced Panini reads native-output EASU")
+			_check(after.get("post_sharpen_mode", &"invalid") == &"rcas",
+				"RCAS remains downstream of reduced Panini")
+		if camera != null:
+			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+			await process_frame
+			var bypass_profile := manager.get_profile_snapshot()
+			_check(not bool(bypass_profile.get("post_panini_enabled", true))
+				and bypass_profile.get("post_panini_bypass_reason", &"invalid")
+					== &"non_perspective_camera",
+				"a non-perspective source directly bypasses Panini")
+			_check(bypass_profile.get("post_present_source", &"invalid")
+				== (&"fsr_easu" if panini_performance_requested else &"smaa_resolve"),
+				"the ineligible-camera bypass keeps the correct upstream source")
+			_check(int(bypass_profile.get("post_per_frame_allocation_count", -1)) == 0,
+				"camera eligibility changes allocate no post resources")
+			camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+			camera.keep_aspect = Camera3D.KEEP_WIDTH
+			camera.fov = float(after.get("post_panini_display_horizontal_fov", 130.0))
+			await process_frame
+			var restored_panini := manager.get_profile_snapshot()
+			_check(bool(restored_panini.get("post_panini_enabled", false)),
+				"restoring perspective reuses the persistent Panini target")
+			camera.h_offset = 0.1
+			await process_frame
+			var offset_bypass := manager.get_profile_snapshot()
+			_check(not bool(offset_bypass.get("post_panini_enabled", true))
+				and offset_bypass.get("post_panini_bypass_reason", &"invalid")
+					== &"camera_offset_unsupported",
+				"a shifted asymmetric camera safely bypasses the symmetric mapping")
+			camera.h_offset = 0.0
+			await process_frame
+			_check(bool(manager.get_profile_snapshot().get("post_panini_enabled", false)),
+				"clearing the camera offset reuses the persistent Panini target")
+	else:
+		_check(not bool(after.get("post_panini_enabled", true)),
+			"the reusable manager keeps Panini directly bypassed by default")
+		_check(after.get("post_present_source", &"invalid") == &"smaa_resolve",
+			"the Native bypass presents resolve directly")
 	_check(local_light.light_cull_mask == authored_light_mask,
 		"RT renderer overrides never mutate the authored local-light mask")
 

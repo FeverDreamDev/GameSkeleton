@@ -97,6 +97,37 @@ static func make_bevel(
 	box.set_content_margin_all(BEVEL)
 	return box
 
+## Paints a bevel at its final display size for controls whose theme slot requires a Texture2D
+## rather than a nine-sliced StyleBox, such as a slider grabber.
+static func make_bevel_icon(
+		size: Vector2i,
+		outer_tl: Color,
+		inner_tl: Color,
+		outer_br: Color,
+		inner_br: Color,
+		face: Color = FACE
+) -> Texture2D:
+	var width := maxi(size.x, BEVEL * 2 + 1)
+	var height := maxi(size.y, BEVEL * 2 + 1)
+	var img := Image.create_empty(width, height, false, Image.FORMAT_RGBA8)
+	img.fill(face)
+	var last_x := width - 1
+	var last_y := height - 1
+
+	for x in width:
+		img.set_pixel(x, 0, outer_tl)
+		img.set_pixel(x, last_y, outer_br)
+	for y in height:
+		img.set_pixel(0, y, outer_tl)
+		img.set_pixel(last_x, y, outer_br)
+	for x in range(1, last_x):
+		img.set_pixel(x, 1, inner_tl)
+		img.set_pixel(x, last_y - 1, inner_br)
+	for y in range(1, last_y):
+		img.set_pixel(1, y, inner_tl)
+		img.set_pixel(last_x - 1, y, inner_br)
+	return ImageTexture.create_from_image(img)
+
 ## A button, window frame or scrollbar grabber sitting proud of the surface.
 static func raised(face: Color = FACE) -> StyleBoxTexture:
 	return make_bevel(FACE_LIGHT, HIGHLIGHT, DARK_SHADOW, SHADOW, face)
@@ -217,6 +248,7 @@ static func build_theme() -> Theme:
 	_apply_text(theme)
 	_apply_fields(theme)
 	_apply_progress(theme)
+	_apply_sliders(theme)
 	_apply_scrollbars(theme)
 	_apply_tabs(theme)
 	_apply_separators(theme)
@@ -310,6 +342,24 @@ static func _apply_progress(theme: Theme) -> void:
 	theme.set_stylebox("background", "ProgressBar", trough)
 	theme.set_stylebox("fill", "ProgressBar", fill)
 	theme.set_color("font_color", "ProgressBar", TEXT)
+
+static func _apply_sliders(theme: Theme) -> void:
+	var track := sunken(FACE)
+	track.set_content_margin_all(0)
+	theme.set_stylebox("slider", "HSlider", track)
+	# The track already describes the full range. Empty area styles avoid drawing a second bevel
+	# over its completed portion while still satisfying Slider's required theme contract.
+	theme.set_stylebox("grabber_area", "HSlider", empty())
+	theme.set_stylebox("grabber_area_highlight", "HSlider", empty())
+
+	var grabber_size := Vector2i(11, 18)
+	theme.set_icon("grabber", "HSlider", make_bevel_icon(
+		grabber_size, FACE_LIGHT, HIGHLIGHT, DARK_SHADOW, SHADOW))
+	theme.set_icon("grabber_highlight", "HSlider", make_bevel_icon(
+		grabber_size, HIGHLIGHT, WHITE, DARK_SHADOW, SHADOW, Color("cacaca")))
+	theme.set_icon("grabber_disabled", "HSlider", make_bevel_icon(
+		grabber_size, FACE_LIGHT, HIGHLIGHT, DARK_SHADOW, SHADOW))
+	theme.set_constant("grabber_offset", "HSlider", 0)
 
 static func _apply_scrollbars(theme: Theme) -> void:
 	var grabber := raised()

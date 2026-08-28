@@ -5,6 +5,7 @@ const EDGE_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/smaa_ed
 const WEIGHTS_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/smaa_weights.gdshader"
 const RESOLVE_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/smaa_neighborhood.gdshader"
 const EASU_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/fsr_easu.gdshader"
+const PANINI_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/panini_project.gdshader"
 const PRESENT_SHADER_PATH := "res://addons/retro_rt/post_processing/shaders/retro_present.gdshader"
 # Sharpener selection for the present pass, matching retro_present.gdshader.
 const SHARPEN_NONE := 0
@@ -13,6 +14,9 @@ const SHARPEN_RCAS := 2
 const AREA_TEXTURE_PATH := "res://addons/retro_rt/post_processing/smaa/AreaTexDX10.dds"
 const SEARCH_TEXTURE_PATH := "res://addons/retro_rt/post_processing/smaa/SearchTex.dds"
 const VIEWPORT_OWNER_META := &"__rt_post_process_owner"
+const PANINI_DISTANCE := 1.0
+const PANINI_MIN_HORIZONTAL_FOV := 1.0
+const PANINI_MAX_HORIZONTAL_FOV := 175.0
 
 var _owner: Node
 var _root_viewport: Viewport
@@ -29,6 +33,9 @@ var _resolve_viewport: SubViewport
 # Allocated only while the render size differs from the output size. Native is a
 # true FSR bypass and owns no upscale buffer at all.
 var _easu_viewport: SubViewport
+## Persistent native-output Panini target. It remains allocated while bypassed,
+## but stops updating and the present pass reads resolve/EASU directly.
+var _panini_viewport: SubViewport
 ## Whether the rendering server's per-viewport timers are armed. See
 ## [method set_pass_profiling_enabled].
 var _pass_profiling_enabled := false
@@ -36,6 +43,7 @@ var _edge_material: ShaderMaterial
 var _blend_material: ShaderMaterial
 var _resolve_material: ShaderMaterial
 var _easu_material: ShaderMaterial
+var _panini_material: ShaderMaterial
 var _present_material: ShaderMaterial
 # Cached so entering the FSR path never loads a resource mid-frame.
 var _easu_shader: Shader
@@ -52,6 +60,7 @@ var _edge_frames := 0
 var _blend_frames := 0
 var _resolve_frames := 0
 var _easu_frames := 0
+var _panini_frames := 0
 var _resize_count := 0
 var _resize_last_usec := 0
 var _resize_peak_usec := 0
@@ -60,6 +69,31 @@ var _initialization_allocation_count := 0
 var _last_frame_allocation_count := 0
 var _peak_frame_allocation_count := 0
 var _pending_frame_allocation_count := 0
+
+var _panini_active := false
+var _panini_requested := false
+var _panini_camera_enabled := false
+var _panini_camera_capable := false
+var _panini_eligible := false
+var _panini_bypass_reason: StringName = &"manager_disabled"
+var _panini_display_horizontal_fov := 0.0
+var _panini_capture_horizontal_fov := 0.0
+var _panini_capture_vertical_fov := 0.0
+var _panini_capture_tan_half_fov := Vector2.ONE
+var _panini_mapped_rect_min := Vector2.ZERO
+var _panini_mapped_rect_max := Vector2.ZERO
+var _panini_source_uv_min := Vector2.ZERO
+var _panini_source_uv_max := Vector2.ONE
+var _panini_perimeter_samples := 0
+var _panini_invalid_samples := 0
+var _panini_contract_output_size := Vector2i.ZERO
+var _panini_contract_render_size := Vector2i.ZERO
+var _panini_contract_display_fov := 0.0
+var _panini_cached_perimeter_size := Vector2i.ZERO
+var _panini_cached_perimeter := PackedVector2Array()
+var _panini_property_camera_instance_id := 0
+var _panini_camera_has_enabled_property := false
+var _panini_camera_has_display_fov_property := false
 
 
 func _reservation_is_current() -> bool:
@@ -120,6 +154,7 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_blend_frames = 0
 	_resolve_frames = 0
 	_easu_frames = 0
+	_panini_frames = 0
 	_resize_count = 0
 	_resize_last_usec = 0
 	_resize_peak_usec = 0
@@ -138,6 +173,7 @@ func configure(owner: Node, settings: Dictionary) -> String:
 		"weights_shader": load(WEIGHTS_SHADER_PATH) as Shader,
 		"resolve_shader": load(RESOLVE_SHADER_PATH) as Shader,
 		"easu_shader": load(EASU_SHADER_PATH) as Shader,
+		"panini_shader": load(PANINI_SHADER_PATH) as Shader,
 		"present_shader": load(PRESENT_SHADER_PATH) as Shader,
 		"area": load(AREA_TEXTURE_PATH) as Texture2D,
 		"search": load(SEARCH_TEXTURE_PATH) as Texture2D,
@@ -209,6 +245,17 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_resolve_material.set_shader_parameter(&"scene_texture", _scene_viewport.get_texture())
 	_resolve_material.set_shader_parameter(&"blend_texture", _blend_viewport.get_texture())
 	_resolve_viewport = _make_canvas_pass("SMAAResolve", _render_size, _resolve_material)
+
+	# Panini works on the finished opaque perceptual image. At Native that image
+	# comes from resolve; reduced presets rebind this source to native-size EASU.
+	_panini_material = ShaderMaterial.new()
+	_record_explicit_allocation()
+	_panini_material.shader = resources["panini_shader"]
+	_panini_material.set_shader_parameter(
+		&"source_texture", _resolve_viewport.get_texture())
+	_panini_viewport = _make_canvas_pass(
+		"PaniniProjection", _output_size, _panini_material)
+	_panini_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 	_easu_shader = resources["easu_shader"]
 	_present_material = ShaderMaterial.new()
@@ -322,6 +369,10 @@ func update(settings: Dictionary) -> void:
 		var manager_name := StringName("post_" + String(parameter))
 		if settings.has(parameter) or settings.has(manager_name):
 			_present_material.set_shader_parameter(parameter, settings.get(parameter, settings.get(manager_name)))
+	# A settings dialog may run while the SceneTree is paused. Re-evaluate the
+	# source camera synchronously so enabling/disabling Panini changes the bound
+	# presentation source in this call rather than waiting for _process.
+	_sync_camera()
 
 
 func process_frame() -> String:
@@ -357,6 +408,8 @@ func process_frame() -> String:
 		_blend_frames += 1
 	if _easu_viewport != null:
 		_easu_frames += 1
+	if _panini_active:
+		_panini_frames += 1
 	# Include any future explicit allocations added directly to process_frame().
 	_last_frame_allocation_count += _pending_frame_allocation_count
 	_pending_frame_allocation_count = 0
@@ -399,12 +452,14 @@ func shutdown() -> void:
 	_blend_viewport = null
 	_resolve_viewport = null
 	_easu_viewport = null
+	_panini_viewport = null
 	_final_layer = null
 	_final_rect = null
 	_edge_material = null
 	_blend_material = null
 	_resolve_material = null
 	_easu_material = null
+	_panini_material = null
 	_easu_shader = null
 	_present_material = null
 	_root_state = {}
@@ -412,6 +467,30 @@ func shutdown() -> void:
 	_output_size = Vector2i.ZERO
 	_render_size = Vector2i.ZERO
 	_requested_render_scale = 1.0
+	_panini_active = false
+	_panini_requested = false
+	_panini_camera_enabled = false
+	_panini_camera_capable = false
+	_panini_eligible = false
+	_panini_bypass_reason = &"manager_disabled"
+	_panini_display_horizontal_fov = 0.0
+	_panini_capture_horizontal_fov = 0.0
+	_panini_capture_vertical_fov = 0.0
+	_panini_capture_tan_half_fov = Vector2.ONE
+	_panini_mapped_rect_min = Vector2.ZERO
+	_panini_mapped_rect_max = Vector2.ZERO
+	_panini_source_uv_min = Vector2.ZERO
+	_panini_source_uv_max = Vector2.ONE
+	_panini_perimeter_samples = 0
+	_panini_invalid_samples = 0
+	_panini_contract_output_size = Vector2i.ZERO
+	_panini_contract_render_size = Vector2i.ZERO
+	_panini_contract_display_fov = 0.0
+	_panini_cached_perimeter_size = Vector2i.ZERO
+	_panini_cached_perimeter = PackedVector2Array()
+	_panini_property_camera_instance_id = 0
+	_panini_camera_has_enabled_property = false
+	_panini_camera_has_display_fov_property = false
 
 
 func get_profile_snapshot() -> Dictionary:
@@ -430,11 +509,16 @@ func get_profile_snapshot() -> Dictionary:
 		and _edge_viewport.transparent_bg
 		and _blend_viewport.transparent_bg
 		and _resolve_viewport.transparent_bg)
-	# Four owned render-size color targets (scene, edges, weights, resolve), plus
-	# the native-size EASU target only while the FSR path is active.
+	# Four owned render-size color targets (scene, edges, weights, resolve), one
+	# persistent native-size Panini target, plus the native-size EASU target only
+	# while the FSR path is active.
 	var bytes_per_target_pixel := 4 if compatibility else 8
+	var panini_buffer_bytes := (
+		_output_size.x * _output_size.y * bytes_per_target_pixel
+		if _panini_viewport != null else 0)
 	var persistent_bytes := (
 		_render_size.x * _render_size.y * bytes_per_target_pixel * 4)
+	persistent_bytes += panini_buffer_bytes
 	if _easu_viewport != null:
 		persistent_bytes += _output_size.x * _output_size.y * bytes_per_target_pixel
 	var pass_timings := _measured_pass_timings()
@@ -456,6 +540,9 @@ func get_profile_snapshot() -> Dictionary:
 				and _scene_viewport.use_hdr_2d)
 			else &"srgb_to_scene_linear"),
 		"post_output_transfer": &"explicit_scene_linear_to_srgb",
+		"post_retro_grade_enabled": bool(
+			_settings.get("enabled", _settings.get("retro_post_enabled", true))),
+		"post_posterize_enabled": bool(_settings.get("posterize_enabled", false)),
 		"post_environment_revision": int((_settings.get("environment", {}) as Dictionary).get("revision", 0)),
 		"post_environment_composite": true,
 		"post_recovers_hardware_opaque_coverage": (
@@ -483,6 +570,9 @@ func get_profile_snapshot() -> Dictionary:
 		"post_internal_camera_environment_matches": _camera_environment_matches(),
 		"post_internal_camera_attributes_matches": _camera_attributes_match(),
 		"post_internal_camera_visual_state_matches": _camera_visual_state_matches(),
+		"post_internal_camera_source_visual_state_exact": (
+			_camera_source_visual_state_exact()),
+		"post_internal_camera_capture_override": _panini_active,
 		# Compatibility ignores HDR 2D. Transparent RGBA8 data targets still
 		# preserve all four SMAA weights there; RD uses RGBA16F for every pass.
 		"post_persistent_buffer_bytes": persistent_bytes,
@@ -509,6 +599,7 @@ func get_profile_snapshot() -> Dictionary:
 		"post_blend_frames": _blend_frames,
 		"post_resolve_frames": _resolve_frames,
 		"post_easu_frames": _easu_frames,
+		"post_panini_frames": _panini_frames,
 		# FSR 1 is the only upscaler; there is no bilinear reconstruction path.
 		# Native bypasses it entirely and allocates no upscale target.
 		"post_fsr_active": _active and _fsr_required(),
@@ -519,6 +610,38 @@ func get_profile_snapshot() -> Dictionary:
 		"post_fsr_sharpness": _get_fsr_sharpness(_settings),
 		"post_easu_viewport_size": (
 			_easu_viewport.size if _easu_viewport != null else Vector2i.ZERO),
+		"post_panini_requested": _panini_requested,
+		"post_panini_camera_capable": _panini_camera_capable,
+		"post_panini_camera_enabled": _panini_camera_enabled,
+		"post_panini_eligible": _panini_eligible,
+		"post_panini_enabled": _panini_active,
+		"post_panini_bypass_reason": _panini_bypass_reason,
+		"post_panini_projection": &"classic_d1_s0",
+		"post_panini_sample_mode": &"adaptive_1_or_4",
+		"post_panini_sample_taps_min": 1,
+		"post_panini_sample_taps_max": 4,
+		"post_panini_output_domain": &"native",
+		"post_panini_target_persistent": _panini_viewport != null,
+		"post_panini_buffer_bytes": panini_buffer_bytes,
+		"post_panini_viewport_size": (
+			_panini_viewport.size if _panini_viewport != null else Vector2i.ZERO),
+		"post_panini_source_size": _output_size,
+		"post_panini_source_stage": (
+			&"fsr_easu" if _easu_viewport != null else &"smaa_resolve"),
+		"post_panini_display_horizontal_fov": _panini_display_horizontal_fov,
+		"post_panini_capture_horizontal_fov": _panini_capture_horizontal_fov,
+		"post_panini_capture_vertical_fov": _panini_capture_vertical_fov,
+		"post_panini_capture_tan_half_fov": _panini_capture_tan_half_fov,
+		"post_panini_mapped_rect_min": _panini_mapped_rect_min,
+		"post_panini_mapped_rect_max": _panini_mapped_rect_max,
+		"post_panini_source_uv_min": _panini_source_uv_min,
+		"post_panini_source_uv_max": _panini_source_uv_max,
+		"post_panini_perimeter_samples": _panini_perimeter_samples,
+		"post_panini_invalid_samples": _panini_invalid_samples,
+		"post_panini_bounds_valid": _panini_bounds_valid(),
+		"post_present_source": (
+			&"panini" if _panini_active
+			else (&"fsr_easu" if _easu_viewport != null else &"smaa_resolve")),
 		"post_sharpen_mode": sharpen_name,
 		"post_cas_enabled": _active and _cas_enabled(),
 		"post_cas_sharpness": _get_cas_sharpness(_settings),
@@ -572,6 +695,7 @@ func _profiled_viewports() -> Array:
 	]
 	if _easu_viewport != null:
 		entries.append([&"fsr_easu", _easu_viewport])
+	entries.append([&"panini", _panini_viewport])
 	entries.append([&"root_present", _root_viewport])
 	return entries
 
@@ -595,6 +719,10 @@ func get_debug_stage_images() -> Dictionary:
 		"easu": (
 			_easu_viewport.get_texture().get_image()
 			if _easu_viewport != null else null),
+		# Null while directly bypassed; the persistent target may never have drawn.
+		"panini": (
+			_panini_viewport.get_texture().get_image()
+			if _panini_active and _panini_viewport != null else null),
 	}
 
 
@@ -630,6 +758,12 @@ func get_debug_contract_snapshot() -> Dictionary:
 			_resolve_viewport.size if _resolve_viewport else Vector2i.ZERO),
 		# Zero at Native: the upscale target is not allocated there at all.
 		"easu_viewport_size": _easu_viewport.size if _easu_viewport else Vector2i.ZERO,
+		"panini_viewport_size": (
+			_panini_viewport.size if _panini_viewport else Vector2i.ZERO),
+		"panini_buffer_bytes": (
+			_output_size.x * _output_size.y
+			* (4 if RenderingServer.get_current_rendering_method() == "gl_compatibility" else 8)
+			if _panini_viewport else 0),
 		"final_presentation_size": (
 			Vector2i(_final_rect.size) if _final_rect else Vector2i.ZERO),
 		"edge_uniform_size": _shader_viewport_size(_edge_material),
@@ -641,6 +775,24 @@ func get_debug_contract_snapshot() -> Dictionary:
 			_easu_material, &"easu_input_size"),
 		"easu_uniform_output_size": _shader_vector2i_parameter(
 			_easu_material, &"easu_output_size"),
+		"panini_uniform_source_size": _shader_vector2i_parameter(
+			_panini_material, &"source_size"),
+		"panini_active": _panini_active,
+		"panini_requested": _panini_requested,
+		"panini_eligible": _panini_eligible,
+		"panini_bypass_reason": _panini_bypass_reason,
+		"panini_display_horizontal_fov": _panini_display_horizontal_fov,
+		"panini_capture_horizontal_fov": _panini_capture_horizontal_fov,
+		"panini_capture_vertical_fov": _panini_capture_vertical_fov,
+		"panini_capture_tan_half_fov": _panini_capture_tan_half_fov,
+		"panini_source_uv_min": _panini_source_uv_min,
+		"panini_source_uv_max": _panini_source_uv_max,
+		"panini_perimeter_samples": _panini_perimeter_samples,
+		"panini_invalid_samples": _panini_invalid_samples,
+		"panini_sample_mode": &"adaptive_1_or_4",
+		"panini_sample_taps_min": 1,
+		"panini_sample_taps_max": 4,
+		"panini_bounds_valid": _panini_bounds_valid(),
 		"fsr_active": _active and _fsr_required(),
 		"sharpen_mode": _sharpen_mode() if _active else SHARPEN_NONE,
 		"internal_camera_current": (
@@ -651,6 +803,8 @@ func get_debug_contract_snapshot() -> Dictionary:
 		"internal_camera_environment_matches": _camera_environment_matches(),
 		"internal_camera_attributes_matches": _camera_attributes_match(),
 		"internal_camera_visual_state_matches": _camera_visual_state_matches(),
+		"internal_camera_source_visual_state_exact": (
+			_camera_source_visual_state_exact()),
 	}
 
 
@@ -714,6 +868,10 @@ func _resize(output_size: Vector2i) -> void:
 	_edge_viewport.use_hdr_2d = true
 	_blend_viewport.use_hdr_2d = true
 	_resolve_viewport.use_hdr_2d = true
+	RTVisualContract.apply_native_viewport_state(_panini_viewport, _output_size)
+	_panini_viewport.use_hdr_2d = true
+	_panini_viewport.render_target_update_mode = (
+		SubViewport.UPDATE_ALWAYS if _panini_active else SubViewport.UPDATE_DISABLED)
 	# Applying native state sizes a SubViewport and defaults it to UPDATE_ALWAYS.
 	# Restore the two real AA bypass states after every resize. SMAAResolve keeps
 	# updating either way: with AA off it becomes an exact 1:1 texel decode, and
@@ -728,6 +886,7 @@ func _resize(output_size: Vector2i) -> void:
 	_edge_material.set_shader_parameter(&"viewport_size", Vector2(_render_size))
 	_blend_material.set_shader_parameter(&"viewport_size", Vector2(_render_size))
 	_resolve_material.set_shader_parameter(&"viewport_size", Vector2(_render_size))
+	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
 	# Owns the whole FSR lifecycle, because this is the single place both sizes
 	# are recomputed.
 	_update_fsr_targets()
@@ -814,12 +973,18 @@ func _update_fsr_targets() -> void:
 
 
 func _apply_present_source() -> void:
-	# The present pass source is always 1:1 with the rect it covers: the resolve
-	# target at Native, the EASU target at every reduced preset.
-	var source: Texture2D = (
+	# Every branch entering Panini is already native-size and perceptual: resolve
+	# at Native, EASU at a reduced preset. Bypass binds that source straight to
+	# present; the active path inserts the persistent native-size projection.
+	var pre_panini_source: Texture2D = (
 		_easu_viewport.get_texture() if _easu_viewport != null
 		else _resolve_viewport.get_texture())
-	_present_material.set_shader_parameter(&"source_texture", source)
+	_panini_material.set_shader_parameter(&"source_texture", pre_panini_source)
+	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
+	var present_source: Texture2D = (
+		_panini_viewport.get_texture() if _panini_active
+		else pre_panini_source)
+	_present_material.set_shader_parameter(&"source_texture", present_source)
 	_present_material.set_shader_parameter(&"sharpen_mode", _sharpen_mode())
 
 
@@ -828,6 +993,7 @@ func _sync_camera() -> void:
 	_source_camera_instance_id = (
 		source_camera.get_instance_id() if source_camera != null else 0)
 	if source_camera == null:
+		_resolve_panini_state(null)
 		if _internal_camera != null and _internal_camera.is_current():
 			_internal_camera.clear_current(false)
 		return
@@ -848,6 +1014,9 @@ func _sync_camera() -> void:
 	_internal_camera.cull_mask = source_camera.cull_mask
 	_internal_camera.environment = source_camera.environment
 	_internal_camera.attributes = source_camera.attributes
+	# The authored camera keeps its display projection. Only the private camera
+	# may widen to the conservative rectilinear frustum Panini needs as input.
+	_resolve_panini_state(source_camera)
 	if not _internal_camera.is_current():
 		_internal_camera.make_current()
 
@@ -862,6 +1031,358 @@ func _sync_camera() -> void:
 		post_material.set_shader_parameter(&"camera_ray_top_right", top_right)
 		post_material.set_shader_parameter(&"camera_ray_bottom_left", bottom_left)
 		post_material.set_shader_parameter(&"camera_ray_bottom_right", bottom_right)
+
+
+func _resolve_panini_state(source_camera: Camera3D) -> void:
+	_panini_requested = bool(_settings.get("post_panini_enabled", false))
+	_cache_panini_camera_properties(source_camera)
+	_panini_camera_capable = (
+		source_camera != null
+		and _panini_camera_has_enabled_property
+		and (
+			_panini_camera_has_display_fov_property
+			or source_camera.has_method(&"get_display_horizontal_fov")))
+	_panini_camera_enabled = false
+	_panini_eligible = false
+
+	if source_camera == null:
+		_panini_bypass_reason = &"no_source_camera"
+		_set_panini_active(false)
+		return
+	if not _panini_requested:
+		_panini_bypass_reason = &"manager_disabled"
+		_set_panini_active(false)
+		return
+	if not _panini_camera_capable:
+		_panini_bypass_reason = &"camera_unsupported"
+		_set_panini_active(false)
+		return
+
+	_panini_camera_enabled = bool(source_camera.get(&"panini_enabled"))
+	if not _panini_camera_enabled:
+		_panini_bypass_reason = &"camera_disabled"
+		_set_panini_active(false)
+		return
+	if source_camera.projection != Camera3D.PROJECTION_PERSPECTIVE:
+		_panini_bypass_reason = &"non_perspective_camera"
+		_set_panini_active(false)
+		return
+	# The inverse mapping and conservative bounds are intentionally symmetric.
+	# Reject shifted frusta instead of silently sampling rays that do not match
+	# their projection center. The FPS camera uses the normal zero-offset path.
+	if (
+		not is_zero_approx(source_camera.h_offset)
+		or not is_zero_approx(source_camera.v_offset)
+	):
+		_panini_bypass_reason = &"camera_offset_unsupported"
+		_set_panini_active(false)
+		return
+
+	var display_fov_variant: Variant
+	if source_camera.has_method(&"get_display_horizontal_fov"):
+		display_fov_variant = source_camera.call(&"get_display_horizontal_fov")
+	else:
+		display_fov_variant = source_camera.get(&"display_horizontal_fov")
+	if not (display_fov_variant is float or display_fov_variant is int):
+		_panini_bypass_reason = &"invalid_display_fov"
+		_set_panini_active(false)
+		return
+	var display_fov := float(display_fov_variant)
+	if (
+		not is_finite(display_fov)
+		or display_fov < PANINI_MIN_HORIZONTAL_FOV
+		or display_fov > PANINI_MAX_HORIZONTAL_FOV
+	):
+		_panini_bypass_reason = &"invalid_display_fov"
+		_set_panini_active(false)
+		return
+
+	if (
+		_panini_contract_output_size != _output_size
+		or _panini_contract_render_size != _render_size
+		or not is_equal_approx(_panini_contract_display_fov, display_fov)
+	):
+		_apply_panini_capture_contract(display_fov)
+	if not _panini_mapping_inside_source():
+		_panini_bypass_reason = &"capture_bounds_invalid"
+		_set_panini_active(false)
+		return
+
+	# Camera3D.fov follows keep_aspect. The authored RTPaniniCamera3D remains
+	# KEEP_WIDTH with the requested horizontal display FOV; the capture switches
+	# to KEEP_HEIGHT with the independently derived conservative vertical FOV.
+	_internal_camera.keep_aspect = Camera3D.KEEP_HEIGHT
+	_internal_camera.fov = _panini_capture_vertical_fov
+	_panini_eligible = true
+	_panini_bypass_reason = &"none"
+	_set_panini_active(true)
+
+
+func _cache_panini_camera_properties(camera: Camera3D) -> void:
+	var instance_id := camera.get_instance_id() if camera != null else 0
+	if instance_id == _panini_property_camera_instance_id:
+		return
+	_panini_property_camera_instance_id = instance_id
+	_panini_camera_has_enabled_property = false
+	_panini_camera_has_display_fov_property = false
+	if camera == null:
+		return
+	for property: Dictionary in camera.get_property_list():
+		var property_name := StringName(property.get("name", ""))
+		if property_name == &"panini_enabled":
+			_panini_camera_has_enabled_property = true
+		elif property_name == &"display_horizontal_fov":
+			_panini_camera_has_display_fov_property = true
+
+
+func _set_panini_active(enabled: bool) -> void:
+	if _panini_active == enabled:
+		return
+	_panini_active = enabled
+	if _panini_viewport != null:
+		_panini_viewport.render_target_update_mode = (
+			SubViewport.UPDATE_ALWAYS if enabled else SubViewport.UPDATE_DISABLED)
+	if _panini_material != null and _present_material != null:
+		_apply_present_source()
+
+
+func _apply_panini_capture_contract(display_horizontal_fov: float) -> void:
+	# Border coordinates depend only on the native output dimensions. Cache the
+	# complete scan perimeter so a smoothed sprint transition recomputes the
+	# nonlinear mapping without allocating thousands of points every frame.
+	if _panini_cached_perimeter_size != _output_size:
+		_panini_cached_perimeter_size = _output_size
+		_panini_cached_perimeter = _panini_perimeter_points(_output_size)
+	var contract := _debug_panini_capture_contract_with_perimeter(
+		display_horizontal_fov,
+		_output_size,
+		_render_size,
+		_panini_cached_perimeter)
+	_panini_contract_output_size = _output_size
+	_panini_contract_render_size = _render_size
+	_panini_contract_display_fov = display_horizontal_fov
+	_panini_display_horizontal_fov = display_horizontal_fov
+	_panini_capture_horizontal_fov = float(contract.get("capture_horizontal_fov", 0.0))
+	_panini_capture_vertical_fov = float(contract.get("capture_vertical_fov", 0.0))
+	_panini_capture_tan_half_fov = contract.get(
+		"capture_tan_half_fov", Vector2.ONE) as Vector2
+	_panini_mapped_rect_min = contract.get("mapped_rect_min", Vector2.ZERO) as Vector2
+	_panini_mapped_rect_max = contract.get("mapped_rect_max", Vector2.ZERO) as Vector2
+	_panini_source_uv_min = contract.get("source_uv_min", Vector2.ZERO) as Vector2
+	_panini_source_uv_max = contract.get("source_uv_max", Vector2.ONE) as Vector2
+	_panini_perimeter_samples = int(contract.get("perimeter_samples", 0))
+	_panini_invalid_samples = int(contract.get("invalid_samples", 0))
+	_panini_material.set_shader_parameter(
+		&"panini_extent_x", float(contract.get("panini_extent_x", 1.0)))
+	_panini_material.set_shader_parameter(
+		&"panini_extent_y", float(contract.get("panini_extent_y", 1.0)))
+	_panini_material.set_shader_parameter(
+		&"capture_tan_half_fov", _panini_capture_tan_half_fov)
+	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
+
+
+## Validation seam for the CPU half of the projection contract. Runtime calls it
+## only after FOV or either size domain changes; tests can exercise aspect/FOV
+## boundaries without constructing a renderer or reading back a framebuffer.
+static func debug_panini_capture_contract(
+		display_horizontal_fov: float,
+		output_size: Vector2i,
+		render_size: Vector2i) -> Dictionary:
+	return _debug_panini_capture_contract_with_perimeter(
+		display_horizontal_fov,
+		output_size,
+		render_size,
+		_panini_perimeter_points(output_size))
+
+
+static func _debug_panini_capture_contract_with_perimeter(
+		display_horizontal_fov: float,
+		output_size: Vector2i,
+		render_size: Vector2i,
+		perimeter: PackedVector2Array) -> Dictionary:
+	if (
+		output_size.x < 1
+		or output_size.y < 1
+		or render_size.x < 1
+		or render_size.y < 1
+		or perimeter.is_empty()
+		or not is_finite(display_horizontal_fov)
+		or display_horizontal_fov < PANINI_MIN_HORIZONTAL_FOV
+		or display_horizontal_fov > PANINI_MAX_HORIZONTAL_FOV
+	):
+		return {"valid": false}
+
+	var half_horizontal := deg_to_rad(display_horizontal_fov) * 0.5
+	var panini_extent_x := (
+		(PANINI_DISTANCE + 1.0) * sin(half_horizontal)
+		/ (PANINI_DISTANCE + cos(half_horizontal)))
+	var output_aspect := float(output_size.x) / float(output_size.y)
+	var panini_extent_y := tan(half_horizontal) / output_aspect
+	var mapped_min := Vector2(INF, INF)
+	var mapped_max := Vector2(-INF, -INF)
+	var invalid_mapped_samples := 0
+	for point: Vector2 in perimeter:
+		var mapped := _panini_inverse_rectilinear(
+			point, panini_extent_x, panini_extent_y)
+		if not is_finite(mapped.x) or not is_finite(mapped.y):
+			invalid_mapped_samples += 1
+			continue
+		mapped_min.x = minf(mapped_min.x, mapped.x)
+		mapped_min.y = minf(mapped_min.y, mapped.y)
+		mapped_max.x = maxf(mapped_max.x, mapped.x)
+		mapped_max.y = maxf(mapped_max.y, mapped.y)
+
+	var mapped_abs_x := maxf(absf(mapped_min.x), absf(mapped_max.x))
+	var mapped_abs_y := maxf(absf(mapped_min.y), absf(mapped_max.y))
+	# Keep the mapped perimeter at least half a source texel inside the capture.
+	# EASU preserves normalized coordinates, so the source projection's aspect is
+	# the internal render aspect even though Panini itself runs at native output.
+	var horizontal_margin := maxf(
+		1.0 - 1.0 / float(maxi(render_size.x, 2)), 0.5)
+	var vertical_margin := maxf(
+		1.0 - 1.0 / float(maxi(render_size.y, 2)), 0.5)
+	var render_aspect := float(render_size.x) / float(render_size.y)
+	var required_tan_x := mapped_abs_x / horizontal_margin
+	var required_tan_y := mapped_abs_y / vertical_margin
+	var capture_tan_y := maxf(required_tan_y, required_tan_x / render_aspect)
+	var capture_tan_x := capture_tan_y * render_aspect
+	var capture_tangent := Vector2(capture_tan_x, capture_tan_y)
+	var capture_horizontal_fov := rad_to_deg(2.0 * atan(capture_tan_x))
+	var capture_vertical_fov := rad_to_deg(2.0 * atan(capture_tan_y))
+
+	var source_uv_min := Vector2(
+		0.5 + 0.5 * mapped_min.x / capture_tan_x,
+		0.5 - 0.5 * mapped_max.y / capture_tan_y)
+	var source_uv_max := Vector2(
+		0.5 + 0.5 * mapped_max.x / capture_tan_x,
+		0.5 - 0.5 * mapped_min.y / capture_tan_y)
+	# Count raw coordinates before the shader's final defensive clamp. The safe
+	# range is inset by half an internal capture texel so a valid contract cannot
+	# expose an unrendered border even after reduced-resolution reconstruction.
+	var safe_uv_min := Vector2(
+		0.5 / float(render_size.x), 0.5 / float(render_size.y))
+	var safe_uv_max := Vector2.ONE - safe_uv_min
+	var bounds_inside_safe := (
+		source_uv_min.x >= safe_uv_min.x - 0.000001
+		and source_uv_min.y >= safe_uv_min.y - 0.000001
+		and source_uv_max.x <= safe_uv_max.x + 0.000001
+		and source_uv_max.y <= safe_uv_max.y + 0.000001)
+	# The first complete perimeter scan produced these extrema, so valid extrema
+	# prove every finite sample is inside the source. Only rescan the exceptional
+	# invalid-contract path to retain an exact diagnostic count.
+	var invalid_samples := invalid_mapped_samples
+	if invalid_mapped_samples > 0 or not bounds_inside_safe:
+		invalid_samples = 0
+		for point: Vector2 in perimeter:
+			var mapped := _panini_inverse_rectilinear(
+				point, panini_extent_x, panini_extent_y)
+			var raw_uv := Vector2(
+				0.5 + 0.5 * mapped.x / capture_tan_x,
+				0.5 - 0.5 * mapped.y / capture_tan_y)
+			if (
+				not is_finite(raw_uv.x)
+				or not is_finite(raw_uv.y)
+				or raw_uv.x < safe_uv_min.x - 0.000001
+				or raw_uv.y < safe_uv_min.y - 0.000001
+				or raw_uv.x > safe_uv_max.x + 0.000001
+				or raw_uv.y > safe_uv_max.y + 0.000001
+			):
+				invalid_samples += 1
+	var valid := (
+		is_finite(capture_horizontal_fov)
+		and capture_horizontal_fov > 0.0
+		and capture_horizontal_fov < 179.0
+		and is_finite(capture_vertical_fov)
+		and capture_vertical_fov > 0.0
+		and capture_vertical_fov < 179.0
+		and invalid_samples == 0
+		and source_uv_min.x >= -0.00001
+		and source_uv_min.y >= -0.00001
+		and source_uv_max.x <= 1.00001
+		and source_uv_max.y <= 1.00001)
+	return {
+		"valid": valid,
+		"display_horizontal_fov": display_horizontal_fov,
+		"output_aspect": output_aspect,
+		"render_aspect": render_aspect,
+		"panini_extent_x": panini_extent_x,
+		"panini_extent_y": panini_extent_y,
+		"capture_horizontal_fov": capture_horizontal_fov,
+		"capture_vertical_fov": capture_vertical_fov,
+		"capture_tan_half_fov": capture_tangent,
+		"mapped_rect_min": mapped_min,
+		"mapped_rect_max": mapped_max,
+		"source_uv_min": source_uv_min,
+		"source_uv_max": source_uv_max,
+		"perimeter_samples": perimeter.size(),
+		"invalid_samples": invalid_samples,
+	}
+
+
+## Every output border texel center plus the four logical viewport corners.
+## The corners are deliberately additional samples: canvas fragment centers do
+## not reach normalized 0/1, while resize/crop math still needs those limits.
+static func _panini_perimeter_points(output_size: Vector2i) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var width := output_size.x
+	var height := output_size.y
+	if width < 1 or height < 1:
+		return points
+	if width == 1 or height == 1:
+		for y in height:
+			for x in width:
+				points.append(Vector2(
+					(2.0 * (float(x) + 0.5) / float(width)) - 1.0,
+					(2.0 * (float(y) + 0.5) / float(height)) - 1.0))
+	else:
+		var top_y := (1.0 / float(height)) - 1.0
+		var bottom_y := 1.0 - (1.0 / float(height))
+		for x in width:
+			var center_x := (2.0 * (float(x) + 0.5) / float(width)) - 1.0
+			points.append(Vector2(center_x, top_y))
+			points.append(Vector2(center_x, bottom_y))
+		for y in range(1, height - 1):
+			var center_y := (2.0 * (float(y) + 0.5) / float(height)) - 1.0
+			points.append(Vector2((1.0 / float(width)) - 1.0, center_y))
+			points.append(Vector2(1.0 - (1.0 / float(width)), center_y))
+	points.append(Vector2(-1.0, -1.0))
+	points.append(Vector2(1.0, -1.0))
+	points.append(Vector2(-1.0, 1.0))
+	points.append(Vector2(1.0, 1.0))
+	return points
+
+
+static func _panini_inverse_rectilinear(
+		output_ndc: Vector2,
+		panini_extent_x: float,
+		panini_extent_y: float) -> Vector2:
+	var panini_x := output_ndc.x * panini_extent_x
+	var panini_y := output_ndc.y * panini_extent_y
+	# Closed-form inverse of x_p=2*tan(phi/2) for D=1.
+	var phi := 2.0 * atan(0.5 * panini_x)
+	var cos_phi := maxf(cos(phi), 0.00001)
+	var panini_scale := (PANINI_DISTANCE + 1.0) / (PANINI_DISTANCE + cos_phi)
+	var tan_theta := panini_y / panini_scale
+	return Vector2(tan(phi), tan_theta / cos_phi)
+
+
+func _panini_mapping_inside_source() -> bool:
+	return (
+		is_finite(_panini_capture_vertical_fov)
+		and is_finite(_panini_capture_horizontal_fov)
+		and _panini_capture_horizontal_fov > 0.0
+		and _panini_capture_horizontal_fov < 179.0
+		and _panini_capture_vertical_fov > 0.0
+		and _panini_capture_vertical_fov < 179.0
+		and _panini_invalid_samples == 0
+		and _panini_source_uv_min.x >= -0.00001
+		and _panini_source_uv_min.y >= -0.00001
+		and _panini_source_uv_max.x <= 1.00001
+		and _panini_source_uv_max.y <= 1.00001)
+
+
+func _panini_bounds_valid() -> bool:
+	return _panini_eligible and _panini_mapping_inside_source()
 
 
 func _camera_ray(camera: Camera3D, screen_point: Vector2) -> Vector3:
@@ -912,6 +1433,30 @@ func _camera_attributes_match() -> bool:
 
 
 func _camera_visual_state_matches() -> bool:
+	var source := _source_camera()
+	if _internal_camera == null or source == null:
+		return false
+	var expected_fov := (
+		_panini_capture_vertical_fov if _panini_active else source.fov)
+	var expected_keep_aspect := (
+		Camera3D.KEEP_HEIGHT if _panini_active else source.keep_aspect)
+	return (
+		_internal_camera.global_transform.is_equal_approx(source.global_transform)
+		and _internal_camera.projection == source.projection
+		and is_equal_approx(_internal_camera.fov, expected_fov)
+		and is_equal_approx(_internal_camera.size, source.size)
+		and _internal_camera.frustum_offset.is_equal_approx(source.frustum_offset)
+		and is_equal_approx(_internal_camera.h_offset, source.h_offset)
+		and is_equal_approx(_internal_camera.v_offset, source.v_offset)
+		and is_equal_approx(_internal_camera.near, source.near)
+		and is_equal_approx(_internal_camera.far, source.far)
+		and _internal_camera.keep_aspect == expected_keep_aspect
+		and _internal_camera.cull_mask == source.cull_mask
+		and _camera_environment_matches()
+		and _camera_attributes_match())
+
+
+func _camera_source_visual_state_exact() -> bool:
 	var source := _source_camera()
 	if _internal_camera == null or source == null:
 		return false
