@@ -85,16 +85,26 @@ func _run() -> void:
 		pause_menu.settings_requested.emit()
 	await process_frame
 	var graphics_dialog := app.get("_graphics_dialog") as GraphicsOptionsDialog
-	var fov_slider := (
-		graphics_dialog.get("_fov_slider") as HSlider if graphics_dialog != null else null)
-	_check(graphics_dialog != null and fov_slider != null,
-		"Pause Settings opens Graphics options with the horizontal FOV slider")
-	if fov_slider != null:
-		fov_slider.value = 139.0
+	var upscaling_selector := (
+		graphics_dialog.get("_upscaling_selector") as OptionButton
+		if graphics_dialog != null else null)
+	_check(graphics_dialog != null and upscaling_selector != null,
+		"Pause Settings opens Graphics options with the upscaling quality selector")
+	# A settings dialog runs while the SceneTree is frozen, so nothing that
+	# applies a graphics change may depend on gameplay _process resuming first.
+	if upscaling_selector != null:
+		upscaling_selector.item_selected.emit(
+			upscaling_selector.get_item_index(
+				RTSceneManager.UpscalingQuality.PERFORMANCE))
+	_check(paused and app.rt_manager != null
+		and app.rt_manager.upscaling_quality
+			== RTSceneManager.UpscalingQuality.PERFORMANCE,
+		"a graphics change applies immediately while gameplay processing is paused")
 	var player_view := app.player.get_node_or_null("ViewRoot") as PlayerCamera
-	_check(paused and player_view != null and player_view.camera != null
-		and is_equal_approx(player_view.camera.fov, 139.0),
-		"horizontal FOV applies immediately while gameplay processing is paused")
+	_check(player_view != null and player_view.camera != null
+		and is_equal_approx(
+			player_view.camera.fov, RTPaniniCamera3D.HORIZONTAL_FOV),
+		"the fixed display angle is unaffected by the settings dialog")
 	if graphics_dialog != null:
 		graphics_dialog.dismiss()
 	await process_frame

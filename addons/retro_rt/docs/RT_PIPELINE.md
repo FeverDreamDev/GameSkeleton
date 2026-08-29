@@ -106,13 +106,27 @@ its gizmos.
 `RTVisualContract` and `RTSceneManager` own the renderer-common state. The
 project defaults and the active runtime stack agree on:
 
-- TAA, built-in SMAA/FXAA, 2D MSAA, and 3D MSAA disabled. MSAA in particular is
-  incompatible with the hardware RT visibility buffer, not merely unused; see
-  "Why anti-aliasing cannot be MSAA";
-- native root `scaling_3d_scale = 1.0` with bilinear/no-upscaler mode;
-- no anti-aliasing of any kind at present, and no temporal reconstruction,
-  history, motion-vector AA, accumulation, denoising, or dynamic resolution;
+- separate TAA, built-in SMAA/FXAA, 2D MSAA, and 3D MSAA disabled. MSAA in
+  particular is incompatible with the hardware RT visibility buffer, not merely
+  unused; see "Why anti-aliasing cannot be MSAA";
+- native root and canvas targets at `scaling_3d_scale = 1.0` with
+  bilinear/no-upscaler mode;
+- built-in FSR2 on the private 3D SceneCapture only. It owns temporal jitter,
+  history, reconstruction, and anti-aliasing for the complete opaque scene;
+- one global `Native`, `Quality`, `Balanced`, or `Performance` render scale, with
+  Native as the default and no dynamic resolution or separate temporal AA;
 - texture mip bias `0.0`, 4x anisotropic filtering, and debanding disabled;
+- `fsr_sharpness` pinned to `RTVisualContract.FSR_SHARPNESS`. Godot runs RCAS
+  with this value whenever FSR2 is the scaling mode, so it is a real sharpening
+  pass rather than an unused property, and leaving it unset would mean the
+  project default sharpened the capture without the stack declaring it. It is
+  pinned at the engine default `0.2`, so the shipped image is unchanged; what
+  changed is that the value is now owned, restored, and validated. Note that
+  Godot's scale is inverted and measured in stops: `0.0` is sharpest and every
+  whole number above it halves the sharpening. Because RCAS runs at the
+  rectilinear capture resolution, its halos are magnified by the Panini pass
+  before they reach the display -- see **Panini target budget and FSR2
+  quality** for the center magnification factors;
 - classic Panini projection available after the scene resolve;
 - shared RetroGrade enabled after Panini by default.
 
@@ -200,42 +214,37 @@ reflector's fog rather than the reflected path length.
 
 ## Shared post-processing: scene resolve, Panini, grade
 
-Every runtime pipeline uses `RTPostProcessStack`. There are three canvas passes.
-Presentation is always native, and there is no resolution *scaling* in the
-upscaler sense — no reconstruction, no history, nothing temporal. The one stage
-that leaves the output pixel domain is the 3D capture, which the Panini pass
-sizes for its own sampling requirement; see **Capture resolution is the
-projection's sharpness control**. With Panini bypassed the capture is the output
-size and every stage in the chain is 1:1.
+Every runtime pipeline uses `RTPostProcessStack`. Godot's built-in FSR2 runs on
+the private SceneCapture before the stack's three canvas passes. It receives one
+complete opaque scene image, so hardware RT, the raster fallback, terrain,
+shell grass, fog, and sky all share the same temporal reconstruction and AA.
+Presentation and gameplay UI remain native. The only non-native domains are the
+Panini rectilinear target and the smaller 3D buffers selected by the global
+quality mode; see **Panini target budget and FSR2 quality**.
 
-**There is currently no anti-aliasing.** The custom SMAA 1x implementation, FSR 1
-(EASU and RCAS), FidelityFX CAS and the RT quality presets that drove them were
-all removed on 2026-08-28. They existed to make one image work across renderers
-this project no longer targets, and the cost of keeping them parity-matched
-outgrew what they bought. A replacement is still to be chosen; see **Why
-anti-aliasing cannot be MSAA** below for the one option that is permanently
-closed off. Note that the Panini capture is supersampled at the shipped
-sharpness, so it is currently doing the geometric-aliasing work an AA pass would
-otherwise do.
+The retired custom SMAA 1x, FSR 1 (EASU/RCAS), and FidelityFX CAS paths remain
+absent. FSR2 is the sole AA/reconstruction stage, including in Native mode where
+its render scale is 1.0. The Compatibility renderer cannot run FSR2 and uses a
+safe native bilinear fallback for smoke tests; production Forward+ validates the
+FSR2 viewport contract explicitly.
 
 ```text
-3D scene / RT result                             (capture size)
-    -> internal scene capture                    (capture size)
-    -> scene resolve: coverage decode, environment reconstruction, fog,
-       one normalized HDR-to-SDR clamp, scene-linear-to-sRGB   (capture size)
-    -> classic Panini D=1, S=0                   (optional, to native output size)
+3D + RT + terrain/grass + fog + sky              (scaled internal size)
+    -> built-in FSR2 temporal AA/reconstruction  (rectilinear target size)
+    -> scene resolve: one normalized HDR-to-SDR clamp,
+       scene-linear-to-sRGB                      (rectilinear target size)
+    -> classic Panini D=1, S=0                   (optional, native output size)
     -> sRGB-to-scene-linear, RetroGrade, display-range clamp   (native output size)
     -> explicit scene-linear-to-sRGB transfer
     -> final scene CanvasLayer (-100)
     -> normal gameplay Canvas/UI
 ```
 
-The scene capture is transparent under hardware RT, where managed pixels carry
-ID transport rather than colour and the environment has to be reconstructed
-behind them. The raster fallback captures opaque instead, both because it has no
-transport to hide and because Godot silently disables screen-space reflections
-in a transparent viewport. Coverage then reads 1 everywhere and the resolve pass
-composites nothing behind the image.
+The SceneCapture is opaque under both backends. Hardware visibility IDs are
+consumed by the compositor before temporal reconstruction; they are never passed
+through FSR2 as color or alpha metadata. The active Environment draws the visible
+sky into the capture, and the resolve pass no longer infers coverage or
+reconstructs a background after FSR2. Exact black is ordinary scene color again.
 
 All depth, camera-matrix, lighting, RT, shadow, reflection, fog, terrain, grass,
 and environment work is rectilinear and upstream. Panini warps that completed
@@ -246,19 +255,15 @@ CanvasLayer, so aim and text are never projected.
 ### Panini projection and horizontal FOV
 
 `RTPaniniCamera3D` is the reusable opt-in capability. It forces perspective and
-`Camera3D.KEEP_WIDTH`; `display_horizontal_fov` therefore means exact horizontal
-coverage at every aspect ratio. Valid values are 120–140 degrees, default 130.
-`set_display_horizontal_fov()` clamps finite values and rejects NaN/infinity
-without replacing the last valid value. The game FPS camera enables
+`Camera3D.KEEP_WIDTH`; `HORIZONTAL_FOV` therefore means exact horizontal coverage
+at every aspect ratio. It is a constant at 140 degrees — see **One fixed display
+angle** for why the projection cannot afford a range. The game FPS camera enables
 `panini_enabled`; reusable add-on and utility cameras default it off.
 
-`PlayerCamera.set_base_horizontal_fov()` owns the same 120/130/140 constants and
-smooths in horizontal-degree space. Sprint requests a 10-degree boost capped at
-140, and disabling dynamic FOV always returns to the selected base. `GameApp`
-owns the session preference independently of RT initialization; the Graphics
-slider applies synchronously while paused, and reset, respawn, load, menu return,
-and new game reuse that session baseline. FOV is intentionally absent from save
-payloads and returns to 130 only after an application restart.
+`PlayerCamera` no longer owns an FOV at all: there is no session base, no sprint
+transition, and no `GameApp` session preference to carry across reset, respawn,
+load, menu return, or new game. The angle was already absent from save payloads,
+and is now absent from the settings dialog too.
 
 The pass runs only when both `RTSceneManager.post_panini_enabled` and the current
 perspective camera capability are enabled. Missing, unsupported, disabled,
@@ -289,73 +294,99 @@ strictly increasing in `|phi|`. Both extrema therefore land on the four logical
 corners. `post_panini_perimeter_samples` still reports every output-border texel
 center plus those four corners, but the perimeter is only materialized and
 scanned on the exceptional invalid-contract path, to retain an exact
-`invalid_samples` diagnostic. The closed form is what keeps the smoothed sprint
-FOV, which moves every frame, off a scan that cost about 2 ms per frame at 1080p
-and 3.2 ms at 3440x1440; `panini_projection_smoke.gd` pins the closed form
+`invalid_samples` diagnostic. The closed form is what kept a moving
+display FOV off a scan that cost about 2 ms per frame at 1080p and 3.2 ms at
+3440x1440. The angle no longer moves, so that cost is now unreachable rather
+than merely avoided; `panini_projection_smoke.gd` still pins the closed form
 against a full border scan.
 
-### Capture resolution is the projection's sharpness control
+### One fixed display angle
 
-The projection reads its source through a warp that compresses the periphery, so
-the screen center is a magnification of whatever the capture rendered. That
-magnification, not the reconstruction filter, is what decides how sharp a
-Panini frame can be. `post_panini_center_texels_per_pixel` reports it directly:
-source texels read per output pixel at screen center, where 1.0 means the center
-is not magnified at all.
+The display angle is a constant, `RTPaniniCamera3D.HORIZONTAL_FOV = 140.0`. There
+is no FOV slider, no session FOV state, and no sprint FOV transition.
 
-The 3D capture and its resolve are therefore the only stages that leave the
-output pixel domain. Presentation, the projection target, and every UI canvas
-stay at native output resolution at all times.
+That is a rendering decision rather than a UI one. Everything about the
+projection's tuning below — the target's aspect, its pixel budget, and the FSR2
+render scale derived from it — is chosen for one angle. When the angle could move
+within a range, the post stack had to size its render target from the widest
+angle the camera might reach, because a target is an allocation and a smoothed
+sprint transition moves the angle every frame. The frustum then stayed wider than
+the projection could sample at every narrower angle. At the former 130-degree
+default against a 140-degree ceiling, `post_panini_source_uv_min/max` spanned
+`[0.0715, 0.9285]` vertically: **14.3 percent of the target was rasterized and
+ray-traced at full cost and then never read**. Fixing the angle makes the ceiling
+and the live angle the same number, and `perf_probe.gd` now reports 99.9 percent
+of the target sampled.
 
-Two decisions size that capture, and both are exact rather than tuned.
+The camera still advertises `display_horizontal_fov` and
+`max_display_horizontal_fov`, because the post stack discovers both by name
+through `get_property_list()`. Both are read-only views of the constant, and both
+accept and discard writes so a scene file authored when the angle was adjustable
+still loads.
 
-**Aspect.** The capture uses the ratio of the two required half-tangents. That
-ratio is the sharpness optimum, not a convenience: capture width grows as
-`sqrt(aspect)` at a fixed pixel count, while the horizontal capture tangent is
-flat until the aspect passes that ratio and grows linearly after it, so the
-horizontal center ratio peaks exactly there. It is also the only aspect that
-wastes no frustum. An output-aspect capture at a 130-degree display FOV renders
-41 percent of its width outside anything the projection can sample —
-`post_panini_source_uv_min/max` used to span `[0.203, 0.797]` horizontally and
-now spans the full `[0, 1]`, and the capture FOV needed at 140 degrees fell from
-159 to 140.
+### Panini target budget and FSR2 quality
 
-**Scale.** `RTSceneManager.post_panini_capture_sharpness` is the center ratio
-itself: with the optimal aspect the ratio reduces to the linear scale, so the
-setting means what it reports. The cost is quadratic in it, roughly
-`4.8 * value^2` times the output pixel count at a 130-degree display FOV and
-`7.6 * value^2` at 140. Measured on the terrain scene at 2560x1440 with hardware
-RT:
+The projection compresses the periphery and magnifies the screen center. The old
+implementation fought that magnification with a multi-native supersampled
+capture, making 3D and RT cost grow quadratically. That control is gone, and its
+replacement rule — at most one native output frame of pixels — is also gone,
+because FSR2 invalidated the assumption behind it. Target size and 3D cost are no
+longer the same number: `scaling_3d_scale` sets the rendered pixel count
+independently, so a larger target is paid for with a lower render scale rather
+than with frame time.
 
-| sharpness | capture pixels | median frame | scene pass |
-| --- | --- | --- | --- |
-| 0.353 | 0.94x | 3.35 ms | 2.56 ms |
-| 0.458 | 1.59x | 5.02 ms | 4.49 ms |
-| 0.55 | 2.29x | 6.93 ms | 6.38 ms |
-| 0.65 | 3.19x | 9.34 ms | 8.24 ms |
-| 0.75 | 4.25x | 12.09 ms | 11.10 ms |
-| 1.00 | 7.56x | 20.93 ms | 19.03 ms |
+`PANINI_TARGET_PIXEL_MULTIPLIER` is therefore `2.0`, and
+`_target_relative_render_scale()` divides each quality preset's scale by its
+square root. The presets are authored against the native output frame, which is
+what makes their names mean something about cost, so that division keeps the
+rendered pixel count identical to what a one-frame target would have rendered.
+`post_upscaling_output_pixel_ratio` is the field that states this directly:
+rendered 3D/RT pixels per native output pixel, which stays at the preset's square
+regardless of the multiplier.
 
-The add-on defaults to 0.5 and `main.tscn` selects 0.75. Since the capture is
-supersampled at any value above roughly 0.5, this is also the only thing in the
-stack currently reducing geometric aliasing; expect to lower it once real
-anti-aliasing lands.
+The target uses the ratio of the projection's required horizontal and vertical
+half-tangents. At a fixed area both center-density ratios peak at exactly that
+aspect — they cannot be traded against each other, which
+`panini_projection_smoke.gd` pins — and it is also the only aspect that wastes no
+rendered frustum.
 
-The capture is sized from `RTPaniniCamera3D.max_display_horizontal_fov` — the
-widest angle the camera declares it will ever request — rather than from the
-live angle, because the capture is a render target and the live angle moves
-every frame while a sprint transition eases. `PlayerCamera` sets that ceiling to
-its session base plus the sprint boost. A ceiling below the live angle stays
-correct, since the frustum still widens to contain the projection, and only
-costs sharpness the capture already paid for; a camera that declares no ceiling
-keeps the plain output-sized capture. `panini_capture.tscn` sweeps the display
-FOV across 40 eased angles and asserts `post_capture_resize_count` does not move.
+At 2560x1440 the target is 2583x2852 and the measured center density
+(`post_panini_center_texels_per_pixel`) is `(0.514, 1.009)`. Screen center is
+still magnified about **1.95x horizontally**, and is now essentially **1:1
+vertically**. That vertical figure is why the multiplier stops at 2.0: past it
+the vertical center crosses into minification, where rendered pixels are averaged
+away by the tent branch instead of resolving detail. One axis reaching its
+optimum is the natural stopping point rather than an arbitrary budget.
+
+| Mode | Preset scale | Applied scale | Internal 3D/RT | Rendered vs native |
+| --- | ---: | ---: | ---: | ---: |
+| Native (default) | 1.00 | 0.707 | 1827x2018 | 1.00x |
+| Quality | 0.67 | 0.474 | 1224x1352 | 0.45x |
+| Balanced | 0.59 | 0.417 | 1078x1190 | 0.35x |
+| Performance | 0.50 | 0.354 | 914x1009 | 0.25x |
+
+Measured on an RTX 4060 hardware-RT terrain scene at 2560x1440 with RT,
+terrain/grass and sky enabled, 900 measured frames, comparing the one-frame
+target against the shipped configuration at the same fixed 140-degree angle:
+
+| Configuration | Center density | Median frame | Median FPS |
+| --- | ---: | ---: | ---: |
+| One-frame target, no present sharpener | (0.364, 0.713) | 5.311 ms | 188.3 |
+| Two-frame target + present CAS (shipped) | (0.514, 1.009) | 6.819 ms | 146.6 |
+
+Both render the same 3.69M internal pixels, so the 1.51 ms is not raster or ray
+cost. It is FSR2's own upscale pass, which follows the target rather than the
+render size (scene pass 4.588 -> 5.818 ms), plus the scene-resolve canvas pass at
+the larger target (0.110 -> 0.245 ms) and the present sharpener (0.107 -> 0.152
+ms). Target memory roughly doubles, to two capture-size RGBA16F targets at about
+118 MB. Dropping the multiplier to 1.5 is a one-constant change worth about
++22 percent center density for roughly half that cost.
 
 ### Reconstruction filter
 
-The canvas shader picks its filter from the per-pixel footprint, and the capture
-resolution decides which branch most of the frame takes. The diagnostic contract
-names the pair `catmull_rom_or_tent`.
+The Panini canvas shader picks its filter from the per-pixel footprint, and the
+rectilinear target shape decides which branch each output region takes. The
+diagnostic contract names the pair `catmull_rom_or_tent`.
 
 Below a 1:1 footprint the capture is magnified, and a single bilinear tap is what
 makes a magnified center read as soft. A five-tap Catmull-Rom reconstructs the
@@ -365,24 +396,36 @@ shifts no brightness on a flat field, and it fades to that single bilinear tap a
 the footprint approaches 1:1. Its negative lobes are clamped to the `[0,1]` range
 the upstream resolve already guarantees.
 
-Above a 1:1 footprint the capture is minified, and a supersampled capture minifies
-most of the frame rather than only the corners — at sharpness 0.75 the footprint
-runs from 1.47 at center to 5.32 at the corners. A separable 3x3 tent over the
-pixel's own footprint covers that: each bilinear tap already averages a 2x2 texel
-neighbourhood, so three taps per axis tile a footprint of up to about four texels
-with no gap between kernels, where the two taps per axis this replaced leave one
-from a footprint of two upward. Its outer taps collapse onto the center as the
-footprint approaches 1:1, which is what lets the two branches meet with no
-visible ring.
+Above a 1:1 footprint the target is minified. The projection-optimal aspect can
+create those regions even though total target area never exceeds native. A
+separable 3x3 tent over the pixel's own footprint covers them: each bilinear tap
+already averages a 2x2 texel neighbourhood, so three taps per axis tile a
+footprint of up to about four texels with no gap between kernels. Its outer taps
+collapse onto the center as the footprint approaches 1:1, which lets the two
+branches meet without a visible ring.
 
-Neither branch uses compute, history, dynamic allocation, or a varying tap count.
+The Panini branches themselves use no compute, history, dynamic allocation, or
+a varying tap count; temporal reconstruction is wholly upstream in FSR2.
 The output-size Panini SubViewport is persistent, resized in place, and set to
 `UPDATE_DISABLED` while bypassed; a bypassed frame presents the resolve target
 1:1, so the capture returns to the output size with the pass.
 
-Nothing sharpens after the projection: the CAS pass that used to sit there was
-removed along with FSR. Any replacement sharpener belongs in the same place,
-between Panini and the grade.
+Two things sharpen, and where each one sits is the whole point. Something
+sharpens *before* the projection, and it is easy to miss
+because the stack owns no pass for it: Godot's FSR2 runs RCAS using
+`Viewport.fsr_sharpness`, so the rectilinear capture arrives at the projection
+already sharpened. The contract pins that value rather than inheriting it; see
+**Central visual contract**. Because RCAS operates in capture texels, its halos
+are magnified with everything else -- roughly 1.95x horizontally at the shipped
+settings. That is why the project spends its own sharpening budget downstream
+instead: the present pass runs Contrast Adaptive Sharpening at native resolution
+on the Panini output, at `RTPostProcessStack.PANINI_PRESENT_SHARPEN_STRENGTH`,
+which is the only place a sharpener acts on the blur the projection actually
+introduced. It is folded into the present pass rather than given its own, because
+that pass is already a full-rect native draw over the same source, so it costs
+four extra taps instead of another 2560x1440 target. CAS backs off where local
+contrast is already high, which is exactly where the Catmull-Rom branch has
+already overshot, so the two stack without compounding into ringing.
 `generated/shader_warmup_manifest.tres` includes `panini_project.gdshader`; rerun
 the normal warmup generator whenever this shader or its material parameters
 change.
@@ -392,8 +435,8 @@ change.
 
 ### Why anti-aliasing cannot be MSAA
 
-Whatever replaces SMAA, it cannot be MSAA, and that is a property of the
-renderer rather than a preference.
+FSR2 replaces the old SMAA path, but it cannot be supplemented or replaced by
+MSAA here; that is a property of the renderer rather than a preference.
 
 Hardware RT here is a deferred visibility-buffer renderer. `BlinnPhong.gdshader`
 packs a 21-bit instance plus material ID through the separate-specular target,
@@ -403,23 +446,24 @@ exists to fix, producing garbage IDs. Separately, `image2D` cannot bind a
 multisampled attachment, and the effect runs at `POST_SKY` with unresolved
 access, so its writes would be discarded by the resolve.
 
-`RTVisualContract.apply_native_viewport_state()` therefore force-disables 2D and
-3D MSAA, TAA, built-in screen-space AA and debanding on the root Viewport,
-captures the authored values first, and restores them on teardown or failure.
+`RTVisualContract` therefore force-disables 2D/3D MSAA, separate TAA, built-in
+screen-space AA, and debanding. `apply_fsr2_scene_viewport_state()` enables only
+FSR2 on the private 3D target; `apply_native_viewport_state()` keeps every canvas
+and root target native. Root authored values are restored on teardown or failure.
 
 ### Targets and precision
 
-The Panini target and the final presentation are native output size. The scene
-capture and its resolve are the projection's capture size, which equals the
-output size whenever the projection is bypassed.
+The Panini target and final presentation are native output size. SceneCapture and
+scene resolve use the fixed-budget rectilinear target while Panini is active and
+the output size while it is bypassed. `scaling_3d_scale` reduces only the internal
+3D/RT buffers from which FSR2 reconstructs SceneCapture's target.
 
-All three targets ask for `use_hdr_2d = true` and Forward+ honors it, so all
-three are RGBA16F. That is now a startup requirement rather than a preference:
-the resolve shader decodes coverage assuming scene-linear storage and has no sRGB
-fallback branch, so `configure()` fails with the offending target name if any of
-them comes back LDR. The `post_*_hdr_requested`, `post_*_hdr`, and
-`post_data_viewports_rgba` profile fields remain, and still distinguish the
-requested state from what the renderer actually supplied.
+All three targets ask for `use_hdr_2d = true` and Forward+ honors it, so all are
+RGBA16F. That is a startup requirement rather than a preference: the resolve
+shader consumes the opaque FSR2 result as scene-linear radiance and has no sRGB
+fallback branch. `configure()` fails with the offending target name if any comes
+back LDR. The `post_*_hdr_requested`, `post_*_hdr`, and
+`post_data_viewports_rgba` fields distinguish requested and accepted state.
 
 Intermediate SubViewports are persistent and resize only when the output size,
 the capture size, or the projection's active state changes; they are not
@@ -435,6 +479,7 @@ hardware.
 ### Artist controls
 
 - `post_panini_enabled` (manager-wide request; camera capability still gates it);
+- `upscaling_quality`: Native, Quality, Balanced, or Performance;
 - `retro_post_enabled`;
 - brightness, contrast, saturation, black point, and color balance;
 - posterization enable, levels, and strength.
@@ -735,14 +780,38 @@ bytes, output and internal RT resolution, and:
   identity, persistent target and source stage/size; display and conservative
   capture horizontal/vertical FOVs; mapped rect and source-UV bounds; perimeter
   sample and invalid-sample counts; `post_panini_bounds_valid`;
-  `post_panini_capture_sharpness`, `post_panini_capture_ceiling_fov` and the
-  achieved `post_panini_center_texels_per_pixel`; and dedicated
-  `post_panini_buffer_bytes`;
+  `post_panini_capture_ceiling_fov` and the achieved
+  `post_panini_center_texels_per_pixel`; and dedicated
+  `post_panini_buffer_bytes`. The center ratio is per axis and reads below 1.0
+  wherever the budget still magnifies screen center: at 2560x1440 it measures
+  `(0.514, 1.009)`, so center is magnified about 1.95x horizontally and is
+  essentially 1:1 vertically. `post_panini_target_pixel_multiplier` reports the
+  achieved target area in native output frames, and
+  `post_present_sharpen_strength` reports the CAS strength the present pass is
+  applying to that magnification (zero while the projection is bypassed);
+- `post_upscaling_quality_preset`, `post_upscaling_quality_name`,
+  `post_upscaling_requested_scale`, and `post_upscaling_effective_scale`
+  (`post_upscaling_scale` is an alias). Requested is the preset's own scale,
+  authored against the native output frame. Effective is what the renderer
+  accepted and is target-relative, so it is smaller than the request whenever the
+  Panini target is larger than an output frame, and reads 1.0 whenever FSR2 fell
+  back. `post_upscaling_output_pixel_ratio` is the cost-meaningful one: rendered
+  3D/RT pixels per native output pixel, which is what the preset names promise;
+- `post_fsr2_available`, `post_fsr2_active`, `post_fsr2_failure`, and
+  `post_temporal_history_reset_count`. Availability requires a live
+  RenderingDevice as well as Forward+, because a headless run started with
+  `--rendering-method forward_plus` still reports that method name;
 - `ray_tracing_full_resolution`, `ray_tracing_resolution`, and dispatched pixel
   count;
 - `post_output_size`, `post_capture_size`, `post_capture_pixel_ratio`,
-  `post_capture_resize_count`, `post_render_size` (an alias of the capture size),
-  `post_rendered_pixels`, and `post_persistent_buffer_bytes`; camera diagnostic
+  `post_capture_resize_count`, `post_render_size`, `post_rendered_pixels`, and
+  `post_persistent_buffer_bytes`. The three
+  resolution domains are `post_output_size` (native presentation),
+  `post_capture_target_size` (the rectilinear image FSR2 reconstructs, aliased as
+  `post_capture_size`), and `post_internal_render_size` (the smaller 3D/RT
+  buffers, aliased as `post_render_size`/`post_internal_render_pixels`); they
+  coincide only in Native with Panini bypassed. `perf_probe.gd` prints all three
+  on its `domains:` line. Camera diagnostic
   fields report the source identity, active state, visual-state and resource
   matches, null internal compositor, and the intentional Panini capture-FOV
   override;
@@ -845,14 +914,16 @@ anything that asserts hardware RT needs a real ray-tracing adapter and says so.
   persistent native target/buffer bytes, pass/frame counters, non-perspective
   bypass, and shifted-camera-offset bypass without mutating the authored values.
 - `game/tests/player_camera_smoke.gd`, `app_flow_smoke.gd`, and
-  `app_recovery_smoke.gd` cover exact horizontal camera semantics, sprint
-  clamping/return, dynamic-FOV disable, live settings application while paused,
-  menu reopening, and session retention across gameplay reconstruction.
+  `app_recovery_smoke.gd` cover the fixed display angle holding through sprint,
+  reset and pitch restore, the absence of every retired FOV control and signal,
+  live settings application while paused, menu reopening, and session retention
+  across gameplay reconstruction.
 - `game/tests/panini_capture.tscn` boots the complete application and terrain
-  level, validates every FOV endpoint plus the grade and posterization
-  toggles, sweeps the display FOV across 40 eased angles to prove a moving angle
-  never resizes the 3D capture, saves a real graphical capture, and leaves a
-  native CanvasLayer status marker above the projected scene.
+  level, validates the fixed-angle containment contract, the target's declared
+  pixel multiple, the per-preset render-scale renormalization and its promised
+  cost share, the present sharpener, and the grade and posterization toggles;
+  saves a real graphical capture; and leaves a native CanvasLayer status marker
+  above the projected scene.
 
 ```text
 godot --headless --path . --rendering-method forward_plus --script res://addons/retro_rt/tests/panini_projection_smoke.gd

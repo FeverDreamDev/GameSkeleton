@@ -13,6 +13,9 @@ var _failures: PackedStringArray = []
 
 func _initialize() -> void:
 	_test_manager_default()
+	_test_upscaling_presets()
+	_test_temporal_upscaling_availability()
+	_test_viewport_contract_declares_fsr_sharpness()
 	_test_capture_contract_matrix()
 	_test_analytic_bounds_match_full_scan()
 	_test_capture_sizing()
@@ -31,7 +34,82 @@ func _test_manager_default() -> void:
 	var manager := RTSceneManager.new()
 	_check(not manager.post_panini_enabled,
 		"the reusable RT manager defaults Panini off")
+	_check(manager.upscaling_quality == RTSceneManager.UpscalingQuality.NATIVE,
+		"the reusable RT manager defaults temporal reconstruction to Native")
 	manager.free()
+
+
+func _test_upscaling_presets() -> void:
+	var manager := RTSceneManager.new()
+	var presets := [
+		[RTSceneManager.UpscalingQuality.NATIVE, 1.0, &"native"],
+		[RTSceneManager.UpscalingQuality.QUALITY, 0.67, &"quality"],
+		[RTSceneManager.UpscalingQuality.BALANCED, 0.59, &"balanced"],
+		[RTSceneManager.UpscalingQuality.PERFORMANCE, 0.5, &"performance"],
+	]
+	for entry in presets:
+		manager.set_upscaling_quality(int(entry[0]))
+		_check(is_equal_approx(manager.get_upscaling_scale(), float(entry[1])),
+			"%s uses the standard FSR2 scale" % String(entry[2]))
+		_check(manager.get_upscaling_quality_name() == entry[2],
+			"%s exposes the canonical quality name" % String(entry[2]))
+	manager.free()
+
+
+## This suite is the headless one, so it is also the place where the availability
+## check has to be honest about where it is running. `--rendering-method
+## forward_plus` still reports `forward_plus` on the dummy server, and the
+## viewport contract cannot catch that -- `scaling_3d_mode` is a stored property
+## that reads back whatever was written to it, so an FSR2 request "succeeds"
+## here whether or not an upscaler exists. The RenderingDevice is the difference.
+func _test_temporal_upscaling_availability() -> void:
+	var has_device := RenderingServer.get_rendering_device() != null
+	_check(RTSceneManager.temporal_upscaling_available() == has_device,
+		"temporal upscaling is reported available only where a RenderingDevice exists")
+	if not has_device:
+		_check(not RTSceneManager.temporal_upscaling_available(),
+			"a headless/dummy renderer does not report FSR2 as available")
+
+
+## Godot runs RCAS with `fsr_sharpness` whenever FSR2 is the scaling mode, so an
+## undeclared value means the project default silently sharpens the capture.
+## Both helpers must set it, both failure checks must catch a drifted value, and
+## the capture/restore pair must round-trip it like every other owned property.
+func _test_viewport_contract_declares_fsr_sharpness() -> void:
+	var viewport := SubViewport.new()
+	viewport.fsr_sharpness = 1.75
+	var captured := RTVisualContract.capture_viewport_state(viewport)
+	_check(captured.has("fsr_sharpness")
+		and is_equal_approx(float(captured["fsr_sharpness"]), 1.75),
+		"the captured viewport state carries the authored FSR sharpness")
+
+	RTVisualContract.apply_native_viewport_state(viewport, Vector2i(320, 200), true)
+	_check(is_equal_approx(viewport.fsr_sharpness, RTVisualContract.FSR_SHARPNESS),
+		"the native contract pins FSR sharpness")
+	_check(RTVisualContract.native_viewport_failure(
+		viewport, Vector2i(320, 200), true).is_empty(),
+		"the native contract accepts its own FSR sharpness")
+	viewport.fsr_sharpness = RTVisualContract.FSR_SHARPNESS + 0.5
+	_check(not RTVisualContract.native_viewport_failure(
+		viewport, Vector2i(320, 200), true).is_empty(),
+		"the native contract rejects a drifted FSR sharpness")
+
+	RTVisualContract.apply_fsr2_scene_viewport_state(
+		viewport, Vector2i(320, 200), 0.5, true)
+	_check(is_equal_approx(viewport.fsr_sharpness, RTVisualContract.FSR_SHARPNESS),
+		"the FSR2 contract pins the RCAS sharpness it actually uses")
+	_check(RTVisualContract.fsr2_scene_viewport_failure(
+		viewport, Vector2i(320, 200), 0.5, true).is_empty(),
+		"the FSR2 contract accepts its own RCAS sharpness")
+	viewport.fsr_sharpness = RTVisualContract.FSR_SHARPNESS + 0.5
+	_check(not RTVisualContract.fsr2_scene_viewport_failure(
+		viewport, Vector2i(320, 200), 0.5, true).is_empty(),
+		"the FSR2 contract rejects a drifted RCAS sharpness")
+
+	RTVisualContract.restore_viewport_state(viewport, captured)
+	_check(is_equal_approx(viewport.fsr_sharpness, 1.75),
+		"teardown restores the authored FSR sharpness")
+	viewport.free()
 
 
 func _test_capture_contract_matrix() -> void:
@@ -107,9 +185,9 @@ func _test_analytic_bounds_match_full_scan() -> void:
 					% [output, fov])
 
 
-## The capture size is the projection's only real sharpness control, and its two
-## claims are exact rather than approximate: the horizontal center ratio equals
-## the requested sharpness, and no capture width goes unsampled.
+## The rectilinear target spends exactly its declared multiple of the native
+## frame and uses the projection-optimal aspect, so FSR2 replaces source-density
+## supersampling without paying for frustum the Panini mapping never reads.
 func _test_capture_sizing() -> void:
 	var outputs := [
 		Vector2i(1920, 1080),
@@ -117,45 +195,51 @@ func _test_capture_sizing() -> void:
 		Vector2i(3440, 1440),
 		Vector2i(1600, 1200),
 	]
+	var multiplier := RTPostProcessStack.PANINI_TARGET_PIXEL_MULTIPLIER
 	for output: Vector2i in outputs:
 		for fov in [120.0, 130.0, 140.0]:
-			var previous_ratio := 0.0
-			for sharpness in [0.25, 0.5, 0.75, 1.0]:
-				var capture := RTPostProcessStack.panini_capture_size(
-					output, fov, sharpness)
-				var label := "%s at %.0f degrees, sharpness %.2f" % [
-					output, fov, sharpness]
-				_check(capture.x >= 2 and capture.y >= 2,
-					"capture size is allocatable for %s" % label)
-				var contract := RTPostProcessStack.debug_panini_capture_contract(
-					fov, output, capture)
-				_check(bool(contract.get("valid", false)),
-					"the projected capture yields a valid contract for %s" % label)
-				var ratio := _center_sampling_ratio(contract, output, capture)
-				_check(absf(ratio.x - sharpness) < 0.01,
-					"horizontal center ratio equals the requested sharpness for %s"
-						% label)
-				# Sharpness is a horizontal target; the vertical axis lands above
-				# it by a factor fixed by the projection and the output aspect.
-				_check(ratio.y > ratio.x,
-					"the vertical center axis is never the limiting one for %s" % label)
-				var uv_min: Vector2 = contract.get("source_uv_min", Vector2.ZERO)
-				var uv_max: Vector2 = contract.get("source_uv_max", Vector2.ONE)
-				_check(uv_min.x < 0.002 and uv_max.x > 0.998,
-					"the projection samples the whole capture width for %s" % label)
-				_check(ratio.x > previous_ratio,
-					"more sharpness buys more center resolution for %s" % label)
-				previous_ratio = ratio.x
-	# Out-of-range sharpness is clamped rather than honored, and an unsupported
-	# ceiling FOV reports no capture at all so the caller can stay rectilinear.
-	var clamped := RTPostProcessStack.panini_capture_size(
-		Vector2i(1920, 1080), 130.0, 9.0)
-	var maximum := RTPostProcessStack.panini_capture_size(
-		Vector2i(1920, 1080), 130.0, RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS)
-	_check(clamped == maximum, "an over-range sharpness clamps to the maximum")
+			var capture := RTPostProcessStack.panini_capture_size(output, fov)
+			var label := "%s at %.0f degrees" % [output, fov]
+			_check(capture.x >= 2 and capture.y >= 2,
+				"capture size is allocatable for %s" % label)
+			var native_pixels := int(output.x) * int(output.y)
+			var capture_pixels := int(capture.x) * int(capture.y)
+			var budget := float(native_pixels) * multiplier
+			_check(float(capture_pixels) <= budget,
+				"capture never exceeds its declared pixel budget for %s" % label)
+			_check(float(capture_pixels) / budget > 0.995,
+				"capture uses essentially the full declared budget for %s" % label)
+			var required := RTPostProcessStack.panini_required_tangents(fov, output)
+			_check(absf(float(capture.x) / float(capture.y)
+				- required.x / required.y) < 0.002,
+				"capture uses the projection-optimal aspect for %s" % label)
+			var contract := RTPostProcessStack.debug_panini_capture_contract(
+				fov, output, capture)
+			_check(bool(contract.get("valid", false)),
+				"the pixel-budget capture yields a valid contract for %s" % label)
+			var ratio := _center_sampling_ratio(contract, output, capture)
+			_check(ratio.x > 0.0 and ratio.y > ratio.x,
+				"the budgeted target retains finite center sampling for %s" % label)
+			var uv_min: Vector2 = contract.get("source_uv_min", Vector2.ZERO)
+			var uv_max: Vector2 = contract.get("source_uv_max", Vector2.ONE)
+			_check(uv_min.x < 0.002 and uv_max.x > 0.998,
+				"the projection samples the whole capture width for %s" % label)
+			# The multiplier is only allowed to buy sharpness, never frame time.
+			# Both ratios must scale by its square root against a one-frame target.
+			var single := RTPostProcessStack.panini_capture_size(output, fov, 1.0)
+			var single_contract := RTPostProcessStack.debug_panini_capture_contract(
+				fov, output, single)
+			var single_ratio := _center_sampling_ratio(
+				single_contract, output, single)
+			var expected := sqrt(multiplier)
+			_check(absf(ratio.x / maxf(single_ratio.x, 0.00001) - expected) < 0.01
+				and absf(ratio.y / maxf(single_ratio.y, 0.00001) - expected) < 0.01,
+				"the target multiplier raises both center ratios by its square root for %s"
+					% label)
+	# An unsupported ceiling reports no capture so the caller can stay rectilinear.
 	for fov in [NAN, INF, 0.0, 180.0]:
 		_check(RTPostProcessStack.panini_capture_size(
-			Vector2i(1920, 1080), fov, 1.0) == Vector2i.ZERO,
+			Vector2i(1920, 1080), fov) == Vector2i.ZERO,
 			"ceiling FOV %.3f yields no projected capture" % fov)
 
 

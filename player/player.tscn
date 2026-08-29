@@ -79,7 +79,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.7, 0)
 [node name="Camera3D" type="Camera3D" parent="ViewRoot/Head/BobPivot/LandingPivot/TiltPivot" unique_id=1675410025]
 script = ExtResource("6_panini_camera")
 panini_enabled = true
-display_horizontal_fov = 130.0
 
 [node name="ReticleUI" type="CanvasLayer" parent="." unique_id=1533967813]
 

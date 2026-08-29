@@ -564,6 +564,8 @@ shader_parameter/capture_tan_half_fov = Vector2(1, 1)
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_1lix6"]
 resource_name = "retro_present"
 shader = ExtResource("5_sct6b")
+shader_parameter/sharpen_enabled = false
+shader_parameter/sharpen_strength = 0.0
 shader_parameter/grade_enabled = true
 shader_parameter/brightness = 1.0
 shader_parameter/contrast = 1.12
@@ -578,16 +580,6 @@ shader_parameter/posterize_strength = 1.0
 resource_name = "scene_resolve"
 shader = ExtResource("8_0adki")
 shader_parameter/viewport_size = Vector2(1, 1)
-shader_parameter/environment_mode = 0
-shader_parameter/environment_flat_linear = Vector3(0, 0, 0)
-shader_parameter/environment_basis_x = Vector3(1, 0, 0)
-shader_parameter/environment_basis_y = Vector3(0, 1, 0)
-shader_parameter/environment_basis_z = Vector3(0, 0, 1)
-shader_parameter/camera_ray_top_left = Vector3(0, 0, -1)
-shader_parameter/camera_ray_top_right = Vector3(0, 0, -1)
-shader_parameter/camera_ray_bottom_left = Vector3(0, 0, -1)
-shader_parameter/camera_ray_bottom_right = Vector3(0, 0, -1)
-shader_parameter/recover_opaque_coverage_from_rgb = false
 
 [resource]
 script = ExtResource("11_ux7tk")
@@ -598,5 +590,5 @@ sources = PackedStringArray("res://addons/day_night_cycle/examples/DayNightExamp
 pair_material_indices = PackedInt32Array(0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 8, 14, 14, 15)
 pair_vertex_formats = PackedInt64Array(4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4119, 4127, 4119, 4111, 4127, 4127, 4119)
 pair_flags = PackedInt32Array(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0)
-generated_at = "2026-08-28 16:16:19"
-fingerprint = "38afce8cff2fabcb7e424d47044360910787248dee1ca900eb3621ccf408cede"
+generated_at = "2026-08-29 04:04:28"
+fingerprint = "eee57e0bd458a41325644fef70408d20c477213870aad9be7bae30453f5f56e7"

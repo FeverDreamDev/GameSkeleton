@@ -10,6 +10,7 @@ class_name RTSceneManager
 
 signal rt_ready
 signal rt_failed(reason: String)
+signal upscaling_quality_changed(preset: int, requested_scale: float)
 signal topology_sync_started
 signal topology_sync_completed
 ## Emitted when the fog parameters or the environment background radiance change.
@@ -27,6 +28,15 @@ enum RTBackend {
 enum RTEnvironmentMode {
 	FLAT,
 	PANORAMA,
+}
+
+## One global temporal reconstruction choice for the complete private 3D scene.
+## Native still runs FSR2 at 1.0 so it supplies the project's temporal AA.
+enum UpscalingQuality {
+	NATIVE,
+	QUALITY,
+	BALANCED,
+	PERFORMANCE,
 }
 
 ## The live lights match the published snapshot.
@@ -132,6 +142,8 @@ const SCENARIO_OWNER_META := &"__rt_compositor_owner"
 const MAP_ATLAS_MAX_SIZE := 4096
 const ENVIRONMENT_PANORAMA_MAX_SIZE := Vector2i(512, 256)
 const SKY_RADIANCE_SIZES := [32, 64, 128, 256, 512, 1024, 2048]
+const UPSCALING_QUALITY_SCALES := [1.0, 0.67, 0.59, 0.5]
+const UPSCALING_QUALITY_NAMES := [&"native", &"quality", &"balanced", &"performance"]
 # Preloaded rather than named by path because this is an identity check, not a
 # load: a material is managed only when it runs exactly this shader. A path
 # string that drifted out of step with the add-on's location would reject every
@@ -178,7 +190,7 @@ const RECEIVER_BOUNDS_MARGIN := 0.0001
 ## to [signal distance_fog_changed]. Environment fog stays banned by
 ## [method _validate_environment]; this replaces it. The fog colour is not
 ## authorable: it is always the environment's linear background radiance, which
-## is also what the post stack composites into uncovered pixels.
+## also matches the opaque sky/environment rendered into the scene capture.
 @export var fog_enabled: bool = false:
 	set(value):
 		fog_enabled = value
@@ -197,6 +209,15 @@ const RECEIVER_BOUNDS_MARGIN := 0.0001
 		fog_curve = clampf(value, 0.01, 8.0)
 		_mark_fog_dirty()
 
+@export_group("Quality")
+
+var _upscaling_quality: UpscalingQuality = UpscalingQuality.NATIVE
+@export var upscaling_quality: UpscalingQuality = UpscalingQuality.NATIVE:
+	get:
+		return _upscaling_quality
+	set(value):
+		_set_upscaling_quality_value(int(value))
+
 @export_group("Post Processing")
 
 ## Master gate for the shared Panini projection pass. Cameras must additionally
@@ -205,30 +226,6 @@ const RECEIVER_BOUNDS_MARGIN := 0.0001
 @export var post_panini_enabled: bool = false:
 	set(value):
 		post_panini_enabled = value
-		_update_post_settings()
-
-## How much 3D capture resolution the Panini pass is given, expressed as the
-## source texels it reads per output pixel at screen center.
-##
-## The projection's capture camera is always wider than the display FOV, so the
-## screen center is a magnification of whatever the capture rendered. At 1.0 that
-## magnification is gone entirely and the center is reconstructed one texel per
-## pixel; lower values trade center sharpness for 3D cost. The relationship is
-## quadratic -- the capture spends roughly `4.8 * value^2` times the output pixel
-## count at a 130-degree display FOV, and `7.6 * value^2` at 140 -- so this is
-## the single most expensive visual control in the stack.
-##
-## Only the 3D capture and its resolve scale. Presentation, the projection
-## target and the UI stay at native output resolution at every value.
-@export_range(0.25, 1.0, 0.01) var post_panini_capture_sharpness: float = (
-		RTPostProcessStack.PANINI_DEFAULT_CAPTURE_SHARPNESS):
-	set(value):
-		if not is_finite(value):
-			return
-		post_panini_capture_sharpness = clampf(
-			value,
-			RTPostProcessStack.PANINI_MIN_CAPTURE_SHARPNESS,
-			RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS)
 		_update_post_settings()
 
 @export var retro_post_enabled: bool = true:
@@ -1852,6 +1849,46 @@ func get_active_rt_backend() -> StringName:
 			return &"none"
 
 
+func set_upscaling_quality(preset: int) -> void:
+	upscaling_quality = preset as UpscalingQuality
+
+
+func get_upscaling_scale() -> float:
+	return float(UPSCALING_QUALITY_SCALES[int(upscaling_quality)])
+
+
+func get_upscaling_quality_name() -> StringName:
+	return UPSCALING_QUALITY_NAMES[int(upscaling_quality)]
+
+
+## FSR2 is a Forward+ renderer feature. The production export uses that path;
+## this check keeps headless/Compatibility smoke runs on a safe native fallback.
+##
+## The rendering-method name alone does not establish that. A headless run
+## launched with `--rendering-method forward_plus` still reports `forward_plus`
+## while driving the dummy server, so the name on its own reported FSR2 as
+## available -- and the stack's own contract check could not contradict it,
+## because `scaling_3d_mode` is a stored property that always reads back whatever
+## was written to it. The RenderingDevice is what actually separates a renderer
+## that can run the upscaler from one that only names it.
+static func temporal_upscaling_available() -> bool:
+	return (
+		RenderingServer.get_current_rendering_method() == &"forward_plus"
+		and RenderingServer.get_rendering_device() != null)
+
+
+func _set_upscaling_quality_value(preset: int) -> void:
+	if preset < UpscalingQuality.NATIVE or preset > UpscalingQuality.PERFORMANCE:
+		push_warning("Ignored invalid upscaling quality preset: %d" % preset)
+		return
+	if int(_upscaling_quality) == preset:
+		return
+	_upscaling_quality = preset as UpscalingQuality
+	if is_inside_tree():
+		_update_post_settings()
+		upscaling_quality_changed.emit(preset, get_upscaling_scale())
+
+
 ## The SubViewport the scene is rendered into, or null before the post stack runs.
 ##
 ## The root Viewport renders no 3D at all once this manager is active, so callers
@@ -1864,15 +1901,14 @@ func get_scene_viewport() -> SubViewport:
 	return null
 
 
-## What the 3D passes actually render at. Presentation is always the output size,
-## but the Panini projection sizes the private capture for its own sampling
-## requirement, and ray tracing dispatches over that capture rather than over the
-## presented image. Falls back to the output size with no stack or no projection.
+## What the scaled 3D passes actually render at. Presentation and the rectilinear
+## FSR2 target remain separate domains; ray tracing dispatches over this internal
+## size. Falls back to the output size before the post stack exists.
 func get_ray_render_resolution() -> Vector2i:
-	if _post_stack != null and _post_stack.has_method("get_capture_size"):
-		var capture: Vector2i = _post_stack.call("get_capture_size")
-		if capture.x > 0 and capture.y > 0:
-			return capture
+	if _post_stack != null and _post_stack.has_method("get_internal_render_size"):
+		var internal: Vector2i = _post_stack.call("get_internal_render_size")
+		if internal.x > 0 and internal.y > 0:
+			return internal
 	return get_full_render_resolution()
 
 
@@ -3920,23 +3956,35 @@ func get_profile_snapshot() -> Dictionary:
 		int(result.get("ray_tracing_width", 0)),
 		int(result.get("ray_tracing_height", 0)))
 	var backend_dispatch_pixels := int(result.get("ray_tracing_dispatch_pixels", 0))
-	# Presentation resolution and 3D render resolution are no longer the same
-	# number: the Panini projection sizes the capture for its own sampling
-	# requirement, and every 3D pass including the ray dispatch follows it. These
-	# used to be assigned from the output on the assumption that nothing scaled,
-	# which would now understate the real dispatch by the capture ratio.
-	var capture_resolution := output_resolution
-	var post_capture: Variant = result.get("post_capture_size")
+	# The three resolution domains are explicit: native presentation, the
+	# rectilinear target FSR2 reconstructs, and the smaller buffers 3D/RT render.
+	var capture_target := output_resolution
+	var post_capture: Variant = result.get(
+		"post_capture_target_size", result.get("post_capture_size"))
 	if post_capture is Vector2i and post_capture.x > 0 and post_capture.y > 0:
-		capture_resolution = post_capture
+		capture_target = post_capture
+	var internal_resolution := get_ray_render_resolution()
+	var post_internal: Variant = result.get("post_internal_render_size")
+	if post_internal is Vector2i and post_internal.x > 0 and post_internal.y > 0:
+		internal_resolution = post_internal
+	# The compositor callback reports the driver's actual allocation. Prefer it
+	# once a frame has rendered; the post-stack value is the deterministic
+	# pre-frame estimate used during startup.
+	if backend_dispatch_size.x > 0 and backend_dispatch_size.y > 0:
+		internal_resolution = backend_dispatch_size
 	result["output_resolution"] = output_resolution
-	result["render_resolution"] = capture_resolution
+	result["render_resolution"] = internal_resolution
 	result["full_render_resolution"] = output_resolution
-	result["ray_tracing_full_resolution"] = capture_resolution
-	result["ray_tracing_resolution"] = capture_resolution
-	result["ray_tracing_dispatched_pixels"] = capture_resolution.x * capture_resolution.y
+	result["capture_target_resolution"] = capture_target
+	result["ray_tracing_full_resolution"] = capture_target
+	result["ray_tracing_resolution"] = internal_resolution
+	result["ray_tracing_dispatched_pixels"] = (
+		internal_resolution.x * internal_resolution.y)
 	result["ray_tracing_backend_dispatch_size"] = backend_dispatch_size
 	result["ray_tracing_backend_dispatch_pixels"] = backend_dispatch_pixels
+	result["upscaling_quality_preset"] = int(upscaling_quality)
+	result["upscaling_quality_name"] = get_upscaling_quality_name()
+	result["upscaling_requested_scale"] = get_upscaling_scale()
 	return result
 
 
@@ -4081,9 +4129,10 @@ func _update_post_settings() -> void:
 func _get_post_settings() -> Dictionary:
 	return {
 		"post_panini_enabled": post_panini_enabled,
-		"post_panini_capture_sharpness": post_panini_capture_sharpness,
-		"recover_opaque_coverage_from_rgb": _active_backend == RTBackend.HARDWARE,
-		"scene_capture_opaque": _active_backend == RTBackend.RASTER,
+		"upscaling_quality": int(upscaling_quality),
+		"upscaling_quality_name": get_upscaling_quality_name(),
+		"upscaling_scale": get_upscaling_scale(),
+		"fsr2_available": temporal_upscaling_available(),
 		"enabled": retro_post_enabled,
 		"brightness": post_brightness,
 		"contrast": post_contrast,

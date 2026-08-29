@@ -128,7 +128,7 @@ var _profile := {
 	"ray_tracing_width": 0,
 	"ray_tracing_height": 0,
 	"ray_tracing_dispatch_pixels": 0,
-	"ray_tracing_resolution_method": &"native",
+	"ray_tracing_resolution_method": &"viewport_internal",
 }
 
 
@@ -213,7 +213,7 @@ func _render_callback(effect_callback_type_value: int, render_data: RenderData) 
 			"ray_tracing_width": full_size.x,
 			"ray_tracing_height": full_size.y,
 			"ray_tracing_dispatch_pixels": full_size.x * full_size.y,
-			"ray_tracing_resolution_method": &"native",
+			"ray_tracing_resolution_method": &"viewport_internal",
 		})
 
 	if profiling_enabled:

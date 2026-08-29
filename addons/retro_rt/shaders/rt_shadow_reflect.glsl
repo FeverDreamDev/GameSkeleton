@@ -1233,13 +1233,10 @@ void main() {
 	// inherits the reflector's fog, not the reflected path length. The software
 	// path does the same thing at the same point so the two backends stay matched.
 	direct *= 1.0 - fog;
-	// Forward+'s compositor storage path does not propagate opaque alpha into a
-	// transparent ViewportTexture. Keep a visually-black half-float sentinel so
-	// the shared post pass can distinguish an exactly black managed surface from
-	// uncovered transparent background. This is far below one display-code step.
-	if (max(color.r, max(color.g, color.b)) <= 0.000001) {
-		color.rgb = vec3(0.00002);
-	}
+	// SceneCapture is opaque for both backends now, and its resolve no longer
+	// derives coverage from RGB. Preserve physically exact black instead of the
+	// old near-black marker; a temporal upscaler must receive real scene color,
+	// not transport metadata hidden in its radiance input.
 	imageStore(scene_color, pixel, color);
 	specular.rgb = direct;
 	imageStore(separate_specular, pixel, specular);

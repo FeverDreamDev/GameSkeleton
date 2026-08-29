@@ -61,12 +61,7 @@ var _retro_post_enabled: bool = true
 # it has to be re-applied to each newly installed world.
 var _grass_quality: int = TerrainGrass3D.GrassQuality.HIGH
 var _fps_counter_enabled: bool = false
-var _horizontal_fov: float = 130.0
-# Source texels the Panini pass reads per output pixel at screen center. Seeded
-# from whatever main.tscn authored on the manager, so the scene stays the single
-# place the shipped value lives.
-var _panini_capture_sharpness: float = (
-		RTPostProcessStack.PANINI_DEFAULT_CAPTURE_SHARPNESS)
+var _upscaling_quality: int = RTSceneManager.UpscalingQuality.NATIVE
 var _fps_layer: CanvasLayer
 
 
@@ -124,18 +119,11 @@ func _wire_systems() -> bool:
 	flow_system.gameplay_input_changed.connect(_on_gameplay_input_changed)
 	flow_system.save_requested.connect(_on_flow_save_requested)
 	flow_system.load_progress_changed.connect(_on_level_load_progress)
-	# Player view preferences are independent of RT availability and must still apply on the
-	# raster fallback or in a shell with no RTSceneManager at all.
-	_apply_player_fov()
-
 	if rt_manager != null:
 		rt_manager.rt_ready.connect(_on_rt_ready)
 		rt_manager.rt_failed.connect(_on_rt_failed)
 		rt_manager.distance_fog_changed.connect(_on_distance_fog_changed)
-		# Adopt the authored capture sharpness before the first
-		# _apply_graphics_preferences() pushes the session value back down, so the
-		# scene stays the one place the shipped default lives.
-		_panini_capture_sharpness = rt_manager.post_panini_capture_sharpness
+		rt_manager.upscaling_quality_changed.connect(_on_rt_upscaling_quality_changed)
 		_apply_graphics_preferences()
 	return true
 
@@ -314,15 +302,13 @@ func _open_graphics_options() -> void:
 	_graphics_dialog.retro_post_enabled = _retro_post_enabled
 	_graphics_dialog.grass_quality = _grass_quality
 	_graphics_dialog.fps_counter_enabled = _fps_counter_enabled
-	_graphics_dialog.horizontal_fov = _horizontal_fov
-	_graphics_dialog.panini_sharpness = _panini_capture_sharpness
+	_graphics_dialog.upscaling_quality = _upscaling_quality
 	_graphics_dialog.rt_toggled.connect(_on_graphics_rt_toggled)
 	_graphics_dialog.retro_post_toggled.connect(_on_graphics_retro_post_toggled)
 	_graphics_dialog.grass_quality_selected.connect(_on_graphics_grass_quality_selected)
 	_graphics_dialog.fps_counter_toggled.connect(_on_graphics_fps_counter_toggled)
-	_graphics_dialog.horizontal_fov_changed.connect(_on_graphics_horizontal_fov_changed)
-	_graphics_dialog.panini_sharpness_changed.connect(
-		_on_graphics_panini_sharpness_changed)
+	_graphics_dialog.upscaling_quality_selected.connect(
+		_on_graphics_upscaling_quality_selected)
 	_graphics_dialog.finished.connect(_on_graphics_dialog_finished.unbind(1))
 	UISystem.show_modal(_graphics_dialog)
 
@@ -752,7 +738,6 @@ func _restore_player_state(state: Dictionary) -> void:
 	var crouching := bool(state.get("crouching", false))
 	var height := float(state.get("height", player.crouch_height if crouching else player.standing_height))
 	player.apply_stance(crouching, height)
-	_apply_player_fov()
 	var view := _player_view()
 	if view != null:
 		view.apply_view(float(state.get("view_pitch", 0.0)))
@@ -841,7 +826,7 @@ func _apply_graphics_preferences() -> void:
 	# the value. Changing it on a running manager goes through the setter below.
 	rt_manager.ray_tracing_enabled = _rt_enabled
 	rt_manager.retro_post_enabled = _retro_post_enabled
-	rt_manager.post_panini_capture_sharpness = _panini_capture_sharpness
+	rt_manager.set_upscaling_quality(_upscaling_quality)
 
 
 ## The RT toggle genuinely reinstalls the pipeline, so unlike every other entry
@@ -862,15 +847,22 @@ func _on_graphics_retro_post_toggled(enabled: bool) -> void:
 	_apply_graphics_preferences()
 
 
-## Resizes the 3D capture, so the dialog only emits this once a drag settles.
-func _on_graphics_panini_sharpness_changed(sharpness: float) -> void:
-	if not is_finite(sharpness):
+func _on_graphics_upscaling_quality_selected(quality: int) -> void:
+	if quality not in [
+		RTSceneManager.UpscalingQuality.NATIVE,
+		RTSceneManager.UpscalingQuality.QUALITY,
+		RTSceneManager.UpscalingQuality.BALANCED,
+		RTSceneManager.UpscalingQuality.PERFORMANCE,
+	]:
 		return
-	_panini_capture_sharpness = clampf(
-		sharpness,
-		RTPostProcessStack.PANINI_MIN_CAPTURE_SHARPNESS,
-		RTPostProcessStack.PANINI_MAX_CAPTURE_SHARPNESS)
+	_upscaling_quality = quality
 	_apply_graphics_preferences()
+
+
+func _on_rt_upscaling_quality_changed(preset: int, _scale: float) -> void:
+	_upscaling_quality = preset
+	if _graphics_dialog != null and is_instance_valid(_graphics_dialog):
+		_graphics_dialog.set_upscaling_quality(preset)
 
 
 func _on_graphics_grass_quality_selected(quality: int) -> void:
@@ -881,22 +873,6 @@ func _on_graphics_grass_quality_selected(quality: int) -> void:
 func _on_graphics_fps_counter_toggled(enabled: bool) -> void:
 	_fps_counter_enabled = enabled
 	_apply_fps_counter()
-
-
-func _on_graphics_horizontal_fov_changed(fov: float) -> void:
-	if not is_finite(fov):
-		return
-	_horizontal_fov = clampf(
-		fov,
-		RTPaniniCamera3D.MIN_HORIZONTAL_FOV,
-		RTPaniniCamera3D.MAX_HORIZONTAL_FOV)
-	_apply_player_fov()
-
-
-func _apply_player_fov() -> void:
-	var view := _player_view()
-	if view != null:
-		view.set_base_horizontal_fov(_horizontal_fov, true)
 
 
 ## The counter is created on first use and then kept, so toggling it twice does
@@ -1021,7 +997,6 @@ func _reset_player_for_new_run() -> void:
 	player.global_transform = Transform3D.IDENTITY
 	player.apply_stance(false, player.standing_height)
 	player.set_input_enabled(false)
-	_apply_player_fov()
 	var view := _player_view()
 	if view != null:
 		view.reset_view()

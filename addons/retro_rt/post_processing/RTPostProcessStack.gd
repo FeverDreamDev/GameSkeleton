@@ -8,16 +8,45 @@ const VIEWPORT_OWNER_META := &"__rt_post_process_owner"
 const PANINI_DISTANCE := 1.0
 const PANINI_MIN_HORIZONTAL_FOV := 1.0
 const PANINI_MAX_HORIZONTAL_FOV := 175.0
-## Center sampling ratio the Panini capture is sized for: source texels per
-## output pixel along the horizontal axis at screen center, where 1.0 means the
-## projection magnifies nothing at all. See [method panini_capture_size].
-const PANINI_MIN_CAPTURE_SHARPNESS := 0.25
-const PANINI_MAX_CAPTURE_SHARPNESS := 1.0
-const PANINI_DEFAULT_CAPTURE_SHARPNESS := 0.5
-## Hard per-axis ceiling on the capture. Sharpness already bounds the request;
-## this only keeps a pathological output size from asking for a target no driver
-## will allocate.
+## Hard per-axis ceiling on the projection-optimal rectilinear target. Its total
+## pixel budget is also capped by the multiplier below, so this is only relevant
+## to pathological display sizes.
 const PANINI_MAX_CAPTURE_AXIS := 8192
+
+## Native output frames of pixels the rectilinear Panini target is allowed.
+##
+## This used to be 1.0, inherited from the retired supersampling control where
+## target size *was* 3D cost and a large target meant a quadratic bill. FSR2
+## broke that link: [member Viewport.scaling_3d_scale] sets the rendered pixel
+## count independently of the target, so a larger target is paid for with a lower
+## render scale rather than with frame time. The projection magnifies screen
+## center, so a target capped at one native frame capped center sharpness with
+## it -- at 140 degrees the center resolved only 0.364 of a source texel per
+## output pixel, meaning most of what was rendered was destroyed by the
+## magnification before it reached the display.
+##
+## At 2.0 both center ratios improve by sqrt(2). The rendered pixel count is
+## unchanged at every quality preset, because [method _target_relative_render_scale]
+## divides the preset's scale by the square root of this value. What it costs is
+## target memory (two capture-size RGBA16F targets, so roughly +59 MB at
+## 2560x1440) plus the FSR2 upscale and scene-resolve passes, which follow the
+## target rather than the render size.
+const PANINI_TARGET_PIXEL_MULTIPLIER := 2.0
+
+## Contrast Adaptive Sharpening strength applied to the Panini output by the
+## present pass, in CAS's own 0..1 range.
+##
+## The remaining center magnification after the budget above is roughly 1.95x
+## horizontally at 140 degrees, and magnification blur is what a contrast-adaptive
+## sharpener recovers best. It sits after the projection, at native resolution,
+## which is the only place a sharpener can act on the blur the projection
+## actually introduced -- FSR2's own RCAS runs upstream in capture texels, where
+## everything it does is subsequently magnified along with the image.
+##
+## Kept moderate on purpose. The projection's Catmull-Rom branch already
+## overshoots high-contrast edges, and CAS's adaptive term deliberately backs off
+## exactly there, so the two stack without compounding into ringing.
+const PANINI_PRESENT_SHARPEN_STRENGTH := 0.45
 
 var _owner: Node
 var _root_viewport: Viewport
@@ -28,7 +57,7 @@ var _root_state_captured := false
 var _container: Node
 var _scene_viewport: SubViewport
 var _internal_camera: Camera3D
-## Resolves the scene capture: coverage decode plus environment reconstruction.
+## Applies the single HDR-to-SDR/transfer boundary to the already-opaque scene.
 var _resolve_viewport: SubViewport
 ## Persistent native-output Panini target. It remains allocated while bypassed,
 ## but stops updating and the present pass reads the resolve target directly.
@@ -60,6 +89,15 @@ var _initialization_allocation_count := 0
 var _last_frame_allocation_count := 0
 var _peak_frame_allocation_count := 0
 var _pending_frame_allocation_count := 0
+var _upscaling_quality := 0
+var _upscaling_quality_name: StringName = &"native"
+var _upscaling_requested_scale := 1.0
+var _upscaling_effective_scale := 1.0
+var _fsr2_available := false
+var _fsr2_active := false
+var _fsr2_failure := ""
+var _fsr2_fallback_warned := false
+var _temporal_history_reset_count := 0
 
 var _panini_active := false
 var _panini_requested := false
@@ -80,7 +118,6 @@ var _panini_invalid_samples := 0
 var _panini_contract_output_size := Vector2i.ZERO
 var _panini_contract_capture_size := Vector2i.ZERO
 var _panini_contract_display_fov := 0.0
-var _panini_capture_sharpness := PANINI_DEFAULT_CAPTURE_SHARPNESS
 var _panini_capture_ceiling_fov := 0.0
 var _panini_property_camera_instance_id := 0
 var _panini_camera_has_enabled_property := false
@@ -152,7 +189,11 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_last_frame_allocation_count = 0
 	_peak_frame_allocation_count = 0
 	_pending_frame_allocation_count = 0
+	_fsr2_failure = ""
+	_fsr2_fallback_warned = false
+	_temporal_history_reset_count = 0
 	_settings = settings.duplicate()
+	_read_upscaling_settings(_settings)
 	var size := Vector2i(_root_viewport.get_visible_rect().size)
 	if size.x < 1 or size.y < 1:
 		shutdown()
@@ -187,16 +228,10 @@ func configure(owner: Node, settings: Dictionary) -> String:
 
 	_output_size = size
 	_scene_viewport = _make_viewport("SceneCapture", _output_size)
-	# Hardware RT needs a transparent capture: managed pixels carry ID transport
-	# rather than colour, and the shared present reconstructs the environment
-	# behind every uncovered texel from the immutable snapshot.
-	#
-	# The raster fallback has no transport to hide, and Godot refuses to run
-	# screen-space reflections into a transparent viewport -- silently, with a
-	# warning -- which would leave the fallback with no reflections at all. So it
-	# captures opaque and lets the viewport draw its own sky; coverage then reads
-	# 1 everywhere and the present composites nothing behind it.
-	_scene_viewport.transparent_bg = not bool(_settings.get("scene_capture_opaque", false))
+	# FSR2 reconstructs the complete scene, including sky/environment. Coverage
+	# metadata cannot survive a temporal color resolve, so both RT backends now
+	# enter it as one opaque scene-linear image.
+	_scene_viewport.transparent_bg = false
 	_scene_viewport.world_3d = _root_viewport.world_3d
 	_container.add_child(_scene_viewport)
 	RenderingServer.viewport_set_disable_2d(_scene_viewport.get_viewport_rid(), true)
@@ -211,8 +246,8 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_internal_camera.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	_scene_viewport.add_child(_internal_camera)
 
-	# One pass turns the capture into the visible image: coverage decode plus the
-	# environment reconstruction behind everything geometry did not cover.
+	# The capture is already a complete opaque scene. This pass owns only the one
+	# explicit HDR-to-SDR/transfer boundary shared by both RT backends.
 	_resolve_material = ShaderMaterial.new()
 	_record_explicit_allocation()
 	_resolve_material.shader = resources["resolve_shader"]
@@ -249,7 +284,7 @@ func configure(owner: Node, settings: Dictionary) -> String:
 	_container.add_child(_final_layer)
 
 	# Every owned target stores scene-linear radiance between passes; the resolve
-	# shader decodes coverage on that assumption and has no sRGB fallback branch.
+	# shader consumes the complete opaque FSR2 result with no sRGB fallback branch.
 	# Forward+ honors this, so a refusal is a broken platform assumption rather
 	# than a supported configuration, and it fails here instead of silently
 	# shifting every colour in the frame.
@@ -279,7 +314,11 @@ func initialize(owner: Node, settings: Dictionary) -> String:
 
 
 func update(settings: Dictionary) -> void:
+	var previous_quality := _upscaling_quality
+	var previous_scale := _upscaling_requested_scale
+	var previous_availability := _fsr2_available
 	_settings = settings.duplicate()
+	_read_upscaling_settings(_settings)
 	if not _active:
 		return
 	# Sample the root now so a settings change delivered in the same frame as a
@@ -291,28 +330,14 @@ func update(settings: Dictionary) -> void:
 			next_output_size = visible_size
 	if next_output_size != _output_size:
 		_resize(next_output_size)
+	if (
+		previous_quality != _upscaling_quality
+		or not is_equal_approx(previous_scale, _upscaling_requested_scale)
+		or previous_availability != _fsr2_available
+	):
+		_apply_scene_viewport_contract()
+		_temporal_history_reset_count += 1
 	_present_material.set_shader_parameter(&"grade_enabled", bool(settings.get("enabled", settings.get("retro_post_enabled", true))))
-	var environment := settings.get("environment", {}) as Dictionary
-	var environment_mode := int(environment.get("mode", 0))
-	var fallback: Color = environment.get("fallback_linear", Color.BLACK)
-	var inverse_basis: Basis = environment.get("inverse_sky_basis", Basis.IDENTITY)
-	var recover_opaque_coverage := (
-		bool(settings.get("recover_opaque_coverage_from_rgb", false)))
-	var panorama: Texture2D
-	if environment_mode == 1:
-		panorama = environment.get("panorama") as Texture2D
-	# Resolve is the only pass that reads SceneCapture, so it is the only one
-	# that reconstructs the environment and decodes coverage. Panini and present
-	# consume an already-composited image.
-	_resolve_material.set_shader_parameter(
-		&"recover_opaque_coverage_from_rgb", recover_opaque_coverage)
-	_resolve_material.set_shader_parameter(&"environment_mode", environment_mode)
-	_resolve_material.set_shader_parameter(
-		&"environment_flat_linear", Vector3(fallback.r, fallback.g, fallback.b))
-	_resolve_material.set_shader_parameter(&"environment_panorama", panorama)
-	_resolve_material.set_shader_parameter(&"environment_basis_x", inverse_basis.x)
-	_resolve_material.set_shader_parameter(&"environment_basis_y", inverse_basis.y)
-	_resolve_material.set_shader_parameter(&"environment_basis_z", inverse_basis.z)
 	for parameter in [&"brightness", &"contrast", &"saturation", &"black_point", &"color_balance", &"posterize_enabled", &"posterize_levels", &"posterize_strength"]:
 		var manager_name := StringName("post_" + String(parameter))
 		if settings.has(parameter) or settings.has(manager_name):
@@ -398,6 +423,15 @@ func shutdown() -> void:
 	_panini_material = null
 	_present_material = null
 	_root_state = {}
+	_upscaling_quality = 0
+	_upscaling_quality_name = &"native"
+	_upscaling_requested_scale = 1.0
+	_upscaling_effective_scale = 1.0
+	_fsr2_available = false
+	_fsr2_active = false
+	_fsr2_failure = ""
+	_fsr2_fallback_warned = false
+	_temporal_history_reset_count = 0
 	_source_camera_instance_id = 0
 	_output_size = Vector2i.ZERO
 	_panini_active = false
@@ -441,6 +475,7 @@ func get_profile_snapshot() -> Dictionary:
 	var persistent_bytes := (
 		_capture_size.x * _capture_size.y * bytes_per_target_pixel * 2)
 	persistent_bytes += panini_buffer_bytes
+	var internal_size := get_internal_render_size()
 	var pass_timings := _measured_pass_timings()
 	return {
 		"post_pass_gpu_ms": pass_timings,
@@ -453,15 +488,19 @@ func get_profile_snapshot() -> Dictionary:
 		"post_posterize_enabled": bool(_settings.get("posterize_enabled", false)),
 		"post_environment_revision": int((_settings.get("environment", {}) as Dictionary).get("revision", 0)),
 		"post_environment_composite": true,
-		"post_recovers_hardware_opaque_coverage": (
-			bool(_settings.get("recover_opaque_coverage_from_rgb", false))),
-		# Presentation is always root-native. The 3D capture and its resolve are
-		# the only stages that leave that domain, and only to give the Panini
-		# projection the source density it samples at.
+		"post_environment_composite_stage": &"scene_capture_before_fsr2",
+		"post_recovers_hardware_opaque_coverage": false,
+		"post_scene_capture_opaque": (
+			_scene_viewport != null and not _scene_viewport.transparent_bg),
+		# Presentation, FSR2 target and internal 3D buffers are separate domains.
 		"post_native_size": _output_size,
 		"post_output_size": _output_size,
-		"post_render_size": _capture_size,
-		"post_rendered_pixels": _capture_size.x * _capture_size.y,
+		"post_render_size": internal_size,
+		"post_rendered_pixels": internal_size.x * internal_size.y,
+		"post_internal_render_size": internal_size,
+		"post_internal_render_pixels": internal_size.x * internal_size.y,
+		"post_capture_target_size": _capture_size,
+		"post_capture_target_pixels": _capture_size.x * _capture_size.y,
 		"post_capture_size": _capture_size,
 		"post_capture_pixel_ratio": (
 			float(_capture_size.x * _capture_size.y)
@@ -488,6 +527,28 @@ func get_profile_snapshot() -> Dictionary:
 			_scene_viewport != null and _scene_viewport.use_hdr_2d),
 		"post_scene_viewport_hdr_requested": (
 			_scene_viewport != null and _scene_viewport.use_hdr_2d),
+		"post_upscaling_quality_preset": _upscaling_quality,
+		"post_upscaling_quality_name": _upscaling_quality_name,
+		# Requested is the preset's own scale, authored against the native output
+		# frame. Effective is what actually reached the viewport, which is
+		# target-relative and therefore smaller whenever the Panini target is
+		# larger than an output frame.
+		"post_upscaling_requested_scale": _upscaling_requested_scale,
+		"post_upscaling_effective_scale": _upscaling_effective_scale,
+		"post_upscaling_scale": _upscaling_effective_scale,
+		# The cost-meaningful number: rendered 3D/RT pixels per native output
+		# pixel. This is what the preset names promise, and it stays put when
+		# PANINI_TARGET_PIXEL_MULTIPLIER moves.
+		"post_upscaling_output_pixel_ratio": (
+			float(internal_size.x * internal_size.y)
+			/ maxf(float(_output_size.x * _output_size.y), 1.0)),
+		"post_panini_target_pixel_multiplier": (
+			float(_capture_size.x * _capture_size.y)
+			/ maxf(float(_output_size.x * _output_size.y), 1.0)),
+		"post_fsr2_available": _fsr2_available,
+		"post_fsr2_active": _fsr2_active,
+		"post_fsr2_failure": _fsr2_failure,
+		"post_temporal_history_reset_count": _temporal_history_reset_count,
 		# Instrumented explicit Node/Resource construction since the preceding
 		# process_frame(), including update() work consumed by the current frame.
 		# Normal frames reuse every post object, so this is expected to remain 0.
@@ -518,7 +579,7 @@ func get_profile_snapshot() -> Dictionary:
 		"post_panini_viewport_size": (
 			_panini_viewport.size if _panini_viewport != null else Vector2i.ZERO),
 		"post_panini_source_size": _capture_size,
-		"post_panini_capture_sharpness": _panini_capture_sharpness,
+		"post_panini_capture_budget": &"native_output_pixels",
 		"post_panini_capture_ceiling_fov": _panini_capture_ceiling_fov,
 		"post_panini_center_texels_per_pixel": _panini_center_sampling_ratio(),
 		"post_panini_source_stage": &"scene_resolve",
@@ -535,6 +596,9 @@ func get_profile_snapshot() -> Dictionary:
 		"post_panini_bounds_valid": _panini_bounds_valid(),
 		"post_present_source": (
 			&"panini" if _panini_active else &"scene_resolve"),
+		# The only sharpener downstream of the projection. Zero while bypassed,
+		# because a bypassed frame was never magnified.
+		"post_present_sharpen_strength": _present_sharpen_strength(),
 	}
 
 
@@ -621,11 +685,18 @@ func get_scene_viewport() -> SubViewport:
 	return _scene_viewport
 
 
-## Size of the 3D capture, which is what every 3D pass -- raster and ray tracing
-## alike -- actually renders at. Equal to the output size unless the Panini pass
-## is active and has sized it for its own sampling requirement.
+## Rectilinear target reconstructed by FSR2. The actual raster/RT buffers are
+## [method get_internal_render_size].
 func get_capture_size() -> Vector2i:
 	return _capture_size
+
+
+func get_internal_render_size() -> Vector2i:
+	if _capture_size.x < 1 or _capture_size.y < 1:
+		return Vector2i.ZERO
+	return Vector2i(
+		maxi(1, roundi(float(_capture_size.x) * _upscaling_effective_scale)),
+		maxi(1, roundi(float(_capture_size.y) * _upscaling_effective_scale)))
 
 
 func get_debug_contract_snapshot() -> Dictionary:
@@ -635,6 +706,12 @@ func get_debug_contract_snapshot() -> Dictionary:
 		"output_size": _output_size,
 		"render_size": _output_size,
 		"scene_viewport_size": _scene_viewport.size if _scene_viewport else Vector2i.ZERO,
+		"scene_internal_render_size": get_internal_render_size(),
+		"scene_scaling_mode": (
+			_scene_viewport.scaling_3d_mode if _scene_viewport else -1),
+		"scene_scaling_scale": (
+			_scene_viewport.scaling_3d_scale if _scene_viewport else 1.0),
+		"fsr2_active": _fsr2_active,
 		"resolve_viewport_size": (
 			_resolve_viewport.size if _resolve_viewport else Vector2i.ZERO),
 		"panini_viewport_size": (
@@ -698,8 +775,8 @@ func _make_canvas_pass(pass_name: String, size: Vector2i, material: Material) ->
 	# allocation or a resize. Clearing first is a second full-target write for
 	# nothing, and at 2560x1440 RGBA16F these are 28 MB each.
 	#
-	# The scene capture keeps its clear: it is a real 3D render into a transparent
-	# target, where uncovered pixels are the point.
+	# The scene capture keeps its clear because it is a real 3D render target. Its
+	# sky/environment then makes the image opaque before FSR2 consumes it.
 	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_NEVER
 	viewport.transparent_bg = true
 	var rect := ColorRect.new()
@@ -716,6 +793,92 @@ func _make_canvas_pass(pass_name: String, size: Vector2i, material: Material) ->
 func _record_explicit_allocation() -> void:
 	_explicit_allocation_events += 1
 	_pending_frame_allocation_count += 1
+
+
+func _read_upscaling_settings(settings: Dictionary) -> void:
+	_upscaling_quality = clampi(int(settings.get("upscaling_quality", 0)), 0, 3)
+	_upscaling_quality_name = StringName(settings.get(
+		"upscaling_quality_name", &"native"))
+	var requested := float(settings.get("upscaling_scale", 1.0))
+	_upscaling_requested_scale = clampf(
+		requested if is_finite(requested) else 1.0, 0.1, 1.0)
+	# Kept structurally identical to RTSceneManager.temporal_upscaling_available()
+	# rather than calling it: the manager already depends on this class, and the
+	# return trip would close a class_name cycle for one boolean.
+	_fsr2_available = bool(settings.get(
+		"fsr2_available",
+		RenderingServer.get_current_rendering_method() == &"forward_plus"
+		and RenderingServer.get_rendering_device() != null))
+	# Only _apply_scene_viewport_contract() knows whether the renderer actually
+	# took FSR2, so it owns the effective scale for the whole active lifetime.
+	# Assigning the requested scale here as well would resurrect it after a failed
+	# apply on the next unrelated update() -- a fog or grade change is enough --
+	# and get_internal_render_size() would then report a 3D/RT resolution that
+	# nothing is rendering at. This seeds the pre-active value only.
+	if not _active:
+		_upscaling_effective_scale = (
+			_upscaling_requested_scale if _fsr2_available else 1.0)
+
+
+## The quality preset's scale expressed against the actual target.
+##
+## The presets are authored against the native output frame, which is what makes
+## their names mean something about cost: Native renders one output frame of
+## pixels, Performance renders a quarter of one. The Panini target is
+## deliberately larger than an output frame, so handing a preset's number
+## straight to [member Viewport.scaling_3d_scale] would silently multiply the
+## rendered pixel count by [constant PANINI_TARGET_PIXEL_MULTIPLIER] and make
+## every preset cost that much more than its name claims. Dividing by the square
+## root of the area ratio keeps the rendered pixel count identical to what a
+## one-frame target would have rendered, and spends the larger target purely on
+## reconstruction quality.
+func _target_relative_render_scale() -> float:
+	if (
+		_capture_size.x < 1
+		or _capture_size.y < 1
+		or _output_size.x < 1
+		or _output_size.y < 1
+	):
+		return _upscaling_requested_scale
+	var output_pixels := float(_output_size.x) * float(_output_size.y)
+	var capture_pixels := float(_capture_size.x) * float(_capture_size.y)
+	if capture_pixels <= 0.0 or output_pixels <= 0.0:
+		return _upscaling_requested_scale
+	return clampf(
+		_upscaling_requested_scale * sqrt(output_pixels / capture_pixels), 0.1, 1.0)
+
+
+## Applies FSR2 only to SceneCapture. A renderer that cannot honor it falls
+## back to the same deterministic native contract used by the canvas passes;
+## Compatibility/headless validation therefore remains usable without turning a
+## production Forward+ failure into a black frame.
+func _apply_scene_viewport_contract() -> void:
+	if _scene_viewport == null:
+		return
+	_fsr2_active = false
+	_fsr2_failure = ""
+	var applied_scale := _target_relative_render_scale()
+	if _fsr2_available:
+		RTVisualContract.apply_fsr2_scene_viewport_state(
+			_scene_viewport, _capture_size, applied_scale, true)
+		_fsr2_failure = RTVisualContract.fsr2_scene_viewport_failure(
+			_scene_viewport, _capture_size, applied_scale, true)
+		if _fsr2_failure.is_empty():
+			_fsr2_active = true
+			_upscaling_effective_scale = clampf(applied_scale, 0.1, 1.0)
+			return
+
+	_upscaling_effective_scale = 1.0
+	RTVisualContract.apply_native_viewport_state(_scene_viewport, _capture_size, true)
+	var native_failure := RTVisualContract.native_viewport_failure(
+		_scene_viewport, _capture_size, true)
+	if not native_failure.is_empty():
+		var failure_prefix := (
+			_fsr2_failure + "; " if not _fsr2_failure.is_empty() else "")
+		_fsr2_failure = failure_prefix + "native fallback failed: " + native_failure
+	if not _fsr2_failure.is_empty() and not _fsr2_fallback_warned:
+		_fsr2_fallback_warned = true
+		push_warning("FSR2 scene capture fell back to native bilinear: %s" % _fsr2_failure)
 
 
 func _resize(output_size: Vector2i) -> void:
@@ -743,17 +906,17 @@ func _apply_capture_size(capture_size: Vector2i) -> void:
 	if next == _capture_size:
 		return
 	_capture_size = next
-	# Root/final presentation is deliberately LDR, but these carry scene radiance.
-	RTVisualContract.apply_native_viewport_state(_scene_viewport, _capture_size, true)
+	# SceneCapture reconstructs into this target through FSR2. Resolve remains a
+	# 1:1 canvas pass over that target; root/final presentation stays native LDR.
+	_apply_scene_viewport_contract()
 	RTVisualContract.apply_native_viewport_state(_resolve_viewport, _capture_size, true)
 	# Describes the resolve source texel domain, and the Panini source domain.
 	# The present pass deliberately has no such uniform: its source is always 1:1
 	# with the rect it covers.
 	_resolve_material.set_shader_parameter(&"viewport_size", Vector2(_capture_size))
 	_panini_material.set_shader_parameter(&"source_size", Vector2(_capture_size))
-	# The corner rays are screen points in the capture, not the output.
-	_apply_camera_rays()
 	_capture_resize_count += 1
+	_temporal_history_reset_count += 1
 
 
 func _apply_present_source() -> void:
@@ -767,12 +930,19 @@ func _apply_present_source() -> void:
 		_panini_viewport.get_texture() if _panini_active
 		else pre_panini_source)
 	_present_material.set_shader_parameter(&"source_texture", present_source)
+	# The present sharpener exists to answer the projection's center
+	# magnification, so it follows the projection rather than running always.
+	_present_material.set_shader_parameter(&"sharpen_enabled", _panini_active)
+	_present_material.set_shader_parameter(
+		&"sharpen_strength",
+		PANINI_PRESENT_SHARPEN_STRENGTH if _panini_active else 0.0)
 
 
 func _sync_camera() -> void:
 	var source_camera := _root_viewport.get_camera_3d()
-	_source_camera_instance_id = (
-		source_camera.get_instance_id() if source_camera != null else 0)
+	var next_source_id := source_camera.get_instance_id() if source_camera != null else 0
+	var camera_changed := next_source_id != _source_camera_instance_id
+	_source_camera_instance_id = next_source_id
 	if source_camera == null:
 		_resolve_panini_state(null)
 		if _internal_camera != null and _internal_camera.is_current():
@@ -795,42 +965,21 @@ func _sync_camera() -> void:
 	_internal_camera.cull_mask = source_camera.cull_mask
 	_internal_camera.environment = source_camera.environment
 	_internal_camera.attributes = source_camera.attributes
+	if camera_changed:
+		# Godot couples this reset to renderer motion-vector teleport handling. It
+		# prevents a newly selected/cut camera from inheriting the old camera's
+		# velocity history while FSR2 begins its new sequence.
+		_internal_camera.reset_physics_interpolation()
+		_temporal_history_reset_count += 1
 	# The authored camera keeps its display projection. Only the private camera
 	# may widen to the conservative rectilinear frustum Panini needs as input.
 	_resolve_panini_state(source_camera)
 	if not _internal_camera.is_current():
 		_internal_camera.make_current()
 
-	_apply_camera_rays()
-
-
-## Frustum corner rays for the resolve pass's environment reconstruction.
-## Camera3D.project_position() interprets its argument in the camera's own
-## viewport, which is the capture -- not the output the projection presents to.
-func _apply_camera_rays() -> void:
-	if _internal_camera == null or _resolve_material == null:
-		return
-	var width := float(maxi(_capture_size.x, 1))
-	var height := float(maxi(_capture_size.y, 1))
-	_resolve_material.set_shader_parameter(
-		&"camera_ray_top_left", _camera_ray(_internal_camera, Vector2.ZERO))
-	_resolve_material.set_shader_parameter(
-		&"camera_ray_top_right", _camera_ray(_internal_camera, Vector2(width, 0.0)))
-	_resolve_material.set_shader_parameter(
-		&"camera_ray_bottom_left", _camera_ray(_internal_camera, Vector2(0.0, height)))
-	_resolve_material.set_shader_parameter(
-		&"camera_ray_bottom_right", _camera_ray(_internal_camera, Vector2(width, height)))
-
 
 func _resolve_panini_state(source_camera: Camera3D) -> void:
 	_panini_requested = bool(_settings.get("post_panini_enabled", false))
-	var requested_sharpness := float(_settings.get(
-		"post_panini_capture_sharpness", PANINI_DEFAULT_CAPTURE_SHARPNESS))
-	_panini_capture_sharpness = clampf(
-		requested_sharpness if is_finite(requested_sharpness)
-		else PANINI_DEFAULT_CAPTURE_SHARPNESS,
-		PANINI_MIN_CAPTURE_SHARPNESS,
-		PANINI_MAX_CAPTURE_SHARPNESS)
 	_cache_panini_camera_properties(source_camera)
 	_panini_camera_capable = (
 		source_camera != null
@@ -893,23 +1042,23 @@ func _resolve_panini_state(source_camera: Camera3D) -> void:
 		_set_panini_active(false)
 		return
 
-	# Size the capture from the widest angle this camera can request, not from
+	# Size the target from the widest angle this camera can request, not from
 	# the live one. The live angle moves every frame while a sprint transition
-	# eases, and the capture is a render target: following it would reallocate
-	# mid-motion. A capture sized for the ceiling contains every narrower FOV,
-	# so the only cost of the difference is sharpness the capture already paid
-	# for. Sizing on the ceiling also keeps this decision free of the contract
+	# eases, and the target is a render target: following it would reallocate
+	# mid-motion. A target sized for the ceiling contains every narrower FOV while
+	# preserving the fixed native-pixel budget. Sizing on the ceiling also keeps
+	# this decision free of the contract
 	# below, which is what stops an invalid contract from oscillating the
-	# capture between two sizes on alternating frames.
+	# target between two sizes on alternating frames.
 	_panini_capture_ceiling_fov = _read_panini_capture_ceiling(source_camera)
-	# A camera that declares no ceiling keeps the plain output-sized capture. The
+	# A camera that declares no ceiling keeps the plain output-sized target. The
 	# alternative -- sizing from the live angle -- is the reallocation this whole
-	# mechanism exists to avoid, so the sharper capture stays a declared
+	# mechanism exists to avoid, so the projection-optimal target stays a declared
 	# capability rather than something inferred frame to frame.
 	var desired_capture := _output_size
 	if _panini_capture_ceiling_fov > 0.0:
 		var projected := panini_capture_size(
-			_output_size, _panini_capture_ceiling_fov, _panini_capture_sharpness)
+			_output_size, _panini_capture_ceiling_fov)
 		if projected.x > 0 and projected.y > 0:
 			desired_capture = projected
 	if desired_capture != _capture_size:
@@ -1020,7 +1169,7 @@ func _apply_panini_capture_contract(display_horizontal_fov: float) -> void:
 		&"panini_extent_y", float(contract.get("panini_extent_y", 1.0)))
 	_panini_material.set_shader_parameter(
 		&"capture_tan_half_fov", _panini_capture_tan_half_fov)
-	_panini_material.set_shader_parameter(&"source_size", Vector2(_output_size))
+	_panini_material.set_shader_parameter(&"source_size", Vector2(_capture_size))
 
 
 ## Rectilinear half-tangents the projection must be able to read for this output
@@ -1046,10 +1195,9 @@ static func panini_required_tangents(
 		tan(half_horizontal) / output_aspect)
 	if not is_finite(corner.x) or not is_finite(corner.y):
 		return Vector2.ZERO
-	# Keep the mapped perimeter at least half a source texel inside the capture.
-	# The margin uses the output size rather than the capture size: a capture is
-	# never smaller than the output, so its own half-texel inset is narrower and
-	# this stays the conservative choice at any capture resolution.
+	# This output-domain inset makes the returned ratio stable for target-aspect
+	# selection. _panini_capture_contract() recomputes the exact half-texel inset
+	# from the chosen capture dimensions before deriving its final frustum.
 	return Vector2(
 		absf(corner.x) / maxf(1.0 - 1.0 / float(maxi(output_size.x, 2)), 0.5),
 		absf(corner.y) / maxf(1.0 - 1.0 / float(maxi(output_size.y, 2)), 0.5))
@@ -1064,58 +1212,57 @@ static func panini_extent_x(display_horizontal_fov: float) -> float:
 		/ (PANINI_DISTANCE + cos(half_horizontal)))
 
 
-## Size of the private 3D capture, given the widest display FOV the source
-## camera can request and a target center sharpness.
+## Size of the private rectilinear target for the widest Panini FOV.
 ##
-## Two independent decisions live here.
-##
-## The aspect is the ratio of the two required half-tangents, which is the
-## sharpness optimum rather than a convenience. Capture width is proportional to
-## sqrt(aspect) at a fixed pixel count while the horizontal capture tangent is
-## flat until the aspect passes that ratio and grows linearly after it, so the
-## horizontal center ratio peaks exactly there. It is also the only aspect that
-## wastes no frustum: an output-aspect capture at 130 degrees renders 41 percent
-## of its width outside anything the projection can sample.
-##
-## The scale is then chosen so the horizontal center ratio equals `sharpness`
-## exactly, because with that aspect the ratio reduces to the linear scale
-## itself. Sharpness 1.0 therefore means the screen center is reconstructed one
-## source texel per output pixel and the projection magnifies nothing at all.
-## The vertical axis lands above the horizontal by a factor that depends only on
-## the projection and the output aspect -- about 1.68x on 16:9 -- and cannot be
-## traded away while pixels stay square.
+## Its aspect is the ratio of the required half-tangents. At a fixed area both
+## center-density ratios peak at exactly that aspect -- they cannot be traded
+## against each other -- and it is also the only aspect that wastes no rendered
+## frustum. The area itself is [param pixel_multiplier] native output frames;
+## FSR2 renders fewer 3D pixels inside the target and reconstructs it temporally,
+## so the multiplier buys sharpness with memory rather than with frame time.
 ##
 ## Returns [code]Vector2i.ZERO[/code] when the ceiling FOV has no valid capture,
 ## which is the caller's signal to present rectilinear at the output size.
 static func panini_capture_size(
 		output_size: Vector2i,
 		ceiling_horizontal_fov: float,
-		sharpness: float) -> Vector2i:
+		pixel_multiplier: float = PANINI_TARGET_PIXEL_MULTIPLIER) -> Vector2i:
 	var required := panini_required_tangents(ceiling_horizontal_fov, output_size)
-	var extent_x := panini_extent_x(ceiling_horizontal_fov)
 	if (
 		required.x <= 0.0
 		or required.y <= 0.0
-		or not is_finite(extent_x)
-		or extent_x <= 0.0
+		or output_size.x < 2
+		or output_size.y < 2
 	):
 		return Vector2i.ZERO
-	var clamped_sharpness := clampf(
-		sharpness if is_finite(sharpness) else PANINI_DEFAULT_CAPTURE_SHARPNESS,
-		PANINI_MIN_CAPTURE_SHARPNESS,
-		PANINI_MAX_CAPTURE_SHARPNESS)
-	# The aspect is the contract here, not the individual dimensions: a capture
-	# whose aspect drifts off this ratio pays for width the projection cannot
-	# sample. Clamp the driving axis, then derive the other from the clamped
-	# value so the ratio survives both limits.
+	# At a fixed area, h=sqrt(area/aspect) and w=h*aspect. Flooring both keeps the
+	# result inside the pixel budget; the projection contract absorbs the
+	# sub-pixel aspect error introduced by integer dimensions.
 	var aspect := required.x / required.y
-	var width := float(output_size.x) * (required.x / extent_x) * clamped_sharpness
-	width = clampf(width, 2.0, float(PANINI_MAX_CAPTURE_AXIS))
-	if width / aspect > float(PANINI_MAX_CAPTURE_AXIS):
-		width = float(PANINI_MAX_CAPTURE_AXIS) * aspect
-	return Vector2i(
-		maxi(roundi(width), 2),
-		maxi(roundi(width / aspect), 2))
+	if not is_finite(aspect) or aspect <= 0.0:
+		return Vector2i.ZERO
+	var multiplier := (
+		pixel_multiplier if is_finite(pixel_multiplier) and pixel_multiplier > 0.0
+		else 1.0)
+	var pixel_budget := int(
+		float(int(output_size.x) * int(output_size.y)) * multiplier)
+	var height := clampi(
+		floori(sqrt(float(pixel_budget) / aspect)), 2, PANINI_MAX_CAPTURE_AXIS)
+	var width := clampi(
+		floori(float(height) * aspect), 2, PANINI_MAX_CAPTURE_AXIS)
+	# Axis clamping can only matter on pathological displays. Re-derive the other
+	# dimension and trim any rounding overflow without changing the chosen aspect
+	# materially.
+	if width >= PANINI_MAX_CAPTURE_AXIS:
+		height = maxi(2, mini(floori(float(width) / aspect), PANINI_MAX_CAPTURE_AXIS))
+	while int(width) * int(height) > pixel_budget and (width > 2 or height > 2):
+		if float(width) / float(height) > aspect and width > 2:
+			width -= 1
+		elif height > 2:
+			height -= 1
+		else:
+			break
+	return Vector2i(width, height)
 
 
 ## Validation seam for the CPU half of the projection contract. Runtime calls it
@@ -1177,11 +1324,17 @@ static func _panini_capture_contract(
 	var mapped_max := mapped_corner
 	var mapped_min := -mapped_corner
 
-	var required := panini_required_tangents(display_horizontal_fov, output_size)
 	# The capture's own aspect decides the frustum. panini_capture_size() picks
 	# the aspect that leaves no unsampled width; any other capture, including the
-	# plain output-aspect one, only widens the frustum past what is required.
+	# plain output-aspect one, only widens the frustum past what is required. The
+	# half-texel safety inset is derived from the capture itself now that its
+	# projection-optimal width may be smaller than the output width.
 	var capture_aspect := float(capture_size.x) / float(capture_size.y)
+	var required := Vector2(
+		absf(mapped_corner.x) / maxf(
+			1.0 - 1.0 / float(maxi(capture_size.x, 2)), 0.5),
+		absf(mapped_corner.y) / maxf(
+			1.0 - 1.0 / float(maxi(capture_size.y, 2)), 0.5))
 	var capture_tan_y := maxf(required.y, required.x / capture_aspect)
 	var capture_tan_x := capture_tan_y * capture_aspect
 	var capture_tangent := Vector2(capture_tan_x, capture_tan_y)
@@ -1194,11 +1347,9 @@ static func _panini_capture_contract(
 	var source_uv_max := Vector2(
 		0.5 + 0.5 * mapped_max.x / capture_tan_x,
 		0.5 - 0.5 * mapped_min.y / capture_tan_y)
-	# Count raw coordinates before the shader's final defensive clamp. The inset
-	# uses the output size, which is never larger than the capture, so a valid
-	# contract cannot expose an unrendered border at any capture resolution.
+	# Count raw coordinates before the shader's final defensive clamp.
 	var safe_uv_min := Vector2(
-		0.5 / float(output_size.x), 0.5 / float(output_size.y))
+		0.5 / float(capture_size.x), 0.5 / float(capture_size.y))
 	var safe_uv_max := Vector2.ONE - safe_uv_min
 	var bounds_inside_safe := (
 		source_uv_min.x >= safe_uv_min.x - 0.000001
@@ -1306,10 +1457,10 @@ static func _panini_inverse_rectilinear(
 	return Vector2(tan(phi), tan_theta / cos_phi)
 
 
-## Source texels the projection reads per output pixel at screen center, on both
-## axes. This is the number the whole capture-sizing mechanism exists to raise:
-## below 1.0 the center is a magnification of the capture, which is what reads as
-## soft no matter how good the reconstruction filter is. Zero while bypassed.
+## Reconstructed source texels the projection reads per output pixel at screen
+## center, on both axes. The fixed-budget target maximizes this ratio by using the
+## projection-optimal aspect; FSR2 improves the temporal reconstruction feeding
+## it instead of allocating extra source pixels. Zero while bypassed.
 func _panini_center_sampling_ratio() -> Vector2:
 	if not _panini_active or _capture_size.x < 1 or _capture_size.y < 1:
 		return Vector2.ZERO
@@ -1323,6 +1474,17 @@ func _panini_center_sampling_ratio() -> Vector2:
 	return Vector2(
 		(extent_x / tangent.x) * float(_capture_size.x) / float(maxi(_output_size.x, 1)),
 		(extent_y / tangent.y) * float(_capture_size.y) / float(maxi(_output_size.y, 1)))
+
+
+## The CAS strength actually bound to the present material, read back rather
+## than assumed so the diagnostic cannot drift from the shader.
+func _present_sharpen_strength() -> float:
+	if _present_material == null:
+		return 0.0
+	if not bool(_present_material.get_shader_parameter(&"sharpen_enabled")):
+		return 0.0
+	var value: Variant = _present_material.get_shader_parameter(&"sharpen_strength")
+	return float(value) if value is float or value is int else 0.0
 
 
 func _panini_mapping_inside_source() -> bool:
@@ -1342,15 +1504,6 @@ func _panini_mapping_inside_source() -> bool:
 
 func _panini_bounds_valid() -> bool:
 	return _panini_eligible and _panini_mapping_inside_source()
-
-
-func _camera_ray(camera: Camera3D, screen_point: Vector2) -> Vector3:
-	if camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
-		return -camera.global_transform.basis.z
-	# Unlike four normalized corner vectors, points projected onto one common
-	# depth plane remain correct under asymmetric/frustum projection when the
-	# shader interpolates them across the screen.
-	return camera.project_position(screen_point, 1.0) - camera.global_position
 
 
 func _source_camera() -> Camera3D:

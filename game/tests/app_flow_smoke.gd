@@ -75,7 +75,8 @@ func _run() -> void:
 		"the simplified application database and master graph validate cleanly")
 	_check(app.flow_system.get_node_or_null("FlowGraphRunner") == app.flow_system.graph_runner,
 		"FlowGraphRunner is the high-level flow executor")
-	await _assert_fov_settings_lifecycle(app)
+	await _assert_fixed_fov(app)
+	await _assert_upscaling_settings_lifecycle(app)
 
 	app.call("_on_new_game_pressed")
 	_check(await _wait_for(
@@ -141,8 +142,9 @@ func _run() -> void:
 	var view := app.player.get_node_or_null("ViewRoot") as PlayerCamera
 	var reflector := level.get_node_or_null("TestReflector") as SaveableTransform3D
 	_check(view != null, "persistent player exposes PlayerCamera for save/load")
-	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 137.0),
-		"New Game retains the session horizontal FOV chosen from the main menu")
+	_check(view != null and view.camera != null and is_equal_approx(
+		view.camera.fov, RTPaniniCamera3D.HORIZONTAL_FOV),
+		"New Game starts at the fixed display angle")
 	_check(reflector != null, "terrain_test exposes its authored TestReflector saveable")
 	if view == null or reflector == null:
 		app.queue_free()
@@ -207,8 +209,9 @@ func _run() -> void:
 	view = app.player.get_node_or_null("ViewRoot") as PlayerCamera
 	_check(view != null and is_equal_approx(view.target_pitch, saved_view_pitch),
 		"load restores the saved first-person view pitch")
-	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 137.0),
-		"save/load leaves the session horizontal FOV unchanged")
+	_check(view != null and view.camera != null and is_equal_approx(
+		view.camera.fov, RTPaniniCamera3D.HORIZONTAL_FOV),
+		"save/load leaves the fixed display angle unchanged")
 	_check(await _wait_for(
 		func() -> bool: return app.player.is_on_floor(),
 		600), "restored player settles grounded after terrain collision is ready")
@@ -286,8 +289,9 @@ func _run() -> void:
 		and not returned_view.camera.current,
 		"return to menu releases the gameplay camera")
 	_check(returned_view != null and returned_view.camera != null
-		and is_equal_approx(returned_view.camera.fov, 137.0),
-		"return to menu reset retains the session horizontal FOV")
+		and is_equal_approx(
+			returned_view.camera.fov, RTPaniniCamera3D.HORIZONTAL_FOV),
+		"return to menu reset retains the fixed display angle")
 	_check(UISystem.is_cursor_visible(), "return to menu restores the visible UI cursor")
 	_check(UISystem.get_current_screen() is MainMenu,
 		"return to menu presents the main menu screen")
@@ -365,44 +369,71 @@ func _assert_rt_receiver_contract(app: GameApp) -> void:
 	_check(receiver_masks_are_zero,
 		"every live receiver-only terrain record has traversal mask zero")
 
-func _assert_fov_settings_lifecycle(app: GameApp) -> void:
+func _assert_fixed_fov(app: GameApp) -> void:
+	# The display angle is no longer a setting: no session state, no dialog row,
+	# and nothing that can move it at runtime. What is worth pinning is that the
+	# fixed angle still reaches the persistent player independently of RT startup,
+	# and that Graphics options offers no way to change it.
 	var view := app.player.get_node_or_null("ViewRoot") as PlayerCamera
-	_check(is_equal_approx(float(app.get("_horizontal_fov")), 130.0),
-		"horizontal FOV session state defaults to 130 degrees")
-	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 130.0),
-		"default horizontal FOV reaches the persistent player independently of RT startup")
+	_check(view != null and view.camera != null and is_equal_approx(
+		view.camera.fov, RTPaniniCamera3D.HORIZONTAL_FOV),
+		"the fixed display angle reaches the persistent player before RT starts")
 
 	app.call("_open_graphics_options")
 	await process_frame
 	var dialog := app.get("_graphics_dialog") as GraphicsOptionsDialog
-	var slider := dialog.get("_fov_slider") as HSlider if dialog != null else null
-	var value_label := dialog.get("_fov_value") as Label if dialog != null else null
-	_check(dialog != null and slider != null and value_label != null,
-		"Graphics options builds the horizontal FOV slider and value label")
-	_check(slider != null
-		and is_equal_approx(slider.min_value, 120.0)
-		and is_equal_approx(slider.max_value, 140.0)
-		and is_equal_approx(slider.step, 1.0)
-		and is_equal_approx(slider.value, 130.0),
-		"horizontal FOV slider exposes the 120-140 range in one-degree steps")
-	_check(slider != null and slider.focus_mode == Control.FOCUS_ALL,
-		"horizontal FOV slider participates in keyboard and gamepad focus")
-	var grabber := slider.get_theme_icon(&"grabber") if slider != null else null
-	var focus_grabber := slider.get_theme_icon(&"grabber_highlight") if slider != null else null
-	_check(grabber != null and grabber.get_size() == Vector2(11.0, 18.0)
-		and focus_grabber != null and focus_grabber.get_size() == Vector2(11.0, 18.0),
-		"horizontal FOV slider uses the Win98 grabber and focused-grabber artwork")
-	_check(value_label != null and value_label.text == "130°",
-		"horizontal FOV slider shows its degree value")
+	_check(dialog != null, "Graphics options opens")
+	if dialog != null:
+		var names := PackedStringArray()
+		for property: Dictionary in dialog.get_property_list():
+			names.append(String(property.get("name", "")))
+		_check(not names.has("horizontal_fov") and not names.has("_fov_slider"),
+			"Graphics options no longer carries a horizontal FOV control")
+		_check(not dialog.has_signal("horizontal_fov_changed"),
+			"Graphics options no longer emits a horizontal FOV change")
+		_check(dialog.find_children("HorizontalFovSlider", "", true, false).is_empty(),
+			"no FOV slider is built into the dialog body")
+		dialog.dismiss()
+	await process_frame
+	_check(view != null and view.camera != null and is_equal_approx(
+		view.camera.fov, RTPaniniCamera3D.HORIZONTAL_FOV),
+		"opening and closing Graphics options leaves the fixed angle alone")
 
-	if slider != null:
-		slider.value = 137.0
-	_check(is_equal_approx(float(app.get("_horizontal_fov")), 137.0),
-		"moving the horizontal FOV slider updates session state immediately")
-	_check(view != null and view.camera != null and is_equal_approx(view.camera.fov, 137.0),
-		"moving the horizontal FOV slider updates the player camera immediately")
-	_check(value_label != null and value_label.text == "137°",
-		"horizontal FOV value label follows live slider changes")
+
+func _assert_upscaling_settings_lifecycle(app: GameApp) -> void:
+	_check(int(app.get("_upscaling_quality"))
+		== RTSceneManager.UpscalingQuality.NATIVE,
+		"upscaling quality session state defaults to Native")
+	_check(app.rt_manager.upscaling_quality
+		== RTSceneManager.UpscalingQuality.NATIVE,
+		"Native reaches RTSceneManager before the first world starts")
+
+	app.call("_open_graphics_options")
+	await process_frame
+	var dialog := app.get("_graphics_dialog") as GraphicsOptionsDialog
+	var selector := dialog.get("_upscaling_selector") as OptionButton if dialog != null else null
+	_check(dialog != null and selector != null,
+		"Graphics options builds the upscaling quality selector")
+	if selector != null:
+		_check(selector.item_count == 4,
+			"upscaling quality exposes exactly four standard presets")
+		var expected := [
+			["Native", RTSceneManager.UpscalingQuality.NATIVE],
+			["Quality", RTSceneManager.UpscalingQuality.QUALITY],
+			["Balanced", RTSceneManager.UpscalingQuality.BALANCED],
+			["Performance", RTSceneManager.UpscalingQuality.PERFORMANCE],
+		]
+		for index in expected.size():
+			_check(selector.get_item_text(index) == expected[index][0]
+				and selector.get_item_id(index) == expected[index][1],
+				"upscaling preset %d has its canonical label and ID" % index)
+		selector.item_selected.emit(2)
+	_check(int(app.get("_upscaling_quality"))
+		== RTSceneManager.UpscalingQuality.BALANCED,
+		"selecting Balanced updates session state immediately")
+	_check(app.rt_manager.upscaling_quality
+		== RTSceneManager.UpscalingQuality.BALANCED,
+		"selecting Balanced reaches RTSceneManager immediately")
 
 	if dialog != null:
 		dialog.dismiss()
@@ -410,9 +441,10 @@ func _assert_fov_settings_lifecycle(app: GameApp) -> void:
 	app.call("_open_graphics_options")
 	await process_frame
 	dialog = app.get("_graphics_dialog") as GraphicsOptionsDialog
-	slider = dialog.get("_fov_slider") as HSlider if dialog != null else null
-	_check(dialog != null and slider != null and is_equal_approx(slider.value, 137.0),
-		"reopening Graphics options retains the session horizontal FOV")
+	selector = dialog.get("_upscaling_selector") as OptionButton if dialog != null else null
+	_check(selector != null and selector.get_selected_id()
+		== RTSceneManager.UpscalingQuality.BALANCED,
+		"reopening Graphics options retains session upscaling quality")
 	if dialog != null:
 		dialog.dismiss()
 	await process_frame

@@ -6,44 +6,50 @@ extends Camera3D
 ##
 ## Godot interprets [member Camera3D.fov] on the axis selected by
 ## [member Camera3D.keep_aspect]. Keeping width makes the inherited value the
-## horizontal display FOV directly. The authored camera and the Panini mapping
-## therefore share one authoritative display angle; the post stack may widen
-## only its private rectilinear capture camera to supply the required overscan.
+## horizontal display FOV directly, so the authored camera and the Panini mapping
+## share one authoritative display angle; the post stack may widen only its
+## private rectilinear capture camera to supply the required overscan.
+##
+## That angle is now a single fixed value rather than a range. The projection is
+## tuned for exactly one FOV, and every part of that tuning -- the target's
+## aspect, its pixel budget, and the FSR2 render scale derived from it -- is
+## chosen for [constant HORIZONTAL_FOV]. A camera free to move within a range
+## forced the post stack to size its render target from the widest angle the
+## camera might ever reach, which left the frustum wider than the projection
+## could sample at every narrower angle: at the former 130-degree default the
+## capture spent 14.3 percent of its rendered rows and ray dispatch outside
+## anything the mapping read. Fixing the angle spends that budget on the image
+## instead.
 
-const MIN_HORIZONTAL_FOV: float = 120.0
-const DEFAULT_HORIZONTAL_FOV: float = 130.0
-const MAX_HORIZONTAL_FOV: float = 140.0
+## The one display angle this project renders. Changing it invalidates the
+## measured target sizing in `RT_PIPELINE.md`; see **Fixed-budget Panini target
+## and FSR2 quality** before touching it.
+const HORIZONTAL_FOV: float = 140.0
 
 ## Opts this camera into Panini presentation when it is the source camera.
 ## Reusable cameras are conservative by default; the FPS scene enables it.
 @export var panini_enabled: bool = false
 
-## Requested horizontal display FOV in degrees. Finite out-of-range values are
-## clamped to the supported Panini interval; NaN and infinities are rejected.
-@export_range(120.0, 140.0, 0.1, "degrees") var display_horizontal_fov: float = (
-		DEFAULT_HORIZONTAL_FOV):
-	set(value):
-		if not is_finite(value):
-			return
-		display_horizontal_fov = clampf(
-			value, MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV)
-		_apply_projection_contract()
-
-## The widest horizontal display FOV this camera will ever request.
+## Horizontal display FOV in degrees. Fixed; see the class docstring.
 ##
-## The post stack sizes its private 3D capture from this ceiling rather than
-## from the live angle, because that capture is a render target: resizing it
-## costs a reallocation, and [member display_horizontal_fov] moves every frame
-## while a sprint transition eases. A ceiling below the live angle stays correct
-## -- the capture frustum still widens to contain the projection -- and only
-## costs some of the sharpness the capture was sized to deliver.
-@export_range(120.0, 140.0, 0.1, "degrees") var max_display_horizontal_fov: float = (
-		MAX_HORIZONTAL_FOV):
-	set(value):
-		if not is_finite(value):
-			return
-		max_display_horizontal_fov = clampf(
-			value, MIN_HORIZONTAL_FOV, MAX_HORIZONTAL_FOV)
+## The post stack discovers this by name through [method Object.get_property_list],
+## so it stays a property rather than becoming a bare constant. The setter accepts
+## and discards writes because scene files are data: an authored value left over
+## from when this was adjustable must not fail to load.
+var display_horizontal_fov: float = HORIZONTAL_FOV:
+	set(_value):
+		pass
+	get:
+		return HORIZONTAL_FOV
+
+## The widest horizontal display FOV this camera will ever request, which is the
+## same fixed angle. The post stack sizes its render target from this, and the
+## two agreeing is what removes the unsampled frustum described above.
+var max_display_horizontal_fov: float = HORIZONTAL_FOV:
+	set(_value):
+		pass
+	get:
+		return HORIZONTAL_FOV
 
 
 func _init() -> void:
@@ -56,15 +62,7 @@ func _ready() -> void:
 	_apply_projection_contract()
 
 
-func set_display_horizontal_fov(value: float) -> void:
-	display_horizontal_fov = value
-
-
-func set_max_display_horizontal_fov(value: float) -> void:
-	max_display_horizontal_fov = value
-
-
 func _apply_projection_contract() -> void:
 	projection = Camera3D.PROJECTION_PERSPECTIVE
 	keep_aspect = Camera3D.KEEP_WIDTH
-	fov = display_horizontal_fov
+	fov = HORIZONTAL_FOV

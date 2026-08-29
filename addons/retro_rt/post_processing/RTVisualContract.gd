@@ -6,11 +6,38 @@ class_name RTVisualContract
 ## viewport-state helpers the post stack uses to capture, normalize and restore
 ## the root Viewport.
 ##
-## There is currently no anti-aliasing. MSAA is not an option here: the hardware
-## RT path packs a bit-exact visibility ID through the separate-specular target,
-## and multisample resolve averages that away, so `apply_native_viewport_state`
-## keeps 2D and 3D MSAA force-disabled. The custom SMAA 1x that used to fill that
-## gap has been removed along with FSR and CAS; a replacement is still to come.
+## The root and canvas passes remain native and non-temporal. The private 3D scene
+## capture is the one exception: built-in FSR2 supplies temporal anti-aliasing and
+## optional reconstruction before any canvas post pass. MSAA cannot be combined
+## with the hardware RT visibility-buffer path because its resolve would average
+## packed IDs, so both viewport helpers keep 2D/3D MSAA and separate AA disabled.
+##
+## [member Viewport.fsr_sharpness] belongs to that contract rather than to the
+## inherited project default, because Godot's FSR2 integration runs RCAS with it.
+
+## RCAS attenuation Godot hands to FSR2, in stops: 0.0 is the sharpest image and
+## every whole number above it halves the sharpening.
+##
+## Godot applies this whenever [constant Viewport.SCALING_3D_MODE_FSR2] is
+## selected, so leaving it unset does not mean "no sharpener" -- it means the
+## project default sharpens the capture without the stack declaring that it does.
+## The value here is the engine default, so pinning it changes no shipped pixel;
+## what it changes is that the sharpener is now owned, restored and validated
+## like every other property in this contract.
+##
+## Worth knowing before tuning it: RCAS runs at the rectilinear capture
+## resolution, upstream of the Panini pass that still magnifies screen center by
+## about 1.95x horizontally at the shipped settings. A one-texel RCAS halo
+## therefore reaches the display roughly two pixels wide. That is why the
+## project's own sharpening budget is spent downstream instead, by
+## [constant RTPostProcessStack.PANINI_PRESENT_SHARPEN_STRENGTH], which acts at
+## native resolution on the blur the projection actually introduced. This value
+## stays at the engine default because FSR2 is now doing real reconstruction
+## (a 0.707 render scale at Native), where RCAS earns its keep countering
+## reconstruction softness at the target resolution rather than display softness.
+## Raising it backs the capture-side sharpener off; lowering it toward 0.0
+## strengthens it.
+const FSR_SHARPNESS := 0.2
 
 @export_category("Retro Grade")
 @export var retro_enabled: bool = true:
@@ -133,6 +160,7 @@ static func capture_viewport_state(viewport: Viewport) -> Dictionary:
 		"anisotropic_filtering_level": viewport.anisotropic_filtering_level,
 		"use_debanding": viewport.use_debanding,
 		"use_hdr_2d": viewport.use_hdr_2d,
+		"fsr_sharpness": viewport.fsr_sharpness,
 	}
 	if viewport is SubViewport:
 		var subviewport := viewport as SubViewport
@@ -155,6 +183,10 @@ static func apply_native_viewport_state(
 	viewport.msaa_2d = Viewport.MSAA_DISABLED
 	viewport.scaling_3d_scale = 1.0
 	viewport.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+	# Inert while no FSR pass runs on this target, but pinned anyway so a viewport
+	# that moves between this helper and the FSR2 one carries a declared value in
+	# both directions rather than whatever the other helper happened to leave.
+	viewport.fsr_sharpness = FSR_SHARPNESS
 	viewport.texture_mipmap_bias = 0.0
 	viewport.anisotropic_filtering_level = Viewport.ANISOTROPY_4X
 	viewport.use_debanding = false
@@ -162,6 +194,36 @@ static func apply_native_viewport_state(
 	if viewport is SubViewport:
 		var subviewport := viewport as SubViewport
 		subviewport.size = Vector2i(maxi(native_size.x, 1), maxi(native_size.y, 1))
+		subviewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+
+
+## Applies the one temporal contract in the project. Only the private 3D scene
+## capture may use it: FSR2 owns jitter, motion-vector consumption, temporal AA
+## and reconstruction there, while every canvas/presentation target remains on
+## [method apply_native_viewport_state]. `target_size` is the rectilinear image
+## FSR2 reconstructs; `render_scale` controls the smaller 3D buffers feeding it.
+static func apply_fsr2_scene_viewport_state(
+		viewport: Viewport,
+		target_size: Vector2i,
+		render_scale: float,
+		hdr_2d: bool = true) -> void:
+	viewport.use_taa = false
+	viewport.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+	viewport.msaa_3d = Viewport.MSAA_DISABLED
+	viewport.msaa_2d = Viewport.MSAA_DISABLED
+	viewport.scaling_3d_scale = clampf(render_scale, 0.1, 1.0)
+	viewport.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR2
+	# The one target where this is live: Godot's FSR2 sharpens its output with it.
+	viewport.fsr_sharpness = FSR_SHARPNESS
+	# Godot adds the scale-dependent mip bias internally. This remains the
+	# project's authored offset on top of that automatic bias.
+	viewport.texture_mipmap_bias = 0.0
+	viewport.anisotropic_filtering_level = Viewport.ANISOTROPY_4X
+	viewport.use_debanding = false
+	viewport.use_hdr_2d = hdr_2d
+	if viewport is SubViewport:
+		var subviewport := viewport as SubViewport
+		subviewport.size = Vector2i(maxi(target_size.x, 1), maxi(target_size.y, 1))
 		subviewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 
 
@@ -181,6 +243,8 @@ static func native_viewport_failure(
 		return "3D scaling is not native"
 	if viewport.scaling_3d_mode != Viewport.SCALING_3D_MODE_BILINEAR:
 		return "a temporal or non-contract 3D scaler remained active"
+	if not is_equal_approx(viewport.fsr_sharpness, FSR_SHARPNESS):
+		return "the contract FSR sharpness was not accepted"
 	if not is_equal_approx(viewport.texture_mipmap_bias, 0.0):
 		return "texture mip bias is not 0"
 	if viewport.anisotropic_filtering_level != Viewport.ANISOTROPY_4X:
@@ -196,6 +260,41 @@ static func native_viewport_failure(
 		var expected := Vector2i(maxi(native_size.x, 1), maxi(native_size.y, 1))
 		if (viewport as SubViewport).size != expected:
 			return "the SubViewport did not accept the native size"
+	return ""
+
+
+static func fsr2_scene_viewport_failure(
+		viewport: Viewport,
+		target_size: Vector2i,
+		render_scale: float,
+		hdr_2d: bool = true) -> String:
+	if viewport.use_taa:
+		return "separate TAA remained enabled alongside FSR2"
+	if viewport.screen_space_aa != Viewport.SCREEN_SPACE_AA_DISABLED:
+		return "built-in screen-space AA remained enabled alongside FSR2"
+	if viewport.msaa_3d != Viewport.MSAA_DISABLED:
+		return "3D MSAA remained enabled alongside FSR2"
+	if viewport.msaa_2d != Viewport.MSAA_DISABLED:
+		return "2D MSAA remained enabled on the scene capture"
+	if not is_equal_approx(
+			viewport.scaling_3d_scale, clampf(render_scale, 0.1, 1.0)):
+		return "the requested FSR2 render scale was not accepted"
+	if viewport.scaling_3d_mode != Viewport.SCALING_3D_MODE_FSR2:
+		return "FSR2 scaling mode was not accepted"
+	if not is_equal_approx(viewport.fsr_sharpness, FSR_SHARPNESS):
+		return "the contract FSR2 RCAS sharpness was not accepted"
+	if not is_equal_approx(viewport.texture_mipmap_bias, 0.0):
+		return "the authored texture mip bias is not 0"
+	if viewport.anisotropic_filtering_level != Viewport.ANISOTROPY_4X:
+		return "the platform did not accept 4x anisotropic filtering"
+	if viewport.use_debanding:
+		return "debanding remained enabled"
+	if viewport.use_hdr_2d != hdr_2d:
+		return "the platform did not honor the scene capture HDR target"
+	if viewport is SubViewport:
+		var expected := Vector2i(maxi(target_size.x, 1), maxi(target_size.y, 1))
+		if (viewport as SubViewport).size != expected:
+			return "the SubViewport did not accept the FSR2 target size"
 	return ""
 
 
@@ -220,6 +319,8 @@ static func restore_viewport_state(viewport: Viewport, state: Dictionary) -> voi
 		viewport.use_debanding = bool(state["use_debanding"])
 	if state.has("use_hdr_2d"):
 		viewport.use_hdr_2d = bool(state["use_hdr_2d"])
+	if state.has("fsr_sharpness"):
+		viewport.fsr_sharpness = float(state["fsr_sharpness"])
 	if viewport is SubViewport:
 		var subviewport := viewport as SubViewport
 		if state.has("size"):

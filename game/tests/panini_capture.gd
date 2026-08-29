@@ -85,19 +85,18 @@ func _run() -> void:
 		"the run brings up a pipeline to capture through")
 	print("panini_capture backend: %s" % capture_backend)
 
-	# Exercise every player-facing endpoint in the active renderer, including
-	# a fresh full-perimeter containment contract at each angle.
-	for fov: float in [120.0, 130.0, 140.0]:
-		_app.call("_on_graphics_horizontal_fov_changed", fov)
-		_check(await _wait_for(
-			func() -> bool:
-				var profile := _app.rt_manager.get_profile_snapshot()
-				return (
-					is_equal_approx(float(profile.get(
-						"post_panini_display_horizontal_fov", 0.0)), fov)
-					and bool(profile.get("post_panini_bounds_valid", false))
-					and int(profile.get("post_panini_invalid_samples", -1)) == 0),
-			30), "%d degree FOV is contained in the capture" % roundi(fov))
+	# The display angle is fixed, so the containment contract is checked once at
+	# that angle rather than swept across a range.
+	_check(await _wait_for(
+		func() -> bool:
+			var profile := _app.rt_manager.get_profile_snapshot()
+			return (
+				is_equal_approx(float(profile.get(
+					"post_panini_display_horizontal_fov", 0.0)),
+					RTPaniniCamera3D.HORIZONTAL_FOV)
+				and bool(profile.get("post_panini_bounds_valid", false))
+				and int(profile.get("post_panini_invalid_samples", -1)) == 0),
+		30), "the fixed display angle is contained in the capture")
 
 	var native_profile := _app.rt_manager.get_profile_snapshot()
 	_check(bool(native_profile.get("post_panini_enabled", false)),
@@ -116,6 +115,135 @@ func _run() -> void:
 		"Panini reports its persistent native-size buffer bytes")
 	_check(native_profile.get("post_panini_sample_mode", &"invalid") == &"catmull_rom_or_tent",
 		"the stack uses the Catmull-Rom or tent Panini filter")
+	_check(bool(native_profile.get("post_scene_capture_opaque", false)),
+		"the complete scene and sky are opaque before temporal reconstruction")
+	_check(native_profile.get("post_environment_composite_stage", &"invalid")
+		== &"scene_capture_before_fsr2",
+		"sky/environment composition happens before FSR2")
+	var output_size: Vector2i = native_profile.get("post_output_size", Vector2i.ZERO)
+	var capture_target: Vector2i = native_profile.get(
+		"post_capture_target_size", Vector2i.ZERO)
+	_check(output_size.x > 0 and output_size.y > 0
+		and capture_target.x > 0 and capture_target.y > 0,
+		"the output and rectilinear FSR2 target are reported")
+	# The target is deliberately larger than an output frame now. What must hold
+	# is that it spends exactly its declared multiple and no more, because the
+	# render-scale renormalization that keeps this free is derived from it.
+	var target_multiplier := (
+		float(capture_target.x * capture_target.y)
+		/ maxf(float(output_size.x * output_size.y), 1.0))
+	_check(absf(target_multiplier
+		- RTPostProcessStack.PANINI_TARGET_PIXEL_MULTIPLIER) < 0.01,
+		"the rectilinear target spends its declared pixel multiple")
+	_check(is_equal_approx(float(native_profile.get(
+		"post_panini_target_pixel_multiplier", 0.0)), target_multiplier),
+		"the profile reports the achieved target multiplier")
+	_check(bool(native_profile.get("post_fsr2_active", false)),
+		"Native uses FSR2 as temporal anti-aliasing")
+
+	# The projection's whole reason for the larger target: center magnification.
+	# Both axes must beat what a one-output-frame target could reach.
+	var center: Vector2 = native_profile.get(
+		"post_panini_center_texels_per_pixel", Vector2.ZERO)
+	var single_target := RTPostProcessStack.panini_capture_size(
+		output_size, RTPaniniCamera3D.HORIZONTAL_FOV, 1.0)
+	var single_contract := RTPostProcessStack.debug_panini_capture_contract(
+		RTPaniniCamera3D.HORIZONTAL_FOV, output_size, single_target)
+	var single_tangent: Vector2 = single_contract.get(
+		"capture_tan_half_fov", Vector2.ONE)
+	var single_center := Vector2(
+		(float(single_contract.get("panini_extent_x", 0.0)) / single_tangent.x)
+			* float(single_target.x) / float(output_size.x),
+		(float(single_contract.get("panini_extent_y", 0.0)) / single_tangent.y)
+			* float(single_target.y) / float(output_size.y))
+	_check(center.x > single_center.x * 1.3 and center.y > single_center.y * 1.3,
+		"the larger target measurably raises center source density")
+
+	# What the target cannot buy back is answered downstream instead: center is
+	# still magnified, and the present pass sharpens that at native resolution.
+	_check(center.x < 1.0,
+		"center is still magnified, which is what the present sharpener answers")
+	_check(is_equal_approx(
+		float(native_profile.get("post_present_sharpen_strength", 0.0)),
+		RTPostProcessStack.PANINI_PRESENT_SHARPEN_STRENGTH),
+		"the present pass sharpens the projected image")
+
+	# The one global setting changes only the 3D/RT buffers. FSR2 target, Panini,
+	# presentation, and UI remain fixed while all four standard modes are live.
+	var quality_modes := [
+		[RTSceneManager.UpscalingQuality.NATIVE, 1.0, &"native"],
+		[RTSceneManager.UpscalingQuality.QUALITY, 0.67, &"quality"],
+		[RTSceneManager.UpscalingQuality.BALANCED, 0.59, &"balanced"],
+		[RTSceneManager.UpscalingQuality.PERFORMANCE, 0.5, &"performance"],
+	]
+	var quality_capture_resizes := int(native_profile.get(
+		"post_capture_resize_count", -1))
+	for entry in quality_modes:
+		_app.call("_on_graphics_upscaling_quality_selected", int(entry[0]))
+		for _frame in 3:
+			await get_tree().process_frame
+		var quality_profile := _app.rt_manager.get_profile_snapshot()
+		var quality_target: Vector2i = quality_profile.get(
+			"post_capture_target_size", Vector2i.ZERO)
+		var internal: Vector2i = quality_profile.get(
+			"post_internal_render_size", Vector2i.ZERO)
+		_check(quality_profile.get("post_upscaling_quality_name", &"invalid")
+			== entry[2], "%s preset reaches SceneCapture" % String(entry[2]))
+		_check(is_equal_approx(float(quality_profile.get(
+			"post_upscaling_requested_scale", 0.0)), float(entry[1])),
+			"%s requests its canonical scale" % String(entry[2]))
+		_check(quality_target == capture_target,
+			"%s does not resize the FSR2 output target" % String(entry[2]))
+		# The preset's number is authored against the native output frame, so the
+		# scale that actually reaches the viewport is smaller by the square root
+		# of the target multiplier. That renormalization is the whole reason the
+		# larger target costs no frame time, so it is asserted rather than assumed.
+		var expected_applied := float(entry[1]) / sqrt(target_multiplier)
+		_check(absf(float(quality_profile.get(
+			"post_upscaling_effective_scale", 0.0)) - expected_applied) < 0.005,
+			"%s applies its target-relative scale" % String(entry[2]))
+		_check(abs(internal.x - roundi(float(quality_target.x) * expected_applied)) <= 1
+			and abs(internal.y - roundi(float(quality_target.y) * expected_applied)) <= 1,
+			"%s scales the complete 3D/RT buffer" % String(entry[2]))
+		# The cost the preset name promises: rendered 3D/RT pixels per output
+		# pixel must stay at the preset's square regardless of the target size.
+		var expected_pixel_ratio := float(entry[1]) * float(entry[1])
+		_check(absf(float(quality_profile.get(
+			"post_upscaling_output_pixel_ratio", 0.0)) - expected_pixel_ratio)
+			< 0.01,
+			"%s renders its promised share of a native frame" % String(entry[2]))
+		_check(int(quality_profile.get("post_capture_resize_count", -1))
+			== quality_capture_resizes,
+			"%s changes history/scale without reallocating the Panini target"
+				% String(entry[2]))
+
+		# The reported scale has to survive an update() that changes something
+		# else. Settings reach the stack through one dictionary, so a fog, grade
+		# or environment change re-reads the upscaling block too -- and only the
+		# viewport contract knows whether the renderer took FSR2. Re-deriving the
+		# effective scale from the request alone would resurrect it here after a
+		# fallback, and every reported 3D/RT resolution downstream would describe
+		# a buffer that does not exist. Toggle the grade, which owns none of this.
+		_app.call("_on_graphics_retro_post_toggled", false)
+		await get_tree().process_frame
+		_app.call("_on_graphics_retro_post_toggled", true)
+		await get_tree().process_frame
+		var settled := _app.rt_manager.get_profile_snapshot()
+		var fsr2_live := bool(settled.get("post_fsr2_active", false))
+		var expected_scale := expected_applied if fsr2_live else 1.0
+		_check(absf(float(settled.get(
+			"post_upscaling_effective_scale", 0.0)) - expected_scale) < 0.005,
+			"%s keeps its effective scale across an unrelated settings update"
+				% String(entry[2]))
+		var settled_internal: Vector2i = settled.get(
+			"post_internal_render_size", Vector2i.ZERO)
+		_check(settled_internal == internal,
+			"%s reports the same internal 3D/RT size after that update"
+				% String(entry[2]))
+		if not fsr2_live:
+			_check(settled_internal == quality_target,
+				"%s renders the full target when FSR2 is not active"
+					% String(entry[2]))
 	# Grade and posterization are independently toggled downstream to catch
 	# accidental pass fusion or source rebinding.
 	_app.call("_on_graphics_retro_post_toggled", false)
@@ -145,39 +273,6 @@ func _run() -> void:
 	_check(int(steady_profile.get("post_per_frame_allocation_count", -1)) == 0,
 		"steady-state presentation allocates no post resources")
 
-	# The 3D capture is sized for the camera's declared FOV ceiling precisely so
-	# that a smoothed sprint transition never reallocates it. Sprint here and
-	# confirm the count holds while the display angle is actually moving.
-	var capture_resizes := int(steady_profile.get("post_capture_resize_count", -1))
-	var capture_size: Vector2i = steady_profile.get("post_capture_size", Vector2i.ZERO)
-	_check(capture_resizes > 0 and capture_size.x > 0 and capture_size.y > 0,
-		"the projection reports a sized 3D capture")
-	var source_camera := _app.get_viewport().get_camera_3d()
-	_check(source_camera != null and source_camera.has_method(
-		&"set_display_horizontal_fov"),
-		"the acceptance run can drive the source camera's display FOV")
-	if source_camera != null and source_camera.has_method(
-			&"set_display_horizontal_fov"):
-		var angles := {}
-		for step in 40:
-			# The same shape PlayerCamera's exponential sprint ease produces: many
-			# distinct angles, none of them the value the capture was sized for.
-			source_camera.call(
-				&"set_display_horizontal_fov", 130.0 + 0.25 * float(step))
-			await get_tree().process_frame
-			var frame_profile := _app.rt_manager.get_profile_snapshot()
-			angles[snappedf(float(frame_profile.get(
-				"post_panini_display_horizontal_fov", 0.0)), 0.01)] = true
-			_check(bool(frame_profile.get("post_panini_bounds_valid", false)),
-				"the capture contains the projection at every eased angle")
-		var sprint_profile := _app.rt_manager.get_profile_snapshot()
-		_check(angles.size() > 20,
-			"the sweep actually moved the display FOV across distinct angles")
-		_check(int(sprint_profile.get("post_capture_resize_count", -1))
-			== capture_resizes,
-			"a moving display FOV never resizes the 3D capture")
-		_check(int(sprint_profile.get("post_per_frame_allocation_count", -1)) == 0,
-			"a moving display FOV allocates no post resources")
 
 	await _finish(steady_profile)
 

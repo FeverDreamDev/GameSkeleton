@@ -95,8 +95,8 @@ vec3 catmull_rom_sample(vec2 uv, vec2 texel_grid) {
 // Each bilinear tap already averages a 2x2 texel neighbourhood, so three taps
 // per axis tile a footprint of up to about four texels with no gap between
 // kernels, where two taps per axis leave one from a footprint of two upward.
-// That matters far more than it used to: a supersampled capture minifies most
-// of the frame instead of only the corners.
+// The projection-optimal target redistributes its fixed pixel budget, so local
+// minification can still cover much of the frame even without supersampling.
 vec3 footprint_tent_sample(
 		vec2 uv, vec2 derivative_x, vec2 derivative_y, float footprint) {
 	// The outer taps sit on the footprint edges once it is wide enough to need

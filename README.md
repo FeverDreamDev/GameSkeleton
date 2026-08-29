@@ -66,27 +66,27 @@ evidence are recorded in
   the fallback the manager pushes the fog to managed materials itself, since no compositor
   is there to apply it. Terrain vertex colours are authored in scene-linear and target the
   grass canopy so the ground stays invisible under grass.
-- Presentation runs at the native output size, and there is no upscaling: no
-  reconstruction, no history, nothing temporal. As of 2026-08-28 there is also no
-  anti-aliasing — the custom SMAA 1x, FSR 1 and CAS were removed and a replacement has
-  yet to be chosen. The FPS camera applies a classic Panini projection before RetroGrade;
-  the reticle and Win98 UI remain native-resolution layers above presentation. Because
-  that projection magnifies the screen center, the 3D capture behind it is rendered
-  above native and sized for the projection's own sampling requirement —
-  `RTSceneManager.post_panini_capture_sharpness` is that control, and it is the most
-  expensive visual setting in the project. It is also, incidentally, the only thing
-  currently reducing geometric aliasing. The full order is `3D + RT -> scene resolve (environment + fog) ->
-  Panini -> RetroGrade -> HUD/UI`. Only the FPS camera opts in, so cutscene and
-  utility cameras bypass it. Shifted camera offsets also bypass the symmetric Panini mapping.
+- Godot's built-in FSR2 reconstructs the complete private 3D scene and supplies its
+  temporal anti-aliasing. The selectable modes are **Native** (default), **Quality**,
+  **Balanced**, and **Performance**; Native still runs FSR2 at a 1.0 render scale for AA.
+  RT, terrain/grass, fog, and sky all finish in the opaque scene image before FSR2. The FPS
+  camera then applies a classic Panini projection before RetroGrade, while the reticle and
+  Win98 UI remain native-resolution layers above presentation. The display angle is a fixed
+  140 degrees: the projection is tuned for exactly one angle, so there is no FOV slider and
+  no sprint FOV kick. Its projection-optimal rectilinear target spends two native frames of
+  pixels, FSR2 reconstructs that target from a smaller render selected by the quality mode,
+  and the present pass then sharpens the projected image at native resolution. The full order is `scaled 3D + RT + terrain/grass + sky -> FSR2 -> scene
+  resolve -> Panini -> RetroGrade -> native HUD/UI`. Only the FPS camera opts in, so
+  cutscene and utility cameras bypass Panini. Shifted camera offsets also bypass its
+  symmetric mapping.
 - **Graphics** in the main and pause menus leads with **RT shadows & mirrors**, a single
   checkbox over the whole pipeline: on is hardware RT, off is the raster fallback, and it
   reinstalls the renderer live rather than waiting for a restart. On a machine without
   hardware RT it is disabled and the hint says which requirement is missing, rather than
-  offering a switch that cannot do anything. The dialog also carries a live 120–140 degree
-  horizontal FOV slider (130 by default, exact horizontal coverage at every aspect ratio),
-  retro grading, grass detail and an FPS counter.
-  Sprint adds up to 10 degrees without exceeding 140. FOV is session-only, omitted from save
-  payloads, and returns to 130 when the application restarts. Grass is the one worth
+  offering a switch that cannot do anything. The dialog also carries the four-mode
+  **Upscaling Quality** selector, retro grading, grass detail and an FPS counter. There is no
+  FOV control: the display angle is fixed at 140 degrees, because the Panini target's aspect,
+  pixel budget and FSR2 render scale are all derived for that one angle. Grass is the one worth
   reaching for first: it is stacked shell layers,
   so it costs its shell count in overdraw over whatever share of the screen it covers. At
   2560x1440 the tiers measure 188 / 220 / 241 FPS for High / Medium / Low, against a 241 FPS
@@ -158,13 +158,14 @@ otherwise select hardware RT, so the two pipelines can be measured against each
 other on one machine. `PERF_PROFILE=1` adds the RT manager's main-thread cost
 and its snapshot counters.
 
-`PERF_FOV=120|130|140` selects the FPS camera's horizontal display FOV, and
-`PERF_PANINI_SHARPNESS=f` sets the projection's capture sharpness — the source texels it
-reads per output pixel at screen center, where 1.0 removes the center magnification
-entirely. Cost is quadratic in it; `post_capture_pixel_ratio` reports what the capture
-actually spends. With profiling enabled, `post_pass_gpu_ms.panini` isolates the
-projection target and `post_panini_buffer_bytes` reports its persistent output-size
-color buffer.
+`PERF_UPSCALING_QUALITY=Native|Quality|Balanced|Performance` selects the same global
+FSR2 mode as the Graphics menu. There is no FOV override any more; the display angle is
+fixed. The probe prints a `domains:` line with all three resolution domains —
+`post_output_size`, `post_capture_target_size` (FSR2's rectilinear target) and
+`post_internal_render_size` (the scaled 3D/RT buffers) — plus the projection's measured
+center source density and the share of the target it actually samples. With profiling
+enabled, `post_pass_gpu_ms.panini` isolates the projection pass and
+`post_panini_buffer_bytes` reports its persistent output-size color buffer.
 
 `PERF_CARRIER=0` is an attribution toggle only. It hides the hardware material-ID
 carrier, deliberately makes managed pixels lose RT lighting, and prints a warning;

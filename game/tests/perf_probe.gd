@@ -21,9 +21,8 @@ extends SceneTree
 ##   PERF_STARS=0    keep the dome but drop the star field
 ##   PERF_GRADE=0    disable the RetroGrade present pass
 ##   PERF_PANINI=0  directly bypass the Panini projection target
-##   PERF_PANINI_SHARPNESS=f
-##                   source texels per output pixel at screen center the Panini
-##                   capture is sized for; 1.0 removes the center magnification
+##   PERF_UPSCALING_QUALITY=name|n
+##                   Native/0, Quality/1, Balanced/2, or Performance/3
 ##   PERF_RT=0       stop ray tracing entirely
 ##   PERF_CARRIER=0  hide the hardware material-ID carrier; MEASUREMENT ONLY,
 ##                   deliberately breaks managed-pixel lighting
@@ -56,7 +55,6 @@ extends SceneTree
 ##   PERF_LOD=a,b     grass LOD band distances in metres (near->medium, medium->far)
 ##   PERF_PITCH=deg   camera pitch override, for framing a distant LOD seam
 ##   PERF_YAW=deg     camera yaw override, for sweeping the area around spawn
-##   PERF_FOV=deg     horizontal display FOV override, clamped by the FPS camera
 ##
 ## Run at the project's authored resolution, which is what the RT stack sizes
 ## itself from:
@@ -90,6 +88,21 @@ func _env_int(name: String, fallback: int) -> int:
 func _env_number(name: String, fallback: float) -> float:
 	var raw := OS.get_environment(name)
 	return float(raw) if raw.is_valid_float() else fallback
+
+
+func _env_upscaling_quality(fallback: int) -> int:
+	var raw := OS.get_environment("PERF_UPSCALING_QUALITY").strip_edges().to_lower()
+	match raw:
+		"native":
+			return RTSceneManager.UpscalingQuality.NATIVE
+		"quality":
+			return RTSceneManager.UpscalingQuality.QUALITY
+		"balanced":
+			return RTSceneManager.UpscalingQuality.BALANCED
+		"performance":
+			return RTSceneManager.UpscalingQuality.PERFORMANCE
+		_:
+			return clampi(int(raw), 0, 3) if raw.is_valid_int() else fallback
 
 
 func _wait_for(predicate: Callable, frames: int) -> bool:
@@ -203,9 +216,6 @@ func _run() -> void:
 	var yaw := OS.get_environment("PERF_YAW")
 	player.rotation.y = deg_to_rad(float(yaw) if yaw.is_valid_float() else VIEW_YAW_DEGREES)
 	var view = player.get_node("ViewRoot")
-	var display_fov := OS.get_environment("PERF_FOV")
-	if display_fov.is_valid_float() and view.has_method(&"set_base_horizontal_fov"):
-		view.call(&"set_base_horizontal_fov", float(display_fov), true)
 	var pitch := OS.get_environment("PERF_PITCH")
 	view.apply_view(deg_to_rad(float(pitch) if pitch.is_valid_float() else VIEW_PITCH_DEGREES))
 	# A capture compares separate launches, so even sub-pixel physics settling of
@@ -407,8 +417,8 @@ func _apply_toggles(terrain, day_night) -> void:
 		_shell.rt_manager.retro_post_enabled = false
 	if not _env_flag("PERF_PANINI"):
 		_shell.rt_manager.post_panini_enabled = false
-	_shell.rt_manager.post_panini_capture_sharpness = _env_number(
-		"PERF_PANINI_SHARPNESS", _shell.rt_manager.post_panini_capture_sharpness)
+	_shell.rt_manager.set_upscaling_quality(_env_upscaling_quality(
+		int(_shell.rt_manager.upscaling_quality)))
 	# The carrier is a deliberately overbright directional light whose only job is
 	# to transport material/instance IDs through separate specular. Hiding it
 	# measures that raster light pass, but decode_visibility_id then rejects every
@@ -467,10 +477,44 @@ func _report(terrain) -> void:
 		median, 1000.0 / maxf(median, 0.0001), p95, p99, _intervals.size()])
 
 	var manager := _shell.rt_manager
-	print("  backend %s   render %s   dispatch px %d" % [
+	var profile := manager.get_profile_snapshot()
+	print("  backend %s   upscaling %s (%.2f)   render %s   dispatch px %d" % [
 		manager.get_active_rt_backend(),
+		String(profile.get("post_upscaling_quality_name", &"unknown")),
+		float(profile.get("post_upscaling_effective_scale", 1.0)),
 		manager.get_ray_render_resolution(),
 		int(manager.get_ray_render_resolution().x) * int(manager.get_ray_render_resolution().y)])
+	# The three resolution domains, which the line above collapses into one. They
+	# only coincide in Native with Panini bypassed, so reading a scaled run
+	# without them means guessing which number moved.
+	var capture_target: Vector2i = profile.get("post_capture_target_size", Vector2i.ZERO)
+	var internal_size: Vector2i = profile.get("post_internal_render_size", Vector2i.ZERO)
+	print("  domains: output %s -> fsr2 target %s (%s) -> internal 3D/RT %s (%d px)" % [
+		profile.get("post_output_size", Vector2i.ZERO),
+		capture_target,
+		"fsr2 on" if bool(profile.get("post_fsr2_active", false)) else "fsr2 OFF",
+		internal_size,
+		int(internal_size.x) * int(internal_size.y)])
+	var fsr2_failure := String(profile.get("post_fsr2_failure", ""))
+	if not fsr2_failure.is_empty():
+		print("  FSR2 fell back to native bilinear: %s" % fsr2_failure)
+	if bool(profile.get("post_panini_enabled", false)):
+		# Below 1.0 the projection magnifies screen center by its reciprocal, which
+		# is the ceiling on how sharp a Panini frame can be at this target.
+		print("  panini center texels/pixel %s at a %.1f degree ceiling, display %.1f" % [
+			profile.get("post_panini_center_texels_per_pixel", Vector2.ZERO),
+			float(profile.get("post_panini_capture_ceiling_fov", 0.0)),
+			float(profile.get("post_panini_display_horizontal_fov", 0.0))])
+		# The target's aspect comes from the declared ceiling, but the frustum
+		# follows the live angle, so the two disagree whenever the camera is not
+		# actually at its ceiling. Everything outside this UV span is rendered and
+		# ray-traced at full cost and then never sampled by the projection.
+		var uv_min: Vector2 = profile.get("post_panini_source_uv_min", Vector2.ZERO)
+		var uv_max: Vector2 = profile.get("post_panini_source_uv_max", Vector2.ONE)
+		var sampled := (uv_max - uv_min).abs()
+		print("  panini samples uv x[%.4f, %.4f] y[%.4f, %.4f] = %.1f%% of the target" % [
+			uv_min.x, uv_max.x, uv_min.y, uv_max.y,
+			sampled.x * sampled.y * 100.0])
 	var grass_instances: Array = terrain.find_children(
 		"GrassMesh", "MultiMeshInstance3D", true, false)
 	var visible_grass := 0
@@ -502,28 +546,28 @@ func _report(terrain) -> void:
 				Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)])
 
 	if manager.profiling_enabled:
-		var profile: Dictionary = manager.get_profile_snapshot()
+		var detailed_profile: Dictionary = manager.get_profile_snapshot()
 		# last/peak _process cost, and the two counters whose gap is the wasted
 		# receiver-light rebuild: the list is recomputed whenever a light moves,
 		# but its revision only advances when the result actually changed.
 		print("  manager _process last %d us, peak %d us" % [
-			int(profile.get("last_update_usec", -1)), int(profile.get("peak_update_usec", -1))])
+			int(detailed_profile.get("last_update_usec", -1)), int(detailed_profile.get("peak_update_usec", -1))])
 		print("  snapshot updates %d / %d polled frames; receiver-list rebuilds %d, revision %d" % [
-			int(profile.get("snapshot_updates", -1)), int(profile.get("poll_frames", -1)),
-			int(profile.get("receiver_light_list_rebuilds", -1)),
-			int(profile.get("receiver_light_revision", -1))])
+			int(detailed_profile.get("snapshot_updates", -1)), int(detailed_profile.get("poll_frames", -1)),
+			int(detailed_profile.get("receiver_light_list_rebuilds", -1)),
+			int(detailed_profile.get("receiver_light_revision", -1))])
 		# A rotating sun lands in the shading class, which is what keeps rebuilds
 		# far below the frame count. Influence updates are the ones that must
 		# rebuild; skipped is the count that used to be paid for nothing.
 		print("  light updates: shading %d, influence %d; rebuilds skipped %d, receivers recomputed %d" % [
-			int(profile.get("light_shading_updates", -1)),
-			int(profile.get("light_influence_updates", -1)),
-			int(profile.get("receiver_rebuilds_skipped", -1)),
-			int(profile.get("receiver_light_receivers_recomputed", -1))])
+			int(detailed_profile.get("light_shading_updates", -1)),
+			int(detailed_profile.get("light_influence_updates", -1)),
+			int(detailed_profile.get("receiver_rebuilds_skipped", -1)),
+			int(detailed_profile.get("receiver_light_receivers_recomputed", -1))])
 		print("  instances %d (receiver-only %d), dispatch gpu %.3f ms" % [
-			int(profile.get("managed_instances", -1)),
-			int(profile.get("receiver_only_instances", -1)),
-			float(profile.get("dispatch_gpu_seconds", 0.0)) * 1000.0])
+			int(detailed_profile.get("managed_instances", -1)),
+			int(detailed_profile.get("receiver_only_instances", -1)),
+			float(detailed_profile.get("dispatch_gpu_seconds", 0.0)) * 1000.0])
 		# Per-viewport GPU time, which is the only way to attribute the resolve and
 		# present passes -- they are 2D canvas draws with no render-thread hook.
 		#
@@ -535,7 +579,7 @@ func _report(terrain) -> void:
 		# the frame-interval median above for before/after, and where the two
 		# disagree, believe the distribution. A change was once credited with a
 		# 6.5% scene-pass win on this line while frame time moved the other way.
-		var pass_gpu: Dictionary = profile.get("post_pass_gpu_ms", {})
+		var pass_gpu: Dictionary = detailed_profile.get("post_pass_gpu_ms", {})
 		if not pass_gpu.is_empty():
 			var parts: PackedStringArray = []
 			var total := 0.0
